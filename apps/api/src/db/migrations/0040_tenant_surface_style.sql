@@ -1,0 +1,2 @@
+ALTER TABLE "tenants" ADD COLUMN "surface_style" text;--> statement-breakpoint
+ALTER TABLE "tenants" ADD CONSTRAINT "tenants_surface_style_shape" CHECK ("tenants"."surface_style" is null or "tenants"."surface_style" in ('airy', 'balanced', 'solid'));

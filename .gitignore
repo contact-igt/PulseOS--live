@@ -1,0 +1,25 @@
+backend/
+frontend/
+invictus-chatbot/
+whatnexus-frontend/
+invictus-chatbot-pulseos-work/
+whatnexus-frontend-pulseos-work/
+node_modules/
+
+# PulseOS greenfield build artifacts / local env
+.env
+.env.local
+apps/*/.env
+apps/*/dist/
+apps/*/.next/
+apps/web/.next/
+.turbo/
+dist/
+*.tsbuildinfo
+docs/superpowers/plans/screenshots/
+review-artifacts/
+apps/web/test-results/
+apps/web/playwright-report/
+.DS_Store
+.claude/worktrees/
+.claude/runtime/

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."consultation_outcome_type" ADD VALUE 'TREATMENT_DECLINED';

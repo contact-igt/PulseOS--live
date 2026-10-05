@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN "timezone" text DEFAULT 'Asia/Kolkata' NOT NULL;

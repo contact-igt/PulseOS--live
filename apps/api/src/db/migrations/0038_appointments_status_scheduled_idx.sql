@@ -1,0 +1,1 @@
+CREATE INDEX "appointments_status_scheduled_idx" ON "appointments" USING btree ("status","scheduled_at");

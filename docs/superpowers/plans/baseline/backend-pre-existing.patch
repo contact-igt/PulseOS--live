@@ -1,0 +1,14 @@
+diff --git a/package.json b/package.json
+index b2fe787..4b5e4c9 100644
+--- a/package.json
++++ b/package.json
+@@ -54,5 +54,9 @@
+     "pdfkit": "^0.18.0",
+     "sequelize": "^6.37.7",
+     "umzug": "^3.8.3"
++  },
++  "allowScripts": {
++    "bcrypt@6.0.0": true,
++    "fsevents@2.3.3": true
+   }
+ }

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."source_channel" ADD VALUE 'phone' BEFORE 'walk_in';
