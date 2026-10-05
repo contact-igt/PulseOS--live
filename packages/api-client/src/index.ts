@@ -144,8 +144,14 @@ import type {
   UpdateSpecialtyInput,
 } from "@pulseos/types";
 
+function resolveApiBase(raw: string | undefined): string {
+  if (!raw) return "http://localhost:4310";
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  return trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : `https://${trimmed}`;
+}
+
 // Defaults to the API's own default port (apps/api PORT=4310); override with NEXT_PUBLIC_API_URL (apps/web/.env.local).
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4310";
+const API_BASE = resolveApiBase(process.env.NEXT_PUBLIC_API_URL);
 
 class ApiError extends Error {
   status: number;
