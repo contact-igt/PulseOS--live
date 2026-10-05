@@ -10,6 +10,7 @@ import {
   ListChecks,
   Megaphone,
   Plug,
+  Radio,
   Settings,
   Stethoscope,
   UserPlus,
@@ -32,6 +33,7 @@ const ICONS: Record<string, LucideIcon> = {
   Inbox,
   Megaphone,
   Plug,
+  Radio,
   Settings,
   UserPlus,
 };

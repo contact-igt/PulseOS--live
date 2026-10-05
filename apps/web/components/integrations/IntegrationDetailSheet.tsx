@@ -16,6 +16,31 @@ type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "w
 function Overview({ d }: { d: IntegrationDetail }) {
   return (
     <div className="space-y-3 text-sm">
+      {d.isConnected && (
+        <div className="flex items-center justify-between rounded-card border border-emerald-200 bg-emerald-50/70 p-3 shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <div>
+              <p className="text-xs font-semibold text-emerald-800">Connection Verified & Live</p>
+              <p className="text-[11px] text-emerald-700">Webhook events and telephony data are flowing properly.</p>
+            </div>
+          </div>
+          <Badge tone="success">Connected</Badge>
+        </div>
+      )}
+      {d.phoneNumbers && d.phoneNumbers.length > 0 && (
+        <div className="rounded-control border border-line bg-surface p-3 space-y-1.5">
+          <span className="block text-[11px] font-semibold text-ink-3 uppercase tracking-wide">Configured Phone Line(s)</span>
+          <div className="space-y-1">
+            {d.phoneNumbers.map((pn) => (
+              <div key={pn.number} className="flex items-center justify-between text-xs bg-surface-muted rounded px-2.5 py-1.5 border border-line/60">
+                <span className="font-semibold text-ink">📞 {pn.number}</span>
+                <span className="text-ink-2 text-[11px]">{pn.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <p className="text-ink-2">{d.purpose}</p>
       {d.blockedReason && <p className="rounded-control border border-danger-100 bg-danger-100/50 px-3 py-2 text-xs text-danger-700">{d.blockedReason}. Nothing can be enabled or configured until it is provided.</p>}
       <dl className="grid grid-cols-2 gap-3 text-xs">

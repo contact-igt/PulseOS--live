@@ -22,6 +22,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/treatments": { title: "Treatments", subtitle: "Operational conversion tracking, not an EMR" },
   "/inbox": { title: "Inbox", subtitle: "Every patient conversation, one queue" },
   "/integrations": { title: "Integrations", subtitle: "Connected providers and their health" },
+  "/connectors": { title: "Connectors & Phone Lines", subtitle: "Hardware lines, phone numbers and provider webhook health" },
   "/leads": { title: "Leads", subtitle: "Track every enquiry from source to appointment" },
   "/campaigns": { title: "Campaigns / Sources", subtitle: "Where spend turns into treatment revenue" },
   "/analytics": { title: "Analytics", subtitle: "Historical trends, comparisons and drill-downs" },

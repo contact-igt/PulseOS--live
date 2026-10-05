@@ -16,6 +16,7 @@ const PROVIDERS = [
   { key: "whatsapp_meta_cloud", label: "WhatsApp" },
   { key: "whatsnexus", label: "WhatsNexus" },
   { key: "runo", label: "Runo" },
+  { key: "ccs_ivr", label: "CCS IVR" },
   { key: "google_ads", label: "Google Ads" },
   { key: "meta_ads", label: "Meta Ads" },
   { key: "webhooks", label: "Webhooks" },

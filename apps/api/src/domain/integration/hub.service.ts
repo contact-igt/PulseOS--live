@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
+import { communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../security/encryption.js";
 import { inLocalRange, isRealDate, tenantTimezone } from "../../lib/hospital-time.js";
 import { hasPermission, type CapabilityMap, type IntegrationCard, type IntegrationDetail, type IntegrationLogRow, type Role } from "@pulseos/types";
@@ -13,9 +13,10 @@ import { deriveConfiguration, deriveHealth, deriveMode, type ConnectorFacts } fr
 type ConnectorRowT = typeof connectors.$inferSelect;
 type Result<T> = ({ ok: true } & T) | { ok: false; reason: string };
 
-async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: ConnectorRowT; facts: ConnectorFacts }>> {
+async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] }>> {
   const rows = await db.select().from(connectors).where(eq(connectors.tenantId, tenantId));
-  const out = new Map<string, { row: ConnectorRowT; facts: ConnectorFacts }>();
+  const endpoints = await db.select().from(communicationEndpoints).where(eq(communicationEndpoints.tenantId, tenantId));
+  const out = new Map<string, { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] }>();
   for (const row of rows) {
     const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, row.id)).limit(1);
     let secretKeys: string[] = [];
@@ -27,7 +28,10 @@ async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: C
         secretKeys = [];
       }
     }
-    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys } });
+    const phoneNumbers = endpoints
+      .filter((e) => e.connectorId === row.id)
+      .map((e) => ({ number: e.publicNumber, label: e.displayLabel, active: e.isActive }));
+    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys }, phoneNumbers });
   }
   return out;
 }
@@ -60,7 +64,7 @@ async function webhookFacts(db: Db, tenantId: string): Promise<WebhookFacts> {
   };
 }
 
-function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { row: ConnectorRowT; facts: ConnectorFacts } | undefined, wh: WebhookFacts): IntegrationCard {
+function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] } | undefined, wh: WebhookFacts): IntegrationCard {
   const facts = found?.facts ?? null;
   const enabled = entry.capability ? caps[entry.capability] : true;
   let configuration = deriveConfiguration(entry, facts);
@@ -81,6 +85,11 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
       ? wh.whatsNexusEnabled > 0 ? "HEALTHY" : "NOT_APPLICABLE"
       : deriveHealth(entry, facts);
 
+  const isConnected =
+    found?.row.status === "CONNECTED" ||
+    (entry.key === "whatsnexus" && wh.whatsNexusEnabled > 0) ||
+    (entry.key === "webhooks" && wh.enabled > 0 && wh.lastDelivery === "SENT");
+
   return {
     key: entry.key,
     category: entry.category,
@@ -99,6 +108,8 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
     // Webhooks, WhatsNexus and credentials are Super Admin territory; operational settings are Admin and Super Admin.
     canConfigure: entry.key === "webhooks" || entry.key === "whatsnexus" ? hasPermission(role, "MANAGE_INTEGRATION_SECRETS") : !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_CONFIG"),
     canManageSecrets: !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_SECRETS"),
+    phoneNumbers: found?.phoneNumbers ?? [],
+    isConnected,
   };
 }
 

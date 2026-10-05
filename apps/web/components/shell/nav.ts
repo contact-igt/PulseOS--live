@@ -60,6 +60,7 @@ const FULL_NAV: NavGroup[] = [
     items: [
       { label: "Team", href: "/team", icon: "UsersRound", implemented: false },
       { label: "Integrations", href: "/integrations", icon: "Plug", implemented: true, permission: "VIEW_INTEGRATIONS" },
+      { label: "Connectors & Lines", href: "/connectors", icon: "Radio", implemented: true, permission: "VIEW_INTEGRATIONS" },
       { label: "Settings", href: "/settings", icon: "Settings", implemented: true },
     ],
   },

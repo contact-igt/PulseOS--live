@@ -349,14 +349,16 @@ export function ConnectorsWorkbench() {
               </button>
             );
           })}
-          {/* Not a connector row: CCS / IVRSMS has no live webhook or authenticated access yet, so it is listed as what it is — not configured — and is never selectable or "connectable" from here. */}
-          <div className="border-t border-line bg-surface-muted px-3 py-2.5" data-testid="connector-row-ccs-ivrsms-not-configured">
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-xs font-medium text-ink">CCS / IVRSMS</span>
-              <Badge tone="neutral">Not configured</Badge>
+          {/* Only show unconfigured placeholder if CCS IVR has not been added to connectors */}
+          {!connectors.data?.some((c) => c.provider === "ccs_ivr") && (
+            <div className="border-t border-line bg-surface-muted px-3 py-2.5" data-testid="connector-row-ccs-ivrsms-not-configured">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs font-medium text-ink">CCS / IVRSMS</span>
+                <Badge tone="neutral">Not configured</Badge>
+              </div>
+              <p className="mt-0.5 text-[11px] text-ink-2">Telephony · no live webhook or provider access yet, so nothing is connected.</p>
             </div>
-            <p className="mt-0.5 text-[11px] text-ink-2">Telephony · no live webhook or provider access yet, so nothing is connected.</p>
-          </div>
+          )}
         </div>
       </div>
 

@@ -2762,6 +2762,10 @@ export interface IntegrationCard {
   /** Who may change non-secret settings / credentials, as the caller sees it. */
   canConfigure: boolean;
   canManageSecrets: boolean;
+  /** Registered phone lines/numbers under this connector (if any) */
+  phoneNumbers?: { number: string; label: string; active: boolean }[];
+  /** Is actively connected and healthy */
+  isConnected?: boolean;
 }
 
 export interface IntegrationDetail extends IntegrationCard {
