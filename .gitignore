@@ -1,25 +1,91 @@
+# Reference repos (read-only extractions, never committed)
 backend/
 frontend/
 invictus-chatbot/
 whatnexus-frontend/
 invictus-chatbot-pulseos-work/
 whatnexus-frontend-pulseos-work/
-node_modules/
 
-# PulseOS greenfield build artifacts / local env
-.env
-.env.local
-apps/*/.env
-apps/*/dist/
-apps/*/.next/
-apps/web/.next/
-.turbo/
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Package manager locks (pnpm is the locked package manager for this repo)
+package-lock.json
+yarn.lock
+
+# Environment variables & secrets (always keep .env.example files)
+**/.env
+**/.env.*
+**/*.env
+**/*.env.*
+!**/.env.example
+!**/*.env.example
+
+# Build outputs & caches
 dist/
+**/dist/
+build/
+**/build/
+out/
+**/out/
+.next/
+**/.next/
+.turbo/
+**/.turbo/
+.cache/
+**/.cache/
+.eslintcache
 *.tsbuildinfo
-docs/superpowers/plans/screenshots/
+**/*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Testing, E2E, and Playwright
+coverage/
+**/coverage/
+**/test-results/
+**/playwright-report/
+blob-report/
+playwright/.cache/
 review-artifacts/
-apps/web/test-results/
-apps/web/playwright-report/
+docs/superpowers/plans/screenshots/
+
+# IDEs & Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+
+# Operating System files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# AI Assistant local caches & runtime
 .claude/worktrees/
 .claude/runtime/
+.claude/history/
+.claude/settings.local.json
+.gemini/
