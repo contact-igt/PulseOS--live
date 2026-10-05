@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, inArray, lt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { appointments, branches, connectorEvents, messageTemplates, notificationRules, notifications, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
+import { appointments, branches, connectorEvents, messageTemplates, notificationRules, notifications, outboundWebhooks, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
 import { TEMPLATE_VARIABLES, type MessageTemplateVm, type NotificationOffsetUnit, type NotificationRuleVm, type NotificationSubject, type NotificationVm, type TemplatePurpose, type WhatsAppPreview } from "@pulseos/types";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
@@ -9,8 +9,12 @@ import { AmbiguousSendError, type MessagingProviderAdapter } from "../connector/
 import { redactLogText } from "../security/redact.js";
 import { DEFAULT_RULES, notificationKey, planNotifications, type PlanRule } from "./notification-plan.js";
 import { DEFAULT_TEMPLATES, renderTemplate, templateParameters, validateTemplateBody } from "./message-template.js";
+import { buildFullWebhookUrl, resolveDynamicPayload, validateWebhookUrl } from "../integration/webhook-rules.js";
+import { emitIntegrationEvent } from "../integration/domain-events.js";
 
 type Result<T> = ({ ok: true } & T) | { ok: false; reason: string };
+
+const allowInsecure = () => process.env.WEBHOOK_ALLOW_INSECURE === "true" && process.env.NODE_ENV !== "production";
 
 export const MAX_SEND_ATTEMPTS = 3;
 const RETRY_DELAYS_MS = [2 * 60_000, 10 * 60_000];
@@ -278,6 +282,25 @@ export async function planForSubject(db: Db, tenantId: string, type: "APPOINTMEN
 
 export interface SendDeps {
   adapterFor?: (provider: string) => MessagingProviderAdapter | null;
+  fetchImpl?: typeof fetch;
+}
+
+export async function getWhatsNexusWebhook(db: Db, tenantId: string) {
+  const [webhook] = await db
+    .select()
+    .from(outboundWebhooks)
+    .where(
+      and(
+        eq(outboundWebhooks.tenantId, tenantId),
+        eq(outboundWebhooks.enabled, true),
+        or(
+          eq(outboundWebhooks.webhookCategory, "WHATSNEXUS"),
+          sql`${outboundWebhooks.events} @> ARRAY['whatsapp.followup_requested']::text[]`,
+        ),
+      ),
+    )
+    .limit(1);
+  return webhook ?? null;
 }
 
 type Row = typeof notifications.$inferSelect;
@@ -345,7 +368,114 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
 
   const connector = await getConnectorByTenantAndProvider(db, tenantId, WA_PROVIDER);
   const adapter = (deps.adapterFor ?? getMessagingAdapter)(WA_PROVIDER);
-  if (!connector || !adapter || connector.status === "DISABLED") return (await finish(db, n.id, { status: "BLOCKED", reason: "PROVIDER_NOT_CONFIGURED" }), "blocked");
+  if (!connector || !adapter || connector.status === "DISABLED") {
+    const whatsNexus = await getWhatsNexusWebhook(db, tenantId);
+    if (!whatsNexus) return (await finish(db, n.id, { status: "BLOCKED", reason: "PROVIDER_NOT_CONFIGURED" }), "blocked");
+
+    const rendered = n.renderedText ? { text: n.renderedText, missing: [] as string[] } : renderTemplate(template.body, values);
+    if (rendered.missing.length > 0) return (await finish(db, n.id, { status: "BLOCKED", reason: "MISSING_VARIABLES" }), "blocked");
+
+    const fullUrl = buildFullWebhookUrl(whatsNexus.url, whatsNexus.endpointPath);
+    const targetCheck = validateWebhookUrl(fullUrl, { allowInsecure: allowInsecure() });
+    if (!targetCheck.ok) {
+      await finish(db, n.id, { status: "FAILED", reason: `INVALID_WEBHOOK_URL: ${targetCheck.reason}` });
+      return "failed";
+    }
+
+    const context: Record<string, unknown> = {
+      call_Id: n.journeyId ?? n.id,
+      journeyId: n.journeyId ?? n.id,
+      customerName: values.patient_name,
+      patientName: values.patient_name,
+      phoneNumber: patientPhone,
+      phone: patientPhone,
+      patientPhone: patientPhone,
+      agentName: values.staff_name ?? values.doctor_name,
+      staffName: values.staff_name ?? values.doctor_name,
+      createdAt: now.toISOString(),
+      status: "OPEN",
+      typeOfEnquiry: "Follow-up",
+      source: "PULSE_OS",
+      templateName: template.name,
+      message: rendered.text,
+      hospitalName: values.hospital_name,
+      notificationId: n.id,
+    };
+
+    let payload: Record<string, unknown>;
+    const mappings = whatsNexus.payloadMapping as Array<{ key: string; field: string; fallbackValue?: string | null }> | null;
+    if (Array.isArray(mappings) && mappings.length > 0) {
+      payload = resolveDynamicPayload(mappings, context);
+    } else {
+      payload = {
+        call_Id: n.journeyId ?? n.id,
+        customerName: values.patient_name,
+        phoneNumber: patientPhone,
+        agentName: values.staff_name ?? values.doctor_name,
+        createdAt: now.toISOString(),
+        status: "OPEN",
+        typeOfEnquiry: "Follow-up",
+        source: "PULSE_OS",
+        templateName: template.name,
+        message: rendered.text,
+      };
+    }
+
+    const customHeaders: Record<string, string> = {};
+    if (Array.isArray(whatsNexus.headers)) {
+      for (const h of whatsNexus.headers as Array<{ key: string; value: string }>) {
+        if (h.key && h.value) customHeaders[h.key] = h.value;
+      }
+    }
+
+    let providerMessageId = `whatsnexus_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const fetchFn = deps.fetchImpl ?? (fetch as typeof fetch);
+      const res = await fetchFn(targetCheck.url, {
+        method: whatsNexus.httpMethod || "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-pulseos-notification-id": n.id,
+          ...customHeaders,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (res.status >= 300) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`WhatsNexus returned HTTP ${res.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const resJson = (await res.json().catch(() => null)) as any;
+      if (resJson && typeof resJson === "object") {
+        if (resJson.messageId || resJson.id || resJson.call_Id) {
+          providerMessageId = String(resJson.messageId || resJson.id || resJson.call_Id);
+        }
+      }
+    } catch (err) {
+      const message = redactLogText(err instanceof Error ? err.message : String(err)) ?? "send failed";
+      await finish(db, n.id, { status: "FAILED", reason: message });
+      return "failed";
+    }
+
+    await db.update(notifications).set({ status: "SENT", providerMessageId, renderedText: rendered.text, sentAt: now, reason: null }).where(eq(notifications.id, n.id));
+    emitIntegrationEvent({
+      type: "whatsapp.followup_requested",
+      tenantId,
+      eventId: `whatsapp.followup:${n.id}`,
+      occurredAt: now,
+      data: {
+        notificationId: n.id,
+        journeyId: n.journeyId,
+        patientId: n.patientId,
+        phoneNumber: patientPhone,
+        templateName: template.name,
+        provider: "whatsnexus",
+      },
+    });
+    return "sent";
+  }
 
   const rendered = n.renderedText ? { text: n.renderedText, missing: [] as string[] } : renderTemplate(template.body, values);
   if (rendered.missing.length > 0) return (await finish(db, n.id, { status: "BLOCKED", reason: "MISSING_VARIABLES" }), "blocked");
@@ -450,7 +580,9 @@ export async function previewFollowUpMessage(db: Db, tenantId: string, actorId: 
   if (!template) return { ok: false, reason: "template_not_found" };
   const rendered = renderTemplate(template.body, ctx.values);
   const connector = await getConnectorByTenantAndProvider(db, tenantId, WA_PROVIDER);
-  const blockedReason = !template.enabled ? "TEMPLATE_UNAVAILABLE" : !ctx.phone ? "NO_VALID_PHONE" : !connector || connector.status === "DISABLED" ? "PROVIDER_NOT_CONFIGURED" : rendered.missing.length ? "MISSING_VARIABLES" : null;
+  const whatsNexus = await getWhatsNexusWebhook(db, tenantId);
+  const hasProvider = (connector && connector.status !== "DISABLED") || !!whatsNexus;
+  const blockedReason = !template.enabled ? "TEMPLATE_UNAVAILABLE" : !ctx.phone ? "NO_VALID_PHONE" : !hasProvider ? "PROVIDER_NOT_CONFIGURED" : rendered.missing.length ? "MISSING_VARIABLES" : null;
   return { ok: true, preview: { recipient: ctx.phone ? maskPhone(ctx.phone) : "No valid number", text: rendered.text, templateName: template.name, missingVariables: rendered.missing, canSend: blockedReason === null, blockedReason } };
 }
 

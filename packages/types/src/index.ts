@@ -2722,7 +2722,7 @@ export interface ActivityEntry {
   metadata: Record<string, unknown>;
 }
 
-export const INTEGRATION_KEYS = ["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "sms", "webhooks"] as const;
+export const INTEGRATION_KEYS = ["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "whatsnexus", "sms", "webhooks"] as const;
 export type IntegrationKey = (typeof INTEGRATION_KEYS)[number];
 export type IntegrationCategory = "ADS" | "CALLING" | "MESSAGING" | "ADVANCED";
 export const INTEGRATION_CATEGORY_LABEL: Record<IntegrationCategory, string> = {
@@ -2802,6 +2802,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "appointment.completed",
   "surgery.scheduled",
   "surgery.completed",
+  "whatsapp.followup_requested",
 ] as const;
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
 export const WEBHOOK_CONDITION_OPS = ["eq", "neq", "in"] as const;
@@ -2813,10 +2814,45 @@ export interface WebhookCondition {
   value: string | string[];
 }
 
+export type WebhookHttpMethod = "POST" | "PUT" | "GET" | "PATCH";
+export type WebhookCategory = "CUSTOM" | "WHATSNEXUS";
+
+export interface WebhookHeader {
+  key: string;
+  value: string;
+}
+
+export interface WebhookPayloadMapping {
+  key: string;
+  field: string;
+  fallbackValue?: string | null;
+}
+
+export const PULSEOS_MAPPABLE_FIELDS = [
+  { key: "call_Id", label: "Call Id / Interaction Id", sample: "call_948271" },
+  { key: "journeyId", label: "Journey Id", sample: "jrn_abc123" },
+  { key: "customerName", label: "Customer / Patient Name", sample: "John Doe" },
+  { key: "phoneNumber", label: "Customer / Patient Phone Number", sample: "+919876543210" },
+  { key: "agentName", label: "Assigned To (Staff / Doctor / Agent)", sample: "Dr. Sarah Rao" },
+  { key: "createdAt", label: "Created At (ISO Timestamp)", sample: "2026-10-05T18:00:00.000Z" },
+  { key: "status", label: "Status / Stage", sample: "OPEN" },
+  { key: "typeOfEnquiry", label: "Type Of Enquiry / Specialty", sample: "General Consultation" },
+  { key: "source", label: "Source / Channel", sample: "PULSE_OS" },
+  { key: "templateName", label: "Template Name", sample: "follow_up_reminder" },
+  { key: "message", label: "Message / Rendered Text", sample: "Hello John, reminder for your appointment..." },
+  { key: "hospitalName", label: "Hospital Name", sample: "City Care Hospital" },
+  { key: "eventType", label: "Event Type", sample: "interaction.logged" },
+] as const;
+
 export interface OutboundWebhookVm {
   id: string;
   name: string;
   url: string;
+  endpointPath?: string | null;
+  httpMethod?: WebhookHttpMethod;
+  headers?: WebhookHeader[];
+  payloadMapping?: WebhookPayloadMapping[];
+  webhookCategory?: WebhookCategory;
   events: WebhookEventType[];
   conditions: WebhookCondition[];
   enabled: boolean;
@@ -2824,6 +2860,28 @@ export interface OutboundWebhookVm {
   createdAt: string;
   lastDeliveryAt: string | null;
   lastDeliveryStatus: string | null;
+}
+
+export interface TestWebhookInput {
+  url: string;
+  endpointPath?: string | null;
+  httpMethod?: WebhookHttpMethod;
+  headers?: WebhookHeader[];
+  payloadMapping?: WebhookPayloadMapping[];
+  sampleContext?: Record<string, string>;
+}
+
+export interface TestWebhookResult {
+  ok: boolean;
+  status: number | null;
+  statusText: string | null;
+  latencyMs: number;
+  requestUrl: string;
+  requestMethod: string;
+  requestHeaders: Record<string, string>;
+  requestBody: string;
+  responseBody?: string | null;
+  error?: string | null;
 }
 
 // ---------------------------------------------------------------------------

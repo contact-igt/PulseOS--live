@@ -32,12 +32,32 @@ async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: C
   return out;
 }
 
-interface WebhookFacts { total: number; enabled: number; lastDelivery: "SENT" | "FAILED" | "PENDING" | null }
+interface WebhookFacts {
+  total: number;
+  enabled: number;
+  whatsNexusTotal: number;
+  whatsNexusEnabled: number;
+  lastDelivery: "SENT" | "FAILED" | "PENDING" | null;
+}
 
 async function webhookFacts(db: Db, tenantId: string): Promise<WebhookFacts> {
-  const [c] = await db.select({ total: sql<number>`count(*)::int`, enabled: sql<number>`count(*) filter (where ${outboundWebhooks.enabled})::int` }).from(outboundWebhooks).where(eq(outboundWebhooks.tenantId, tenantId));
+  const [c] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      enabled: sql<number>`count(*) filter (where ${outboundWebhooks.enabled})::int`,
+      whatsNexusTotal: sql<number>`count(*) filter (where ${outboundWebhooks.webhookCategory} = 'WHATSNEXUS')::int`,
+      whatsNexusEnabled: sql<number>`count(*) filter (where ${outboundWebhooks.webhookCategory} = 'WHATSNEXUS' and ${outboundWebhooks.enabled})::int`,
+    })
+    .from(outboundWebhooks)
+    .where(eq(outboundWebhooks.tenantId, tenantId));
   const [last] = await db.select({ status: outboundWebhookDeliveries.status }).from(outboundWebhookDeliveries).where(eq(outboundWebhookDeliveries.tenantId, tenantId)).orderBy(desc(outboundWebhookDeliveries.createdAt)).limit(1);
-  return { total: c?.total ?? 0, enabled: c?.enabled ?? 0, lastDelivery: (last?.status as WebhookFacts["lastDelivery"]) ?? null };
+  return {
+    total: c?.total ?? 0,
+    enabled: c?.enabled ?? 0,
+    whatsNexusTotal: c?.whatsNexusTotal ?? 0,
+    whatsNexusEnabled: c?.whatsNexusEnabled ?? 0,
+    lastDelivery: (last?.status as WebhookFacts["lastDelivery"]) ?? null,
+  };
 }
 
 function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { row: ConnectorRowT; facts: ConnectorFacts } | undefined, wh: WebhookFacts): IntegrationCard {
@@ -45,9 +65,22 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
   const enabled = entry.capability ? caps[entry.capability] : true;
   let configuration = deriveConfiguration(entry, facts);
   if (entry.key === "webhooks") configuration = wh.total > 0 ? "CONFIGURED" : "NOT_CONFIGURED";
-  // Webhooks: "live" is earned by a delivery that actually succeeded, not by a webhook merely existing.
-  const mode = entry.key === "webhooks" ? (wh.total === 0 ? "NOT_CONFIGURED" : wh.enabled === 0 ? "DISABLED" : wh.lastDelivery === "SENT" ? "LIVE_CONFIGURED" : "LIVE_CAPABLE") : deriveMode(entry, enabled, configuration, facts);
-  const health = entry.key === "webhooks" ? (wh.lastDelivery === "SENT" ? "HEALTHY" : wh.lastDelivery === "FAILED" ? "UNHEALTHY" : wh.total > 0 ? "UNKNOWN" : "NOT_APPLICABLE") : deriveHealth(entry, facts);
+  if (entry.key === "whatsnexus") configuration = wh.whatsNexusTotal > 0 ? "CONFIGURED" : "NOT_CONFIGURED";
+
+  const mode =
+    entry.key === "webhooks"
+      ? wh.total === 0 ? "NOT_CONFIGURED" : wh.enabled === 0 ? "DISABLED" : wh.lastDelivery === "SENT" ? "LIVE_CONFIGURED" : "LIVE_CAPABLE"
+      : entry.key === "whatsnexus"
+      ? wh.whatsNexusTotal === 0 ? "NOT_CONFIGURED" : wh.whatsNexusEnabled === 0 ? "DISABLED" : "LIVE_CONFIGURED"
+      : deriveMode(entry, enabled, configuration, facts);
+
+  const health =
+    entry.key === "webhooks"
+      ? wh.lastDelivery === "SENT" ? "HEALTHY" : wh.lastDelivery === "FAILED" ? "UNHEALTHY" : wh.total > 0 ? "UNKNOWN" : "NOT_APPLICABLE"
+      : entry.key === "whatsnexus"
+      ? wh.whatsNexusEnabled > 0 ? "HEALTHY" : "NOT_APPLICABLE"
+      : deriveHealth(entry, facts);
+
   return {
     key: entry.key,
     category: entry.category,
@@ -63,8 +96,8 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
     lastSyncAt: found?.row.lastSyncAt?.toISOString() ?? null,
     lastEventAt: found?.row.lastEventAt?.toISOString() ?? null,
     lastError: found?.row.lastError ?? null,
-    // Webhooks and credentials are Super Admin territory; operational settings are Admin and Super Admin.
-    canConfigure: entry.key === "webhooks" ? hasPermission(role, "MANAGE_INTEGRATION_SECRETS") : !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_CONFIG"),
+    // Webhooks, WhatsNexus and credentials are Super Admin territory; operational settings are Admin and Super Admin.
+    canConfigure: entry.key === "webhooks" || entry.key === "whatsnexus" ? hasPermission(role, "MANAGE_INTEGRATION_SECRETS") : !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_CONFIG"),
     canManageSecrets: !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_SECRETS"),
   };
 }
@@ -81,14 +114,31 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
   const facts = await loadFacts(db, tenantId);
   const found = entry.connectorProvider ? facts.get(entry.connectorProvider) : undefined;
   const base = card(entry, caps, role, found, await webhookFacts(db, tenantId));
-  const config = found?.facts.configuration ?? {};
+
+  const [wnHook] =
+    entry.key === "whatsnexus"
+      ? await db.select().from(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS"))).limit(1)
+      : [];
+
+  const config = wnHook ? { webhookUrl: wnHook.url, endpointPath: wnHook.endpointPath ?? "" } : (found?.facts.configuration ?? {});
   const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
-  const webhookPath = found && entry.key === "whatsapp_meta_cloud" ? `/webhooks/whatsapp/${found.row.id}` : found && entry.key === "runo" ? `/webhooks/runo/${found.row.id}` : null;
+  const webhookPath =
+    found && entry.key === "whatsapp_meta_cloud"
+      ? `/webhooks/whatsapp/${found.row.id}`
+      : found && entry.key === "runo"
+      ? `/webhooks/runo/${found.row.id}`
+      : entry.key === "whatsnexus"
+      ? `/webhooks/whatsnexus/${tenantId}`
+      : null;
+
   return {
     ...base,
     configurationFields: entry.configurationFields,
-    configurationValues: Object.fromEntries(entry.configurationFields.map((f) => [f.key, config[f.key] == null ? "" : String(config[f.key])])),
-    secretFields: entry.secretFields.map((f) => ({ ...f, hasSecret: !!found?.facts.secretKeys.includes(f.key) })),
+    configurationValues: Object.fromEntries(entry.configurationFields.map((f) => [f.key, (config as any)[f.key] == null ? "" : String((config as any)[f.key])])),
+    secretFields: entry.secretFields.map((f) => ({
+      ...f,
+      hasSecret: entry.key === "whatsnexus" ? !!(wnHook?.headers as any[])?.some((h) => h.key === "x-api-key" && h.value) : !!found?.facts.secretKeys.includes(f.key),
+    })),
     mappingNotes: entry.mappingNotes,
     syncRuns: (ADS_PROVIDERS as readonly string[]).includes(entry.key) ? await listSyncRuns(db, tenantId, entry.key as AdsProvider) : undefined,
     webhookUrl: webhookPath ? `${base_}${webhookPath}` : null,
@@ -125,6 +175,60 @@ export interface ConfigureInput {
 export async function configureIntegration(db: Db, tenantId: string, key: string, input: ConfigureInput): Promise<Result<object>> {
   const entry = catalogueEntry(key);
   if (!entry) return { ok: false, reason: "unknown_integration" };
+
+  if (key === "whatsnexus") {
+    const url = input.configuration?.webhookUrl?.trim();
+    if (!url) return { ok: false, reason: "invalid_url" };
+    const endpointPath = input.configuration?.endpointPath?.trim() || null;
+    const apiKey = input.secrets?.apiKey?.trim();
+    const headers = apiKey ? [{ key: "x-api-key", value: apiKey }] : [];
+    const [existing] = await db
+      .select()
+      .from(outboundWebhooks)
+      .where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS")))
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(outboundWebhooks)
+        .set({
+          url,
+          endpointPath,
+          headers: headers.length > 0 ? headers : existing.headers,
+          enabled: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(outboundWebhooks.id, existing.id));
+    } else {
+      await db.insert(outboundWebhooks).values({
+        tenantId,
+        name: "WhatsNexus WhatsApp",
+        url,
+        endpointPath,
+        httpMethod: "POST",
+        headers,
+        payloadMapping: [
+          { key: "call_Id", field: "call_Id" },
+          { key: "customerName", field: "customerName" },
+          { key: "phoneNumber", field: "phoneNumber" },
+          { key: "agentName", field: "agentName" },
+          { key: "createdAt", field: "createdAt" },
+          { key: "status", field: "status" },
+          { key: "typeOfEnquiry", field: "typeOfEnquiry" },
+          { key: "source", field: "source" },
+          { key: "templateName", field: "templateName" },
+          { key: "message", field: "message" },
+        ],
+        webhookCategory: "WHATSNEXUS",
+        events: ["whatsapp.followup_requested", "interaction.logged"],
+        conditions: [],
+        enabled: true,
+        encryptedSecret: encryptSecret({ signingSecret: "whsec_whatsnexus" }),
+      });
+    }
+    return { ok: true };
+  }
+
   if (entry.blockedReason || !entry.connectorProvider) return { ok: false, reason: "blocked" };
   const connector = await ensureConnector(db, tenantId, entry);
   if (!connector) return { ok: false, reason: "blocked" };

@@ -1139,6 +1139,11 @@ export const outboundWebhooks = pgTable("outbound_webhooks", {
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   name: text("name").notNull(),
   url: text("url").notNull(),
+  endpointPath: text("endpoint_path"),
+  httpMethod: text("http_method").notNull().default("POST"),
+  headers: jsonb("headers").$type<Array<{ key: string; value: string }>>().notNull().default([]),
+  payloadMapping: jsonb("payload_mapping").$type<Array<{ key: string; field: string; fallbackValue?: string | null }>>().notNull().default([]),
+  webhookCategory: text("webhook_category").notNull().default("CUSTOM"),
   events: text("events").array().notNull(),
   // [{ field, op: "eq" | "neq" | "in", value }] — all must hold. Structured data, never an expression.
   conditions: jsonb("conditions").notNull().default([]),

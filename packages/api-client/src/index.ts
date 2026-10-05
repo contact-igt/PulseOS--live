@@ -18,6 +18,12 @@ import type {
   OutboundWebhookVm,
   WebhookCondition,
   WebhookEventType,
+  WebhookHeader,
+  WebhookPayloadMapping,
+  WebhookHttpMethod,
+  WebhookCategory,
+  TestWebhookInput,
+  TestWebhookResult,
   AnalyticsCampaigns,
   AnalyticsFilterOptions,
   AnalyticsFlow,
@@ -394,11 +400,38 @@ export const api = {
     return request<IntegrationLogRow[]>(`/integrations/logs${qs ? `?${qs}` : ""}`);
   },
   webhooks: () => request<OutboundWebhookVm[]>("/integrations/webhooks"),
-  createWebhook: (body: { name: string; url: string; events: WebhookEventType[]; conditions?: WebhookCondition[]; enabled?: boolean }) =>
+  createWebhook: (body: {
+    name: string;
+    url: string;
+    endpointPath?: string | null;
+    httpMethod?: WebhookHttpMethod;
+    headers?: WebhookHeader[];
+    payloadMapping?: WebhookPayloadMapping[];
+    webhookCategory?: WebhookCategory;
+    events: WebhookEventType[];
+    conditions?: WebhookCondition[];
+    enabled?: boolean;
+  }) =>
     request<{ webhook: OutboundWebhookVm; signingSecret: string }>("/integrations/webhooks", { method: "POST", body: JSON.stringify(body) }),
-  updateWebhook: (id: string, body: Partial<{ name: string; url: string; events: WebhookEventType[]; conditions: WebhookCondition[]; enabled: boolean }>) =>
+  updateWebhook: (
+    id: string,
+    body: Partial<{
+      name: string;
+      url: string;
+      endpointPath: string | null;
+      httpMethod: WebhookHttpMethod;
+      headers: WebhookHeader[];
+      payloadMapping: WebhookPayloadMapping[];
+      webhookCategory: WebhookCategory;
+      events: WebhookEventType[];
+      conditions: WebhookCondition[];
+      enabled: boolean;
+    }>
+  ) =>
     request<OutboundWebhookVm>(`/integrations/webhooks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteWebhook: (id: string) => request<void>(`/integrations/webhooks/${id}`, { method: "DELETE" }),
+  testWebhook: (body: TestWebhookInput) =>
+    request<TestWebhookResult>("/integrations/webhooks/test", { method: "POST", body: JSON.stringify(body) }),
   activityLog: (f: { action?: string; entityType?: string; from?: string; to?: string } = {}) => request<ActivityEntry[]>(`/activity-log${toQuery({ ...f })}`),
   notificationRules: () => request<NotificationRuleVm[]>("/notifications/rules"),
   updateNotificationRule: (id: string, body: Partial<Pick<NotificationRuleVm, "enabled" | "offsetValue" | "offsetUnit" | "templateId" | "minGapMinutes">>) =>

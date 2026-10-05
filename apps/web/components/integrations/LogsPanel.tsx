@@ -14,6 +14,7 @@ import { useHospitalTimeZone } from "@/lib/useHospitalTimeZone";
 const PROVIDERS = [
   { key: "", label: "All providers" },
   { key: "whatsapp_meta_cloud", label: "WhatsApp" },
+  { key: "whatsnexus", label: "WhatsNexus" },
   { key: "runo", label: "Runo" },
   { key: "google_ads", label: "Google Ads" },
   { key: "meta_ads", label: "Meta Ads" },

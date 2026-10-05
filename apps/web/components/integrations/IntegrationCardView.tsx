@@ -11,6 +11,7 @@ const ICON: Record<IntegrationCard["key"], typeof Phone> = {
   runo: Phone,
   ccs_ivr: PhoneCall,
   whatsapp_meta_cloud: MessageCircle,
+  whatsnexus: MessageCircle,
   sms: Smartphone,
   webhooks: Webhook,
 };

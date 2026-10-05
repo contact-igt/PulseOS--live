@@ -6,7 +6,7 @@ import { requirePermission } from "../auth/permission.middleware.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { syncAds } from "../ads/ads-sync.service.js";
 import { configureIntegration, getHubDetail, listHub, listIntegrationLogs } from "./hub.service.js";
-import { createWebhook, deleteWebhook, listWebhooks, updateWebhook } from "./outbound-webhook.service.js";
+import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
 
@@ -111,6 +111,22 @@ export async function integrationHubRoutes(app: FastifyInstance) {
       if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });
       await recordActivity(app.db, { tenantId: request.sessionUser!.tenantId, actorId: request.sessionUser!.id, action: "webhook.updated", entityType: "webhook", entityKey: result.webhook.id, metadata: { changed: Object.keys(parsed.data), enabled: result.webhook.enabled } });
       return result.webhook;
+    });
+
+    hooks.post("/integrations/webhooks/test", async (request, reply) => {
+      const u = request.sessionUser!;
+      const parsed = z
+        .object({
+          url: z.string().trim().min(1),
+          endpointPath: z.string().trim().optional().nullable(),
+          httpMethod: z.enum(["POST", "PUT", "GET", "PATCH"]).default("POST"),
+          headers: z.array(z.object({ key: z.string(), value: z.string() })).default([]),
+          payloadMapping: z.array(z.object({ key: z.string(), field: z.string(), fallbackValue: z.string().optional().nullable() })).default([]),
+          sampleContext: z.record(z.string()).optional(),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
+      return testWebhookDelivery(u.tenantId, parsed.data);
     });
 
     hooks.delete("/integrations/webhooks/:id", async (request, reply) => {

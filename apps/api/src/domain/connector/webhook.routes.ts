@@ -1,4 +1,7 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { eq } from "drizzle-orm";
+import type { Db } from "../../db/client.js";
+import { notifications } from "../../db/schema.js";
 import { getConnectorById, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "./connector.service.js";
 import { markEventFailed, markEventProcessed, recordConnectorEvent } from "./connector-event.service.js";
 import { getAcquisitionAdapter, getMessagingAdapter, getTelephonyAdapter } from "./registry.js";
@@ -286,4 +289,39 @@ export async function webhookRoutes(app: FastifyInstance) {
 
     return reply.status(200).send({});
   });
+
+  // WhatsNexus Delivery Status & Inbound Message Webhook
+  app.post("/webhooks/whatsnexus", async (request, reply) => {
+    return handleWhatsNexusCallback(app.db, request, reply);
+  });
+
+  app.post("/webhooks/whatsnexus/:tenantId", async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    return handleWhatsNexusCallback(app.db, request, reply, tenantId);
+  });
+}
+
+async function handleWhatsNexusCallback(db: Db, request: FastifyRequest, reply: FastifyReply, explicitTenantId?: string) {
+  const body = (request.body as Record<string, any>) ?? {};
+  const status = (body.status || body.event || body.type || "")?.toLowerCase();
+  const providerMessageId = String(body.messageId || body.providerMessageId || body.call_Id || body.id || "");
+  const now = new Date();
+
+  if (providerMessageId && ["sent", "delivered", "read", "failed"].includes(status)) {
+    let tenantId = explicitTenantId;
+    if (!tenantId) {
+      const [n] = await db
+        .select({ tenantId: notifications.tenantId })
+        .from(notifications)
+        .where(eq(notifications.providerMessageId, providerMessageId))
+        .limit(1);
+      tenantId = n?.tenantId;
+    }
+    if (tenantId) {
+      await applyDeliveryStatus(db, tenantId, providerMessageId, status as any, now);
+      return reply.status(200).send({ ok: true, updated: true });
+    }
+  }
+
+  return reply.status(200).send({ ok: true, received: true });
 }
