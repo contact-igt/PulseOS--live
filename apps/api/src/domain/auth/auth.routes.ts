@@ -54,10 +54,12 @@ class SignupLimiter {
 }
 
 function setSessionCookie(reply: import("fastify").FastifyReply, sessionId: string, expiresAt: Date, persistent = true) {
+  const sameSite = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
+  const secure = process.env.NODE_ENV === "production" || sameSite === "none";
   reply.setCookie(SESSION_COOKIE, sessionId, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    sameSite,
+    secure,
     path: "/",
     // A session cookie (no expiry) unless the person asked to be remembered; the server-side session expires either way.
     ...(persistent ? { expires: expiresAt } : {}),
@@ -177,7 +179,9 @@ export async function authRoutes(app: FastifyInstance) {
     if (sessionId) {
       await revokeSession(app.db, sessionId);
     }
-    reply.clearCookie(SESSION_COOKIE, { path: "/" });
+    const sameSite = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
+    const secure = process.env.NODE_ENV === "production" || sameSite === "none";
+    reply.clearCookie(SESSION_COOKIE, { path: "/", sameSite, secure });
     return reply.send({ ok: true });
   });
 
