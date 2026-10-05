@@ -127,6 +127,8 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       ? `/webhooks/whatsapp/${found.row.id}`
       : found && entry.key === "runo"
       ? `/webhooks/runo/${found.row.id}`
+      : found && entry.key === "ccs_ivr"
+      ? `/webhooks/ccs/${found.row.id}`
       : entry.key === "whatsnexus"
       ? `/webhooks/whatsnexus/${tenantId}`
       : null;

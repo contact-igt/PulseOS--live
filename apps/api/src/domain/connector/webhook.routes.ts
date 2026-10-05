@@ -34,6 +34,15 @@ export async function webhookRoutes(app: FastifyInstance) {
     }
   });
 
+  app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_req, body, done) => {
+    try {
+      const parsed = Object.fromEntries(new URLSearchParams(body as string));
+      done(null, parsed);
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
+
   app.get("/webhooks/whatsapp/:connectorId", async (request, reply) => {
     const { connectorId } = request.params as { connectorId: string };
     const connector = await getConnectorById(app.db, connectorId);
@@ -162,6 +171,56 @@ export async function webhookRoutes(app: FastifyInstance) {
 
     return reply.status(200).send({ ok: true });
   });
+
+  async function handleCcsWebhook(request: FastifyRequest, reply: FastifyReply) {
+    const { connectorId } = request.params as { connectorId: string };
+    const connector = await getConnectorById(app.db, connectorId);
+    if (!connector || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
+
+    const adapter = getTelephonyAdapter(connector.provider);
+    if (!adapter) return reply.status(200).send({ ok: true });
+
+    const secrets = await getConnectorSecrets(app.db, connectorId);
+    if (!secrets) return reply.status(200).send({ ok: true });
+
+    const rawPayload = {
+      ...((request.query as Record<string, unknown>) || {}),
+      ...(typeof request.body === "object" && request.body !== null ? (request.body as Record<string, unknown>) : {}),
+    };
+
+    if (!adapter.verifyWebhook(rawPayload, request.headers as Record<string, string | undefined>, secrets)) {
+      app.log.warn({ connectorId }, "CCS IVR webhook authentication rejected");
+      return reply.status(401).send({ error: "unauthorized" });
+    }
+
+    if (!(await tenantCapabilityMap(app.db, connector.tenantId)).CCS_IVR) return reply.status(200).send({ ok: true });
+
+    const calls = adapter.parseWebhookPayload(rawPayload);
+    for (const call of calls) {
+      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
+        tenantId: connector.tenantId,
+        connectorId,
+        externalEventId: call.externalEventId,
+        direction: "inbound",
+        payload: { type: "call", raw: rawPayload },
+      });
+      if (duplicate) continue;
+
+      try {
+        await persistInboundCall(app.db, connector.tenantId, connectorId, call);
+        await markEventProcessed(app.db, eventId);
+        await touchConnectorSuccess(app.db, connectorId);
+      } catch (err) {
+        await markEventFailed(app.db, eventId, (err as Error).message);
+        await touchConnectorError(app.db, connectorId, (err as Error).message);
+      }
+    }
+
+    return reply.status(200).send({ ok: true });
+  }
+
+  app.post("/webhooks/ccs/:connectorId", handleCcsWebhook);
+  app.get("/webhooks/ccs/:connectorId", handleCcsWebhook);
 
   app.get("/webhooks/meta-lead-ads/:connectorId", async (request, reply) => {
     const { connectorId } = request.params as { connectorId: string };

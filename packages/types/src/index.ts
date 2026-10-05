@@ -41,8 +41,8 @@ export type CapabilityMap = Record<Capability, boolean>;
 
 /** What each edition switches on by default. Super Admin may override any of them per tenant. */
 export const EDITION_CAPABILITIES: Record<Edition, Capability[]> = {
-  BETA_V1_CORE: ["ANALYTICS_CORE", "RUNO_CALLING", "WHATSAPP_NOTIFICATIONS", "REVENUE_TRACKING"],
-  BETA_V2_GROWTH: ["ANALYTICS_CORE", "MARKETING_ANALYTICS", "GOOGLE_ADS", "META_ADS", "RUNO_CALLING", "WHATSAPP_NOTIFICATIONS", "WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "SPEND_ATTRIBUTION", "REVENUE_TRACKING"],
+  BETA_V1_CORE: ["ANALYTICS_CORE", "RUNO_CALLING", "CCS_IVR", "WHATSAPP_NOTIFICATIONS", "REVENUE_TRACKING"],
+  BETA_V2_GROWTH: ["ANALYTICS_CORE", "MARKETING_ANALYTICS", "GOOGLE_ADS", "META_ADS", "RUNO_CALLING", "CCS_IVR", "WHATSAPP_NOTIFICATIONS", "WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "SPEND_ATTRIBUTION", "REVENUE_TRACKING"],
 };
 
 /** A capability that needs another one on. Explicit and small; nothing else is implied. */
@@ -61,7 +61,7 @@ export const CAPABILITY_DEPENDENCIES: Partial<Record<Capability, Capability[]>> 
 export const LOCKED_CAPABILITIES: Capability[] = ["ANALYTICS_CORE"];
 
 /** Operational switches a Hospital Admin may flip; everything else is a commercial entitlement (Super Admin). */
-export const OPERATIONAL_CAPABILITIES: Capability[] = ["WHATSAPP_NOTIFICATIONS", "SMS_NOTIFICATIONS"];
+export const OPERATIONAL_CAPABILITIES: Capability[] = ["WHATSAPP_NOTIFICATIONS", "SMS_NOTIFICATIONS", "CCS_IVR"];
 
 export interface CapabilityMeta {
   label: string;
@@ -78,7 +78,7 @@ export const CAPABILITY_META: Record<Capability, CapabilityMeta> = {
   GOOGLE_ADS: { label: "Google Ads", description: "Read-only campaign reporting from Google Ads.", provider: "google_ads", growth: true },
   META_ADS: { label: "Meta Ads", description: "Read-only campaign reporting from Meta Ads.", provider: "meta_ads", growth: true },
   RUNO_CALLING: { label: "Runo Calling", description: "Call events, recordings and dispositions from Runo.", provider: "runo" },
-  CCS_IVR: { label: "CCS IVR", description: "IVR call events from CCS (provider documentation required).", provider: "ccs_ivr" },
+  CCS_IVR: { label: "CCS IVR (Express IVR)", description: "Inbound and outbound IVR call reports, missed calls, and recordings from Express IVR (ccs.ivrsms.com).", provider: "ccs_ivr" },
   WHATSAPP_NOTIFICATIONS: { label: "WhatsApp Notifications", description: "Appointment and surgery confirmations and reminders, and staff follow-up messages.", provider: "whatsapp_meta_cloud" },
   WHATSAPP_INBOX: { label: "WhatsApp Inbox", description: "Two-way conversations with patients.", provider: "whatsapp_meta_cloud", growth: true },
   CONVERSATION_INTELLIGENCE: { label: "Conversation Intelligence", description: "Conversation summaries and context. Needs the WhatsApp Inbox.", growth: true },

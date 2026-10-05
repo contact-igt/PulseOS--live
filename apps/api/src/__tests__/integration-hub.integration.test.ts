@@ -37,7 +37,7 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
 
   it("lists the catalogue by category with enabled, configuration, health and mode as separate facts", async () => {
     const cards = await hub(v1, "HOSPITAL_ADMIN");
-    expect(cards.map((c) => c.key)).toEqual(["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "sms", "webhooks"]);
+    expect(cards.map((c) => c.key)).toEqual(["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "whatsnexus", "sms", "webhooks"]);
     const google = cards.find((c) => c.key === "google_ads")!;
     expect(google).toMatchObject({ category: "ADS", enabled: false, mode: "DISABLED", configuration: "NOT_CONFIGURED" }); // V1 default: off
     const wa = cards.find((c) => c.key === "whatsapp_meta_cloud")!;
@@ -47,11 +47,13 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
     expect(runo.configuration).not.toBe("BLOCKED"); // Runo is preserved as the call provider
   });
 
-  it("CCS IVR is blocked with the documentation reason and cannot be configured or enabled around it", async () => {
+  it("CCS IVR is active and can be configured with credentials and generates a webhook URL", async () => {
     const ccs = (await hub(v1, "SUPER_ADMIN")).find((c) => c.key === "ccs_ivr")!;
-    expect(ccs).toMatchObject({ mode: "BLOCKED", configuration: "BLOCKED", health: "NOT_APPLICABLE", blockedReason: "Provider API/Webhook documentation required", canConfigure: false });
-    const res = await call(v1, "SUPER_ADMIN", "PUT", "/integrations/hub/ccs_ivr/configuration", { configuration: { x: "1" } });
-    expect(res.statusCode).toBe(409);
+    expect(ccs).toMatchObject({ mode: "NOT_CONFIGURED", configuration: "NOT_CONFIGURED", blockedReason: null, canConfigure: true });
+    const res = await call(v1, "SUPER_ADMIN", "PUT", "/integrations/hub/ccs_ivr/configuration", { configuration: { accountEmail: "admin@hospital.com" } });
+    expect(res.statusCode).toBe(200);
+    const detail = (await call(v1, "SUPER_ADMIN", "GET", "/integrations/hub/ccs_ivr")).json();
+    expect(detail.webhookUrl).toMatch(/\/webhooks\/ccs\//);
   });
 
   it("an Admin sets operational configuration; secrets and mode are Super Admin only (refused, not stripped)", async () => {
@@ -146,9 +148,9 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
 
     // A failing receiver is retried a bounded number of times, then marked failed.
     emitIntegrationEvent({ ...base, type: "lead.created", eventId: "lead.created:j-3", data: { journeyId: "j-3", sourceKey: "google" } });
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 600));
     const bad: WebhookFetch = async () => ({ status: 500 });
-    let t = Date.now();
+    let t = Date.now() + 5_000;
     const outcomes = [];
     for (let i = 0; i < 4; i++) {
       outcomes.push(await deliverDueWebhooks(db, new Date(t), bad));

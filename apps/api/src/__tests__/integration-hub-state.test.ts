@@ -38,11 +38,9 @@ describe("integration hub state", () => {
     expect(deriveConfiguration(wa, { ...fixture, mode: "LIVE" })).toBe("PARTIAL");
   });
 
-  it("CCS IVR is blocked, with no adapter and no health", () => {
-    expect(ccs.blockedReason).toBe("Provider API/Webhook documentation required");
-    expect(ccs.connectorProvider).toBeNull();
-    expect(deriveConfiguration(ccs, null)).toBe("BLOCKED");
-    expect(deriveMode(ccs, true, "BLOCKED", null)).toBe("BLOCKED");
-    expect(deriveHealth(ccs, null)).toBe("NOT_APPLICABLE");
+  it("CCS IVR is active with telephony adapter", () => {
+    expect(ccs.blockedReason).toBeNull();
+    expect(ccs.connectorProvider).toBe("ccs_ivr");
+    expect(deriveConfiguration(ccs, null)).toBe("NOT_CONFIGURED");
   });
 });
