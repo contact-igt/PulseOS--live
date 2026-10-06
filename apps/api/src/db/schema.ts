@@ -259,6 +259,8 @@ export const journeys = pgTable("journeys", {
   source: sourceEnum("source").notNull(),
   sourceId: uuid("source_id").references(() => leadSources.id),
   departmentId: uuid("department_id").references(() => departments.id),
+  // Free-text refinement of the source ("CCS Express IVR", a camp name...). Never a substitute for sourceId.
+  sourceDetail: text("source_detail"),
   ownerUserId: uuid("owner_user_id").references(() => users.id),
   priority: taskPriorityEnum("priority").notNull().default("normal"),
   notes: text("notes"),
@@ -843,6 +845,12 @@ export const communicationEndpoints = pgTable("communication_endpoints", {
   providerRef: text("provider_ref").notNull(),
   displayLabel: text("display_label").notNull(),
   isActive: boolean("is_active").notNull().default(true),
+  // Attribution for calls that arrive on this line, configured by the hospital (never assumed): the Source a call through
+  // this line inherits (a campaign, a health camp, the main reception...), a free-text source detail, and the department.
+  // The branch is `branchId` above. All optional: a line with no mapping falls back to Phone.
+  leadSourceId: uuid("lead_source_id").references(() => leadSources.id),
+  sourceDetail: text("source_detail"),
+  departmentId: uuid("department_id").references(() => departments.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
@@ -988,6 +996,9 @@ export const calls = pgTable("calls", {
   feedbackAt: timestamp("feedback_at", { withTimezone: true }),
   outcomeId: uuid("outcome_id").references(() => crmOutcomes.id),
   loggedByUserId: uuid("logged_by_user_id").references(() => users.id),
+  // WHO HANDLED this call (a provider agent mapped to a team member). Not the Journey's owner: answering one call never
+  // reassigns the Journey.
+  handledByUserId: uuid("handled_by_user_id").references(() => users.id),
   // The callback this call asked for (the one Task engine — no separate follow-up table).
   callbackTaskId: uuid("callback_task_id").references(() => tasks.id),
   // A double-tapped Save returns the first call instead of creating a second.
@@ -1002,6 +1013,22 @@ export const calls = pgTable("calls", {
   requestKeyUnique: uniqueIndex("calls_tenant_idempotency_unique").on(t.tenantId, t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`),
   patientIdx: index("calls_patient_idx").on(t.patientId),
   idempotencyUnique: uniqueIndex("calls_connector_external_unique").on(t.connectorId, t.externalCallId),
+}));
+
+// A provider's agent/member (as it names them) -> a PulseOS team member. Tenant- and connector-scoped, configured by a
+// Super Admin. Mapping never changes who owns a Journey; it only records who handled a call.
+export const connectorAgentMappings = pgTable("connector_agent_mappings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  connectorId: uuid("connector_id").notNull().references(() => connectors.id),
+  // As the provider shows it, and the normalised form calls are matched on.
+  externalAgent: text("external_agent").notNull(),
+  externalKey: text("external_key").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  connectorAgentUnique: uniqueIndex("connector_agent_mappings_connector_key_unique").on(t.connectorId, t.externalKey),
+  tenantIdx: index("connector_agent_mappings_tenant_idx").on(t.tenantId),
 }));
 
 // Derived data about a call, kept apart from the call itself and from staff feedback. The recording is the

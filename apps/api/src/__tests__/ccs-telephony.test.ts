@@ -78,7 +78,7 @@ describe("ccsTelephonyAdapter", () => {
     expect(event.externalCallId).toBe("uniq_missed_999");
     expect(event.phone).toBe("+919876543210");
     expect(event.status).toBe("missed");
-    expect(event.durationSeconds).toBeNull();
+    expect(event.durationSeconds).toBe(0);
   });
 
   it("handles array payloads from batch CDR exports", () => {

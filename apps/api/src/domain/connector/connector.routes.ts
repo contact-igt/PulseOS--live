@@ -10,6 +10,7 @@ import {
   resolveEndpointByProviderRef,
   updateCommunicationEndpoint,
 } from "./communication-endpoint.service.js";
+import { deleteAgentMapping, listAgentMappings, setAgentMapping } from "./agent-mapping.service.js";
 import type { CreateCommunicationEndpointInput, UpdateCommunicationEndpointInput } from "@pulseos/types";
 
 const REASON_STATUS: Record<string, number> = {
@@ -19,7 +20,17 @@ const REASON_STATUS: Record<string, number> = {
   provider_ref_already_exists: 409,
   endpoint_not_found: 404,
   branch_not_found: 404,
+  source_not_found: 404,
+  department_not_found: 404,
+  user_not_found: 404,
+  mapping_not_found: 404,
+  invalid_request: 422,
 };
+
+// Where calls on a line are attributed (source, detail, department) changes marketing numbers: Super Admin only. Refused
+// outright (not silently stripped) so nobody believes an attribution was saved.
+const ATTRIBUTION_FIELDS = ["leadSourceId", "sourceDetail", "departmentId"] as const;
+const touchesAttribution = (body: object | undefined) => !!body && ATTRIBUTION_FIELDS.some((f) => f in (body as Record<string, unknown>));
 
 export async function connectorRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requirePermission("VIEW_INTEGRATIONS"));
@@ -81,15 +92,42 @@ export async function connectorRoutes(app: FastifyInstance) {
     const tenantId = request.sessionUser!.tenantId;
     const { id } = request.params as { id: string };
     const body = request.body as CreateCommunicationEndpointInput;
+    if (touchesAttribution(body) && !hasPermission(request.sessionUser!.role, "MANAGE_INTEGRATION_SECRETS")) {
+      return reply.status(403).send({ error: "forbidden", requiredPermission: "MANAGE_INTEGRATION_SECRETS" });
+    }
     const result = await createCommunicationEndpoint(app.db, tenantId, id, body);
     if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });
     return reply.status(201).send(result.endpoint);
+  });
+
+  // Provider agent -> team member. Super Admin only: it decides who a call is credited to. Mapping an agent never changes
+  // who owns a Journey.
+  app.get("/connectors/:id/agent-mappings", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request) => {
+    return listAgentMappings(app.db, request.sessionUser!.tenantId, (request.params as { id: string }).id);
+  });
+
+  app.put("/connectors/:id/agent-mappings", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request, reply) => {
+    const body = (request.body ?? {}) as { externalAgent?: string; userId?: string };
+    if (typeof body.externalAgent !== "string" || typeof body.userId !== "string") return reply.status(422).send({ error: "invalid_request" });
+    const r = await setAgentMapping(app.db, request.sessionUser!.tenantId, (request.params as { id: string }).id, { externalAgent: body.externalAgent, userId: body.userId });
+    if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason });
+    return r.mapping;
+  });
+
+  app.delete("/connectors/:id/agent-mappings/:mappingId", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request, reply) => {
+    const { id, mappingId } = request.params as { id: string; mappingId: string };
+    const r = await deleteAgentMapping(app.db, request.sessionUser!.tenantId, id, mappingId);
+    if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason });
+    return reply.status(204).send();
   });
 
   app.patch("/connectors/:id/endpoints/:endpointId", { preHandler: requirePermission("MANAGE_INTEGRATION_CONFIG") }, async (request, reply) => {
     const tenantId = request.sessionUser!.tenantId;
     const { id, endpointId } = request.params as { id: string; endpointId: string };
     const body = request.body as UpdateCommunicationEndpointInput;
+    if (touchesAttribution(body) && !hasPermission(request.sessionUser!.role, "MANAGE_INTEGRATION_SECRETS")) {
+      return reply.status(403).send({ error: "forbidden", requiredPermission: "MANAGE_INTEGRATION_SECRETS" });
+    }
     const result = await updateCommunicationEndpoint(app.db, tenantId, id, endpointId, body);
     if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });
     return result.endpoint;

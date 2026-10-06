@@ -64,6 +64,12 @@ export interface InboundCallEvent {
   agentName: string | null;
   startedAt: Date | null;
   endedAt: Date | null;
+  /** Provider-neutral extras a provider may report. Optional: a provider that does not report one leaves it out. */
+  calledLine?: string | null;
+  answeredAt?: Date | null;
+  /** The Source detail a call from this provider carries when no line mapping says otherwise (e.g. "CCS Express IVR"). */
+  providerLabel?: string;
+  /** Safe, credential-free metadata stored with the call. Never holds the recording URL. */
   metadata: Record<string, unknown>;
 }
 

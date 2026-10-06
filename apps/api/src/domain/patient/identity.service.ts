@@ -115,8 +115,8 @@ export async function resolveOrCreatePatient(db: Db, input: ResolveOrCreatePatie
  * Thin compatibility wrapper for the inbound-connector call sites (WhatsApp/Runo webhooks), which only ever have
  * a phone and, sometimes, a display name. An unknown name stays unknown (NULL) — no invented "Unknown caller".
  */
-export async function findOrCreatePatientByPhone(db: Db, tenantId: string, phone: string, name: string | null) {
-  const { patient } = await resolveOrCreatePatient(db, { tenantId, phone, name });
+export async function findOrCreatePatientByPhone(db: Db, tenantId: string, phone: string, name: string | null, branchId?: string | null) {
+  const { patient } = await resolveOrCreatePatient(db, { tenantId, phone, name, branchId: branchId ?? null });
   return patient;
 }
 

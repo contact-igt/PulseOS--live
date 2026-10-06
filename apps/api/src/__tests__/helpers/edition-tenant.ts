@@ -82,6 +82,7 @@ export async function destroyTestTenant(db: Db, t: TestTenant): Promise<void> {
     sql`delete from calls where tenant_id = ${tenant}`,
     sql`delete from connector_secrets where connector_id in (select id from connectors where tenant_id = ${tenant})`,
     sql`delete from connector_events where connector_id in (select id from connectors where tenant_id = ${tenant})`,
+    sql`delete from connector_agent_mappings where tenant_id = ${tenant}`,
     sql`delete from communication_endpoints where tenant_id = ${tenant}`,
     sql`delete from connectors where tenant_id = ${tenant}`,
     sql`delete from allocation_rules where tenant_id = ${tenant}`,

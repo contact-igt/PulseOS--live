@@ -1591,6 +1591,12 @@ export interface CommunicationEndpointVm {
   providerRef: string;
   displayLabel: string;
   isActive: boolean;
+  /** Attribution for calls arriving on this line (hospital-configured; null = falls back to Phone). */
+  leadSourceId: string | null;
+  leadSourceLabel: string | null;
+  sourceDetail: string | null;
+  departmentId: string | null;
+  departmentName: string | null;
 }
 
 export interface CreateCommunicationEndpointInput {
@@ -1600,12 +1606,28 @@ export interface CreateCommunicationEndpointInput {
   publicNumber: string;
   providerRef: string;
   displayLabel: string;
+  /** Attribution fields are Super Admin only. */
+  leadSourceId?: string | null;
+  sourceDetail?: string | null;
+  departmentId?: string | null;
+}
+
+/** A provider's agent/member, as the provider names them, mapped to a PulseOS team member. */
+export interface ConnectorAgentMappingVm {
+  id: string;
+  connectorId: string;
+  externalAgent: string;
+  userId: string;
+  userName: string;
 }
 
 export interface UpdateCommunicationEndpointInput {
   branchId?: string | null;
   displayLabel?: string;
   isActive?: boolean;
+  leadSourceId?: string | null;
+  sourceDetail?: string | null;
+  departmentId?: string | null;
 }
 
 // ---------------------------------------------------------------------------

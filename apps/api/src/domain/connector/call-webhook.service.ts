@@ -1,9 +1,10 @@
 import { emitIntegrationEvent } from "../integration/domain-events.js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { calls, connectors, journeys, tasks, timelineEvents } from "../../db/schema.js";
+import { calls, connectors, journeys, leadSources, tasks, timelineEvents } from "../../db/schema.js";
 import { findMostRecentActiveJourney, findOrCreatePatientByPhone } from "../patient/identity.service.js";
-import { getSoleActiveEndpointForConnector } from "./communication-endpoint.service.js";
+import { getSoleActiveEndpointForConnector, resolveEndpointByCalledNumber } from "./communication-endpoint.service.js";
+import { resolveMappedUser } from "./agent-mapping.service.js";
 import type { InboundCallEvent } from "./types.js";
 import { pickOwnerForNewJourney } from "../crm/crm-allocation.service.js";
 import { resolveLeadSource } from "../lead/lead-source.service.js";
@@ -34,7 +35,7 @@ export const DEFAULT_DISPOSITION_MAPPING: DispositionMapping = {
 // `if (!disposition) return` guard and created nothing at all, for every
 // missed call, silently. `missed_follow_up` already existed in
 // taskReasonEnum for exactly this case; it was just never used from here.
-async function createMissedCallTask(db: Db | Tx, tenantId: string, patientId: string, journeyId: string | null): Promise<void> {
+async function createMissedCallTask(db: Db | Tx, tenantId: string, patientId: string, journeyId: string | null, lineLabel: string | null = null): Promise<void> {
   const journey = journeyId ? await db.select().from(journeys).where(eq(journeys.id, journeyId)).limit(1).then((r) => r[0] ?? null) : null;
   const dueAt = new Date();
   dueAt.setHours(dueAt.getHours() + 2);
@@ -48,7 +49,7 @@ async function createMissedCallTask(db: Db | Tx, tenantId: string, patientId: st
     priority: "high",
     status: "pending",
     dueAt,
-    notes: "Missed call — call back to complete this enquiry",
+    notes: `Missed call${lineLabel ? ` on ${lineLabel}` : ""} — call back to complete this enquiry`,
   });
 }
 
@@ -96,19 +97,26 @@ async function applyDispositionMapping(
  */
 export async function persistInboundCall(db: Db, tenantId: string, connectorId: string, event: InboundCallEvent, mapping: DispositionMapping = DEFAULT_DISPOSITION_MAPPING): Promise<void> {
   const customerName = (event.metadata.customerName as string | null | undefined) ?? null;
-  const patient = await findOrCreatePatientByPhone(db, tenantId, event.phone, customerName);
+  // The hospital line the call arrived on. A provider that REPORTS the line (CCS) is matched on it, and a reported line
+  // that matches nothing stays unresolved: it is never guessed. A provider that does not report one (Runo) can only use the
+  // connector's sole active line, a real default, never a pick among several.
+  const endpoint = event.calledLine ? await resolveEndpointByCalledNumber(db, tenantId, connectorId, event.calledLine) : await getSoleActiveEndpointForConnector(db, tenantId, connectorId);
+  const patient = await findOrCreatePatientByPhone(db, tenantId, event.phone, customerName, endpoint?.branchId ?? null);
   const existingJourney = await findMostRecentActiveJourney(db, tenantId, patient.id);
-  // Runo's real API never reports which hospital line took the call
-  // (confirmed against their live OpenAPI spec) — only resolvable when the
-  // connector has exactly one active endpoint, a real default, never a guess
-  // among several (see getSoleActiveEndpointForConnector).
-  const endpoint = await getSoleActiveEndpointForConnector(db, tenantId, connectorId);
   const [connector] = await db.select({ mode: connectors.mode }).from(connectors).where(eq(connectors.id, connectorId)).limit(1);
+  // WHO handled the call (a provider agent mapped to a team member). Recorded on the call only: it never moves the Journey.
+  const handledByUserId = await resolveMappedUser(db, tenantId, connectorId, event.agentName);
 
   // Reads that may advance state outside the transaction: the owner for a brand-new enquiry (round-robin cursor).
+  // Attribution comes from what the hospital configured for the line (a campaign, a health camp, the main reception);
+  // with no mapping it is Phone, with the provider as the detail. Nothing is assumed to be a digital campaign.
   const openNew = !existingJourney && event.direction === "inbound";
-  const phoneSource = openNew ? await resolveLeadSource(db, tenantId, "phone", { allowArchived: true }) : null;
-  const allocated = openNew ? await pickOwnerForNewJourney(db, tenantId, { source: "phone", journeyType: PHONE_ENQUIRY, branchId: endpoint?.branchId ?? null }) : null;
+  const mappedSource = openNew && endpoint?.leadSourceId ? (await db.select().from(leadSources).where(and(eq(leadSources.tenantId, tenantId), eq(leadSources.id, endpoint.leadSourceId))).limit(1))[0] ?? null : null;
+  const phoneSource = openNew && !mappedSource ? await resolveLeadSource(db, tenantId, "phone", { allowArchived: true }) : null;
+  const attributed = mappedSource ?? phoneSource;
+  const sourceBucket = attributed?.bucket ?? "phone";
+  const sourceDetail = endpoint?.sourceDetail ?? event.providerLabel ?? null;
+  const allocated = openNew ? await pickOwnerForNewJourney(db, tenantId, { source: sourceBucket, journeyType: PHONE_ENQUIRY, branchId: endpoint?.branchId ?? null }) : null;
 
   let stored: { id: string; journeyId: string | null } | null = null;
   await db.transaction(async (tx) => {
@@ -129,6 +137,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
         recordingUrl: event.recordingUrl,
         disposition: event.disposition,
         agentName: event.agentName,
+        handledByUserId,
         startedAt: event.startedAt,
         endedAt: event.endedAt,
         metadata: event.metadata,
@@ -143,7 +152,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
       const [created] = await tx
         .insert(journeys)
         .values({
-          tenantId, patientId: patient.id, journeyType: PHONE_ENQUIRY, source: "phone", sourceId: phoneSource?.id ?? null, stage: "enquiry",
+          tenantId, patientId: patient.id, journeyType: PHONE_ENQUIRY, source: sourceBucket, sourceId: attributed?.id ?? null, sourceDetail, departmentId: endpoint?.departmentId ?? null, stage: "enquiry",
           ownerUserId: allocated?.userId ?? null, createdAt: event.startedAt ?? new Date(),
         })
         .returning();
@@ -165,8 +174,8 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
       actorType: "system",
       eventType: "call_logged",
       channel: "IVR_CALL",
-      title: `Call ${event.status.replace(/_/g, " ")}${event.agentName ? ` · ${event.agentName}` : ""}`,
-      description: event.disposition,
+      title: callTitle(event),
+      description: callDescription(event, endpoint?.displayLabel ?? null),
       occurredAt: event.endedAt ?? event.startedAt ?? new Date(),
       // Traceable back to its own `calls` row (relatedEntityType + relatedEntityId together).
       relatedEntityType: "call",
@@ -180,7 +189,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
     // must never ALSO trigger a disposition-mapped task — that would double
     // up the follow-up task for one missed call.
     if (event.status === "missed") {
-      await createMissedCallTask(tx, tenantId, patient.id, journey?.id ?? null);
+      await createMissedCallTask(tx, tenantId, patient.id, journey?.id ?? null, endpoint?.displayLabel ?? null);
     } else {
       await applyDispositionMapping(tx, tenantId, patient.id, journey?.id ?? null, event.disposition, mapping);
     }
@@ -192,3 +201,24 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
 }
 
 const PHONE_ENQUIRY = "Phone enquiry";
+
+/** "1m 26s", "45s", "1h 2m 3s". */
+export function formatCallDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return [h ? `${h}h` : "", m ? `${m}m` : "", s || (!h && !m) ? `${s}s` : ""].filter(Boolean).join(" ");
+}
+
+// "Incoming IVR call · Answered by Shivani". Answered is not attended: this line records a call, nothing more.
+export function callTitle(event: Pick<InboundCallEvent, "direction" | "status" | "agentName">): string {
+  if (event.status === "missed") return event.direction === "inbound" ? "Missed IVR call" : "Outgoing IVR call · Missed";
+  const kind = event.direction === "inbound" ? "Incoming IVR call" : "Outgoing IVR call";
+  const outcome = { completed: `Answered${event.agentName ? ` by ${event.agentName}` : ""}`, no_answer: "No answer", busy: "Busy", failed: "Failed" }[event.status];
+  return `${kind} · ${outcome}`;
+}
+
+function callDescription(event: Pick<InboundCallEvent, "status" | "durationSeconds">, lineLabel: string | null): string | null {
+  const parts = [event.status === "completed" && event.durationSeconds ? `Duration · ${formatCallDuration(event.durationSeconds)}` : null, lineLabel ? `Line · ${lineLabel}` : null].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}

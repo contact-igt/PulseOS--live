@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { InboundCallEvent, TelephonyProviderAdapter } from "../types.js";
+import { normalizeCcsCall } from "./ccs-normalizer.js";
 
 function timingSafeCompare(actual: string | undefined, expected: string): boolean {
   if (!actual) return false;
@@ -36,143 +37,47 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
     return matched;
   },
 
+  // CCS's raw report -> canonical call (ccs-normalizer.ts) -> the provider-neutral event the rest of PulseOS consumes.
   parseWebhookPayload(payload: unknown): InboundCallEvent[] {
     if (!payload || typeof payload !== "object") return [];
-
     const rawList = Array.isArray(payload) ? payload : [payload];
+    const now = new Date();
     const results: InboundCallEvent[] = [];
-
     for (const item of rawList) {
-      if (!item || typeof item !== "object") continue;
-      const data = item as Record<string, any>;
-
-      // Extract phone / caller number from any standard field
-      const rawPhone = String(
-        data.caller_number ||
-        data.caller_no ||
-        data.caller ||
-        data.caller_id ||
-        data.callerid ||
-        data.customer_number ||
-        data.customer_no ||
-        data.customer_phone ||
-        data.phone_number ||
-        data.phone ||
-        data.phonenumber ||
-        data.mobile ||
-        data.from ||
-        data.cli ||
-        data.CallingNumber ||
-        data.calling_number ||
-        ""
-      ).trim();
-
-      if (!rawPhone) continue;
-
-      // Extract call identifier
-      const externalCallId = String(
-        data.call_id ||
-        data.callid ||
-        data.uniqueid ||
-        data.uuid ||
-        data.id ||
-        data.session_id ||
-        data.call_uuid ||
-        data.sid ||
-        `ccs-${rawPhone}-${Date.now()}`
-      );
-
-      // Extract agent / staff / operator
-      const agentName = String(
-        data.agent_name ||
-        data.agent_number ||
-        data.agent ||
-        data.member_name ||
-        data.member ||
-        data.member_number ||
-        data.executive ||
-        data.operator ||
-        data.user ||
-        data.to ||
-        data.CalledNumber ||
-        data.extension ||
-        ""
-      ).trim() || null;
-
-      // Determine call direction
-      const dirStr = String(data.direction || data.call_type || data.type || "inbound").toLowerCase();
-      const direction: "inbound" | "outbound" = dirStr.includes("out") ? "outbound" : "inbound";
-
-      // Normalize status
-      const statusRaw = String(data.status || data.call_status || data.dialstatus || data.call_state || data.disposition || "").toLowerCase();
-      let status: "completed" | "missed" | "no_answer" | "busy" | "failed" = "completed";
-
-      if (
-        statusRaw.includes("miss") ||
-        statusRaw.includes("abandon") ||
-        statusRaw.includes("unanswer") ||
-        statusRaw.includes("not pick") ||
-        statusRaw.includes("not_pick") ||
-        statusRaw.includes("un-answered")
-      ) {
-        status = "missed";
-      } else if (statusRaw.includes("busy")) {
-        status = "busy";
-      } else if (statusRaw.includes("no answer") || statusRaw.includes("no_answer")) {
-        status = "no_answer";
-      } else if (statusRaw.includes("fail")) {
-        status = "failed";
-      } else if (
-        statusRaw.includes("answer") ||
-        statusRaw.includes("complete") ||
-        statusRaw.includes("connect") ||
-        statusRaw.includes("pick") ||
-        statusRaw === "1" ||
-        statusRaw === "success"
-      ) {
-        status = "completed";
-      } else {
-        // Fallback: if duration > 0, it was answered/completed; otherwise missed
-        const dur = Number(data.duration || data.call_duration || data.talk_duration || data.duration_seconds || data.billsec || 0);
-        status = dur > 0 ? "completed" : "missed";
-      }
-
-      // Duration in seconds
-      const durationSeconds = Number(data.duration || data.call_duration || data.talk_duration || data.duration_seconds || data.billsec || 0) || null;
-
-      // Audio recording URL
-      const recordingUrl = (data.recording_url || data.recording || data.record_url || data.audio_url || data.file_url || data.call_recording || data.record_file || data.voice_record || null) as string | null;
-
-      // Timestamps
-      const rawStarted = data.start_time || data.call_time || data.datetime || data.created_at || data.start_date || data.time;
-      const startedAt = rawStarted ? new Date(rawStarted) : new Date();
-
-      const rawEnded = data.end_time || data.end_date;
-      const endedAt = rawEnded ? new Date(rawEnded) : null;
-
-      // Disposition / call notes
-      const disposition = (data.disposition || data.call_status || data.reason || statusRaw || null) as string | null;
-
+      const c = normalizeCcsCall(item, { now });
+      if (!c) continue;
+      const startedAt = c.startedAt ?? now;
       results.push({
-        externalEventId: `ccs:event:${externalCallId}`,
-        externalCallId,
-        phone: rawPhone,
-        direction,
-        status,
-        durationSeconds,
-        recordingUrl,
-        disposition,
-        agentName,
-        startedAt: isNaN(startedAt.getTime()) ? new Date() : startedAt,
-        endedAt: endedAt && !isNaN(endedAt.getTime()) ? endedAt : null,
+        externalEventId: c.providerEventId,
+        externalCallId: c.providerCallId,
+        phone: c.callerPhone,
+        direction: c.direction,
+        status: c.outcome === "answered" ? "completed" : c.outcome,
+        durationSeconds: c.durationSeconds,
+        recordingUrl: c.recordingRef,
+        disposition: c.providerDisposition,
+        agentName: c.agent,
+        startedAt,
+        endedAt: c.endedAt ?? (c.durationSeconds != null ? new Date(startedAt.getTime() + c.durationSeconds * 1000) : null),
+        answeredAt: c.answeredAt,
+        calledLine: c.calledLine,
+        providerLabel: "CCS Express IVR",
+        // Canonical, credential-free. Telecom circle stays here as provider metadata: it is NOT the patient's location.
         metadata: {
-          ...data,
           provider: "ccs_ivr",
-          customerName: data.customer_name || data.name || data.caller_name || null,
+          providerCallId: c.providerCallId,
+          idDerived: c.idDerived,
+          customerName: c.customerName,
+          calledLine: c.calledLine,
+          answeredAt: c.answeredAt?.toISOString() ?? null,
+          callGroup: c.callGroup,
+          circle: c.circle,
+          ivrSelection: c.ivrSelection,
+          providerDisposition: c.providerDisposition,
+          unmapped: c.unmapped,
         },
       });
     }
-
     return results;
   },
 };
