@@ -183,7 +183,10 @@ export function normalizeCcsCall(raw: unknown, opts: { now?: Date } = {}): CcsCa
   const statusValues = [...new Set(ALIASES.status.map((n) => str(index.get(n))).filter((v): v is string => !!v))];
   const statusRaw = statusValues[0] ?? null;
   const startedAt = parseCcsTimestamp(pick(index, ALIASES.startedAt));
-  const agent = str(pick(index, ALIASES.agent));
+  // The first agent-like field that has a value decides. CCS writes "0" (and the dashboard "Not Assigned") when no member was involved:
+  // that is "nobody", not a person called "0", and it must not fall through to another field.
+  const agentRaw = str(pick(index, ALIASES.agent));
+  const agent = agentRaw && !/^(0+|not[\s_-]*assigned|unassigned|none|null|n\/a|-+)$/i.test(agentRaw) ? agentRaw : null;
   const recordingRef = str(pick(index, ALIASES.recording));
 
   let providerCallId = str(pick(index, ALIASES.callId));

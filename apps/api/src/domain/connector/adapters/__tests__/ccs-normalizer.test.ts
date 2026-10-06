@@ -186,5 +186,17 @@ describe("CCS canonical call", () => {
     it("an event with no caller at all is still not a call (a member/callgroup/live event)", () => {
       expect(normalizeCcsCall({ type: "add_member", account_id: "x", agent_email: "a@b.test" }, { now: NOW })).toBeNull();
     });
+
+    // Observed REAL values (first genuine unanswered call, 2026-10-06): category-like fields only, no personal data.
+    it("the real unanswered call: Direction 'IVR' is inbound, Status blank with callstatus ' No Answer', receiver_name '0' means nobody", () => {
+      const c = normalizeCcsCall(real({ Direction: "IVR", Status: "", callstatus: " No Answer", receiver_name: "0", key_press: "", hangup_cause: "(0)", error_code: "0", call_group: "All Agent", LegB_Picked_time: "", TalkDuration: "0", CallDuration: "9", CallRecordingUrl: "" }), { now: NOW })!;
+      expect(c).toMatchObject({ direction: "inbound", outcome: "missed", providerDisposition: "No Answer", agent: null, ivrSelection: null, callGroup: "All Agent", durationSeconds: 9, recordingAvailable: false });
+    });
+
+    it("'unassigned' member wordings are no agent, so nothing is mapped or shown as a person", () => {
+      for (const v of ["0", " 0 ", "Not Assigned", "not_assigned", "NONE", "null", "-", "--", "n/a"]) expect(normalizeCcsCall(real({ receiver_name: v }), { now: NOW })!.agent, v).toBeNull();
+      expect(normalizeCcsCall(real({ receiver_name: "Test Agent" }), { now: NOW })!.agent).toBe("Test Agent");
+      expect(normalizeCcsCall(real({ receiver_name: "" }), { now: NOW })!.agent).toBe("07827000002"); // falls back to the number CCS dialled
+    });
   });
 });
