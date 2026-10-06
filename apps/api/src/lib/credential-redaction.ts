@@ -9,11 +9,15 @@ export function withoutCredentials<T extends Record<string, unknown>>(payload: T
   return Object.fromEntries(Object.entries(payload).filter(([k]) => !isCredentialName(k))) as Partial<T>;
 }
 
-/** The request URL as it may be logged: credential-valued query parameters are replaced, everything else is kept. */
+/**
+ * The request URL as it may be logged. Credential-valued query parameters are always replaced. On a provider WEBHOOK path every
+ * value is replaced (names stay): a provider that delivers by GET puts the call itself, including the caller's number, in the query.
+ */
 export function redactUrlSecrets(url: string): string {
   const q = url.indexOf("?");
   if (q === -1) return url;
+  const everyValue = url.slice(0, q).startsWith("/webhooks/");
   const params = new URLSearchParams(url.slice(q + 1));
-  for (const name of [...new Set([...params.keys()])]) if (isCredentialName(name)) params.set(name, "[redacted]");
+  for (const name of [...new Set([...params.keys()])]) if (everyValue || isCredentialName(name)) params.set(name, "[redacted]");
   return `${url.slice(0, q)}?${params.toString().replace(/%5Bredacted%5D/g, "[redacted]")}`;
 }
