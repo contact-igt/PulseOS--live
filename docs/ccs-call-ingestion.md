@@ -3,6 +3,20 @@
 How a CCS call report becomes a Patient, a Journey, a Call, a Timeline line and (when missed) a callback, and how to verify it
 with a real call.
 
+## Observed real CCS field names (first delivery, 2026-10-06; names only)
+
+All top-level, no nesting. **Mapped from evidence:** `SourceNumber` (caller on an inbound call), `DestinationNumber` (the line dialled),
+`DialWhomNumber` (the number CCS rang to reach the member), `receiver_name` (the member's name, what agent mappings key on), `Uniqueid` /
+`CallSid` (call id; `Uniqueid` is used), `StartTime`, `EndTime`, `LegB_Picked_time` (the agent's leg picked up = answered), `CallDuration`
+(total) and `TalkDuration` (anyone spoke), `Status` and `callstatus` (both are read), `Direction`, `call_group`, `key_press`, `CallRecordingUrl`,
+`type`. **Kept as safe unmapped metadata:** `coins`, `campid`, `error_code`, `LegA_Picked_time`, `LegB_Start_time`, `hangup_cause`,
+`cparty_number`, `cparty_recording` (a URL, stored only as `[url]`), `account_id`, `group_id`, `agent_email` (stored as `[email]`).
+
+**Still NOT known:** the *values* (the wording of `Status`/`callstatus`, the timestamp format), and what an outbound report's
+Source/Destination mean (the usual convention, destination = the patient, is assumed). Missed calls are recognised by wording
+(no answer, cancel, missed...) and, if the wording is unfamiliar, by the agent's leg never being picked up with no talk time. `payload-shapes`
+records values only for category-like fields, so the next deliveries show the real wording.
+
 ## Status of the field names: read this first
 
 PulseOS has **never received a real CCS webhook**. The only CCS events ever stored were a hand-made test (`ccs_test_101`) and the

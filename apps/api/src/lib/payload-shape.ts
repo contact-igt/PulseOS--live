@@ -3,7 +3,7 @@
 // PulseOS could not read as a call, so the real shape can be inspected without storing the call's data (a phone, a name, a URL).
 
 // Field names where a handful of distinct values is useful to see. Never a phone, a name or a URL.
-export const CATEGORY_FIELDS = new Set(["status", "callstatus", "dialstatus", "callstate", "disposition", "direction", "calltype", "type", "event", "eventtype", "circle", "telecomcircle", "callgroup", "group", "ivrkey", "key", "dtmf", "keypressed", "ivrselection", "menuoption", "selection"]);
+export const CATEGORY_FIELDS = new Set(["status", "callstatus", "dialstatus", "callstate", "disposition", "direction", "calltype", "type", "event", "eventtype", "circle", "telecomcircle", "callgroup", "group", "ivrkey", "key", "keypress", "dtmf", "keypressed", "ivrselection", "menuoption", "selection", "hangupcause", "errorcode"]);
 const norm = (n: string) => n.toLowerCase().replace(/[^a-z0-9]/g, "");
 const lastName = (path: string) => path.split(/[.\[\]]+/).filter(Boolean).pop() ?? path;
 export const isCategoryName = (path: string): boolean => CATEGORY_FIELDS.has(norm(lastName(path)));

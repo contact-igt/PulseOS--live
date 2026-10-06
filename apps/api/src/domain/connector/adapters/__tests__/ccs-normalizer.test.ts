@@ -126,4 +126,65 @@ describe("CCS canonical call", () => {
     expect(n({})).toBeNull();
     expect(n("nope" as unknown as Record<string, unknown>)).toBeNull();
   });
+  // The REAL CCS field names, captured from the first genuine delivery on 2026-10-06 (names only: the values below are synthetic).
+  // What the real values look like (status wording, timestamp format) is NOT known yet; these tests pin the mapping of the names.
+  describe("the real CCS payload structure (synthetic values)", () => {
+    const real = (over: Record<string, unknown> = {}) => ({
+      type: "call_report", Uniqueid: "synthetic-unique-0001", CallSid: "synthetic-sid-0001", Direction: "inbound", Status: "Answered", callstatus: "ANSWER",
+      SourceNumber: "08610000001", DestinationNumber: "08062987312", DialWhomNumber: "07827000002", receiver_name: "Test Agent", agent_email: "agent@example.test",
+      call_group: "All Agent", key_press: "2", StartTime: "2026-10-06 19:49:17", LegA_Picked_time: "2026-10-06 19:49:18", LegB_Start_time: "2026-10-06 19:49:20",
+      LegB_Picked_time: "2026-10-06 19:49:31", EndTime: "2026-10-06 19:50:43", CallDuration: "86", TalkDuration: "72", hangup_cause: "NORMAL_CLEARING",
+      error_code: "0", coins: "1.5", campid: "0", account_id: "synthetic-acct", group_id: "synthetic-group", cparty_number: "08610000001",
+      cparty_recording: "https://recordings.example.test/synthetic-cparty.mp3?sig=zzz", CallRecordingUrl: "https://recordings.example.test/synthetic-rec.mp3?sig=zzz", ...over,
+    });
+
+    it("maps the real names: caller, line, agent, group, key, times, durations, recording", () => {
+      const c = normalizeCcsCall(real(), { now: NOW })!;
+      expect(c).toMatchObject({
+        providerCallId: "synthetic-unique-0001", providerEventId: "ccs:event:synthetic-unique-0001", direction: "inbound", outcome: "answered",
+        callerPhone: "08610000001", calledLine: "08062987312", agent: "Test Agent", callGroup: "All Agent", ivrSelection: "2", durationSeconds: 86, recordingAvailable: true,
+      });
+      expect(c.recordingRef).toBe("https://recordings.example.test/synthetic-rec.mp3?sig=zzz");
+      expect(c.startedAt!.toISOString()).toBe("2026-10-06T14:19:17.000Z");
+      expect(c.answeredAt!.toISOString()).toBe("2026-10-06T14:19:31.000Z"); // LegB (the agent's leg) picked up
+      expect(c.endedAt!.toISOString()).toBe("2026-10-06T14:20:43.000Z");
+    });
+
+    it("every field name CCS sends is either mapped or kept as safe unmapped metadata: nothing is lost, and no URL or email is kept", () => {
+      const c = normalizeCcsCall(real(), { now: NOW })!;
+      for (const kept of ["coins", "campid", "error_code", "LegA_Picked_time", "LegB_Start_time", "hangup_cause", "cparty_number", "account_id", "group_id"]) expect(Object.keys(c.unmapped), kept).toContain(kept);
+      const stored = JSON.stringify(c.unmapped);
+      expect(stored).not.toMatch(/example\.test|synthetic-rec|synthetic-cparty|agent@/);
+      expect(c.unmapped.cparty_recording).toBe("[url]");
+      expect(c.unmapped.agent_email).toBe("[email]");
+    });
+
+    it("an unanswered inbound call is MISSED however the two status fields are worded", () => {
+      for (const [status, callstatus] of [["No Answer", ""], ["No Answer", "CANCEL"], ["NOANSWER", "NOANSWER"], ["", "CANCEL"], ["Missed", "ANSWER"]]) {
+        const c = normalizeCcsCall(real({ Status: status, callstatus, LegB_Picked_time: "", TalkDuration: "0", CallDuration: "19" }), { now: NOW })!;
+        expect(c.outcome, `${status}/${callstatus}`).toBe("missed");
+      }
+    });
+
+    it("answered is recognised from either status field, and with no recognisable wording the TALK time and the agent's pick-up decide, not the ring time", () => {
+      expect(normalizeCcsCall(real({ Status: "", callstatus: "ANSWER" }), { now: NOW })!.outcome).toBe("answered");
+      // unknown wording, but the agent never picked up and nobody talked: missed, even though the call lasted 19 seconds
+      expect(normalizeCcsCall(real({ Status: "zzz", callstatus: "yyy", LegB_Picked_time: "", TalkDuration: "0", CallDuration: "19" }), { now: NOW })!.outcome).toBe("missed");
+      expect(normalizeCcsCall(real({ Status: "zzz", callstatus: "yyy", TalkDuration: "40" }), { now: NOW })!.outcome).toBe("answered");
+    });
+
+    it("an outbound call's customer is the DESTINATION and its line the source (the far end is the patient)", () => {
+      const c = normalizeCcsCall(real({ Direction: "outbound", SourceNumber: "08062987312", DestinationNumber: "09810000003" }), { now: NOW })!;
+      expect(c).toMatchObject({ direction: "outbound", callerPhone: "09810000003", calledLine: "08062987312" });
+    });
+
+    it("explicit generic names still win over the SourceNumber/DestinationNumber fallback", () => {
+      const c = normalizeCcsCall(real({ caller_number: "09810000009", called_number: "08011112222" }), { now: NOW })!;
+      expect(c).toMatchObject({ callerPhone: "09810000009", calledLine: "08011112222" });
+    });
+
+    it("an event with no caller at all is still not a call (a member/callgroup/live event)", () => {
+      expect(normalizeCcsCall({ type: "add_member", account_id: "x", agent_email: "a@b.test" }, { now: NOW })).toBeNull();
+    });
+  });
 });

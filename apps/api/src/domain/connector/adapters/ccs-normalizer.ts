@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 // The ONE place CCS Express IVR's raw call report becomes a PulseOS canonical call. Nothing downstream (patients,
 // journeys, tasks, analytics) reads a CCS field name.
 //
-// HONESTY NOTE: PulseOS has not yet received a real CCS webhook, so these field names are CANDIDATES: the columns of the CCS
-// dashboard's call report plus common IVR call-record vocabulary. Matching ignores case and separators ("Caller Number",
-// caller_number and callerNumber are one name). Whatever is not recognised is preserved in `unmapped` (credentials removed,
-// values capped), so the first real payload can be mapped from what CCS actually sends rather than from guesses.
+// EVIDENCE: the first real CCS delivery (2026-10-06) carried these top-level field names, no nesting: type, Uniqueid, CallSid,
+// Direction, Status, callstatus, SourceNumber, DestinationNumber, DialWhomNumber, receiver_name, agent_email, call_group, key_press,
+// StartTime, EndTime, LegA_Picked_time, LegB_Start_time, LegB_Picked_time, CallDuration, TalkDuration, hangup_cause, error_code, coins,
+// campid, account_id, group_id, cparty_number, cparty_recording, CallRecordingUrl. Their VALUES (status wording, timestamp format) are
+// not yet known, so wording is matched generously and every name below that is not evidenced is still a candidate. Matching ignores
+// case and separators. Whatever is not recognised is preserved in `unmapped` (credentials, URLs and emails removed, values capped).
 
 export interface CcsCanonicalCall {
   provider: "CCS_EXPRESS_IVR";
@@ -45,17 +47,24 @@ const ALIASES = {
   callId: ["callid", "uniqueid", "uuid", "id", "sessionid", "calluuid", "sid", "cdrid", "callsid"],
   caller: ["callernumber", "callerno", "caller", "callerid", "customernumber", "customerno", "customerphone", "phonenumber", "phone", "mobile", "from", "cli", "callingnumber"],
   calledLine: ["callednumber", "calledno", "called", "calledline", "dialednumber", "dnis", "ivrnumber", "ivrno", "deskphone", "deskphonenumber", "did", "virtualnumber"],
-  agent: ["agentname", "agentnumber", "agent", "membername", "member", "membernumber", "executive", "operator", "user", "extension", "answeredby"],
+  // Observed (real CCS): SourceNumber / DestinationNumber. Which end is the patient depends on direction (see normalizeCcsCall).
+  sourceNumber: ["sourcenumber"],
+  destinationNumber: ["destinationnumber"],
+  // receiver_name is the member's NAME (what agent mappings key on); DialWhomNumber is the number CCS dialled to reach them.
+  agent: ["receivername", "agentname", "agentnumber", "agent", "membername", "member", "membernumber", "executive", "operator", "user", "extension", "answeredby", "dialwhomnumber"],
   callGroup: ["callgroup", "group", "groupname", "queue"],
   startedAt: ["starttime", "calltime", "datetime", "createdat", "startdate", "calldate", "calldatetime", "timestamp", "time"],
-  answeredAt: ["answertime", "answeredat", "answerat", "connecttime"],
+  // LegB is the agent's leg: when it was picked up, the call was answered.
+  answeredAt: ["answertime", "answeredat", "answerat", "connecttime", "legbpickedtime"],
   endedAt: ["endtime", "enddate", "endedat", "hangupat", "hanguptime"],
-  duration: ["duration", "callduration", "talkduration", "durationseconds", "billsec", "talktime"],
+  // The call's total length. Talk time is separate: it says whether anyone actually spoke.
+  duration: ["duration", "callduration", "durationseconds", "billsec"],
+  talkDuration: ["talkduration", "talktime"],
   status: ["status", "callstatus", "dialstatus", "callstate", "disposition"],
   direction: ["direction", "calltype", "type"],
   circle: ["circle", "telecomcircle", "operatorcircle"],
   ivrSelection: ["ivrkey", "key", "dtmf", "keypressed", "keypress", "ivrselection", "menuoption", "digit", "digits", "selection"],
-  recording: ["recordingurl", "recording", "recordurl", "audiourl", "fileurl", "callrecording", "recordfile", "voicerecord"],
+  recording: ["callrecordingurl", "recordingurl", "recording", "recordurl", "audiourl", "fileurl", "callrecording", "recordfile", "voicerecord"],
   customerName: ["customername", "callername", "name"],
 } as const;
 
@@ -122,21 +131,29 @@ export function parseCcsTimestamp(v: unknown): Date | null {
   return null;
 }
 
-function outcomeOf(statusRaw: string, direction: "inbound" | "outbound", durationSeconds: number | null): CcsCanonicalCall["outcome"] {
+function outcomeOf(statusRaw: string, direction: "inbound" | "outbound", signals: { talkSeconds: number | null; answered: boolean; durationSeconds: number | null }): CcsCanonicalCall["outcome"] {
   const s = statusRaw.toLowerCase();
-  const unanswered = /(no[\s_-]*answer|unanswer|not[\s_-]*answer|miss|abandon|not[\s_-]*pick|no[\s_-]*pick)/.test(s);
+  const unanswered = /(no[\s_-]*answer|unanswer|not[\s_-]*answer|miss|abandon|not[\s_-]*pick|no[\s_-]*pick|cancel)/.test(s);
   // An inbound call nobody answered IS a missed call (someone is waiting for a callback). An outbound call the patient did
   // not pick up is not: it stays no_answer and creates no "missed call" work.
   if (unanswered) return direction === "inbound" ? "missed" : "no_answer";
   if (/busy/.test(s)) return "busy";
-  if (/fail/.test(s)) return "failed";
-  if (/(answer|complete|connect|pick|success)/.test(s) || s === "1") return "answered";
-  return (durationSeconds ?? 0) > 0 ? "answered" : direction === "inbound" ? "missed" : "no_answer";
+  if (/(fail|congest)/.test(s)) return "failed";
+  if (/(answer|complete|connect|pick|success)/.test(s) || s.trim() === "1") return "answered";
+  // Wording not recognised: what actually happened decides. The agent's leg being picked up, or anyone talking, means answered. The
+  // call's total length does NOT: a missed call rings for a while too.
+  if (signals.answered || (signals.talkSeconds ?? 0) > 0) return "answered";
+  if (signals.talkSeconds === null && !signals.answered && (signals.durationSeconds ?? 0) > 0 && s.trim() === "") return "answered";
+  return direction === "inbound" ? "missed" : "no_answer";
 }
 
+// Unmapped values are kept for mapping, but a provider URL (a recording, possibly signed) or an email never is.
 const cap = (v: unknown): unknown => {
-  if (v !== null && typeof v === "object") return JSON.stringify(v).slice(0, 300);
-  return typeof v === "string" ? v.slice(0, 300) : v;
+  if (v !== null && typeof v === "object") return JSON.stringify(v).replace(/https?:\/\/\S+/gi, "[url]").replace(/[^\s"@]+@[^\s"@]+/g, "[email]").slice(0, 300);
+  if (typeof v !== "string") return v;
+  if (/^\s*https?:\/\//i.test(v)) return "[url]";
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim())) return "[email]";
+  return v.slice(0, 300);
 };
 
 export function normalizeCcsCall(raw: unknown, opts: { now?: Date } = {}): CcsCanonicalCall | null {
@@ -148,15 +165,24 @@ export function normalizeCcsCall(raw: unknown, opts: { now?: Date } = {}): CcsCa
     if (!index.has(nk)) index.set(nk, v); // first spelling wins
   }
 
-  const callerPhone = str(pick(index, ALIASES.caller));
-  if (!callerPhone) return null;
-
   const dirRaw = String(pick(index, ALIASES.direction) ?? "inbound").toLowerCase();
   const direction: "inbound" | "outbound" = /out/.test(dirRaw) ? "outbound" : "inbound";
+
+  // Generic names first. Otherwise the observed Source/Destination pair: for an inbound call the SOURCE is the caller and the
+  // DESTINATION is the line they dialled; for an outbound call the far end (the destination) is the patient and the source is the line.
+  // (The outbound reading is the usual telephony convention, not yet seen in a real CCS outbound report.)
+  const source = str(pick(index, ALIASES.sourceNumber));
+  const destination = str(pick(index, ALIASES.destinationNumber));
+  const callerPhone = str(pick(index, ALIASES.caller)) ?? (direction === "outbound" ? destination : source);
+  if (!callerPhone) return null;
+  const calledLine = str(pick(index, ALIASES.calledLine)) ?? (direction === "outbound" ? source : destination);
+
   const durationSeconds = parseCcsDuration(pick(index, ALIASES.duration));
-  const statusRaw = str(pick(index, ALIASES.status));
+  const talkSeconds = parseCcsDuration(pick(index, ALIASES.talkDuration));
+  // CCS sends two status-like fields (observed: Status and callstatus). Use all of them: the first non-blank is the disposition.
+  const statusValues = [...new Set(ALIASES.status.map((n) => str(index.get(n))).filter((v): v is string => !!v))];
+  const statusRaw = statusValues[0] ?? null;
   const startedAt = parseCcsTimestamp(pick(index, ALIASES.startedAt));
-  const calledLine = str(pick(index, ALIASES.calledLine));
   const agent = str(pick(index, ALIASES.agent));
   const recordingRef = str(pick(index, ALIASES.recording));
 
@@ -193,7 +219,7 @@ export function normalizeCcsCall(raw: unknown, opts: { now?: Date } = {}): CcsCa
     answeredAt: parseCcsTimestamp(pick(index, ALIASES.answeredAt)),
     endedAt: parseCcsTimestamp(pick(index, ALIASES.endedAt)),
     durationSeconds,
-    outcome: outcomeOf(statusRaw ?? "", direction, durationSeconds),
+    outcome: outcomeOf(statusValues.join(" / "), direction, { talkSeconds, answered: !!parseCcsTimestamp(pick(index, ALIASES.answeredAt)), durationSeconds }),
     providerDisposition: statusRaw,
     circle: str(pick(index, ALIASES.circle)),
     ivrSelection: str(pick(index, ALIASES.ivrSelection)),

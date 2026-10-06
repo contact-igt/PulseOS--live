@@ -445,4 +445,55 @@ describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (in
       expect(lines.join("")).not.toContain("no caller");
     });
   });
+  // The first real CCS payload structure (real field NAMES, synthetic values) travelling the whole pipeline.
+  describe("the real CCS payload structure, end to end", () => {
+    const realReport = (over: Record<string, unknown> = {}) => ({
+      type: "call_report", Uniqueid: `real-uid-${Date.now()}-${++seq}`, CallSid: `real-sid-${seq}`, Direction: "inbound", Status: "Answered", callstatus: "ANSWER",
+      SourceNumber: phone(), DestinationNumber: CAMP_LINE, DialWhomNumber: "07827000002", receiver_name: "Shivi", agent_email: "agent@example.test",
+      call_group: "All Agent", key_press: "1", StartTime: ist(new Date()), LegB_Picked_time: ist(new Date()), EndTime: ist(new Date(Date.now() + 86_000)),
+      CallDuration: "86", TalkDuration: "72", hangup_cause: "NORMAL_CLEARING", error_code: "0", coins: "1", campid: "0", account_id: "acct", group_id: "g1",
+      cparty_number: "08610000001", cparty_recording: "https://recordings.example.test/cparty-private.mp3?sig=zzz", CallRecordingUrl: "https://recordings.example.test/rec-private-7.mp3?sig=zzz", ...over,
+    });
+    const idOf = (r: { Uniqueid: unknown }) => r.Uniqueid;
+
+    it("an answered call: patient from SourceNumber, the mapped line from DestinationNumber, the agent from receiver_name, one call", async () => {
+      const r = realReport();
+      expect((await send(r)).statusCode).toBe(200);
+      const call = await callRow(idOf(r));
+      const patient = await patientOf(call);
+      expect(patient.phoneE164).toBe(`+91${String(r.SourceNumber).replace(/^0/, "")}`);
+      expect(call).toMatchObject({ direction: "inbound", status: "completed", durationSeconds: 86, agentName: "Shivi", handledByUserId: t.userIds.FRONT_DESK, communicationEndpointId: campEndpoint.id });
+      expect(await journeyOf(call)).toMatchObject({ sourceId: campSourceId, sourceDetail: "Dhanbad camp, Oct" });
+      expect(call.recordingUrl).toContain("rec-private-7"); // kept for the protected store
+      expect(JSON.stringify(call.metadata)).not.toMatch(/example\.test|rec-private|cparty-private|agent@|sig=zzz/);
+      expect(call.metadata).toMatchObject({ callGroup: "All Agent", ivrSelection: "1", calledLine: CAMP_LINE });
+      expect(await db.select().from(appointments).where(eq(appointments.patientId, call.patientId!))).toHaveLength(0);
+    });
+
+    it("an unanswered call is a missed call with exactly one callback, however many times CCS posts it", async () => {
+      const r = realReport({ Status: "No Answer", callstatus: "", LegB_Picked_time: "", TalkDuration: "0", CallDuration: "19", receiver_name: "" });
+      for (let i = 0; i < 3; i++) expect((await send(r)).statusCode).toBe(200);
+      const call = await callRow(idOf(r));
+      expect(call.status).toBe("missed");
+      expect(await db.select().from(tasks).where(and(eq(tasks.patientId, call.patientId!), eq(tasks.reason, "missed_follow_up")))).toHaveLength(1);
+      expect(await db.select().from(calls).where(and(eq(calls.tenantId, t.tenantId), eq(calls.externalCallId, String(idOf(r)))))).toHaveLength(1);
+    });
+
+    it("the same caller twice is one Patient with two calls on one active Journey", async () => {
+      const num = phone();
+      const a = realReport({ SourceNumber: num });
+      const b = realReport({ SourceNumber: num.replace(/^98/, "+9198"), Status: "No Answer", callstatus: "CANCEL", LegB_Picked_time: "", TalkDuration: "0" });
+      await send(a);
+      await send(b);
+      const [ca, cb] = [await callRow(idOf(a)), await callRow(idOf(b))];
+      expect(cb.patientId).toBe(ca.patientId);
+      expect(cb.journeyId).toBe(ca.journeyId);
+    });
+
+    it("a member/callgroup event with no caller is refused and creates nothing", async () => {
+      const before = (await db.select().from(patients).where(eq(patients.tenantId, t.tenantId))).length;
+      expect((await send({ type: "add_member", account_id: "acct", agent_email: "agent@example.test", receiver_name: "New Member" })).statusCode).toBe(422);
+      expect((await db.select().from(patients).where(eq(patients.tenantId, t.tenantId))).length).toBe(before);
+    });
+  });
 });
