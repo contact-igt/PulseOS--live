@@ -399,6 +399,10 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(filters).filter(([, v]) => !!v) as [string, string][]).toString();
     return request<IntegrationLogRow[]>(`/integrations/logs${qs ? `?${qs}` : ""}`);
   },
+  checkIntegrationStatus: (key: string) =>
+    request<{ ok: boolean; health: string; status: string; message: string; checkedAt: string; details?: Record<string, unknown> }>(`/integrations/hub/${key}/status`, { method: "POST" }),
+  testIntegrationEvent: (key: string) =>
+    request<{ ok: boolean; message: string; callId?: string }>(`/integrations/hub/${key}/test-event`, { method: "POST" }),
   webhooks: () => request<OutboundWebhookVm[]>("/integrations/webhooks"),
   createWebhook: (body: {
     name: string;

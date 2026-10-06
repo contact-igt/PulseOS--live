@@ -14,6 +14,18 @@ const field = "h-11 w-full rounded-control border border-line-strong bg-surface 
 type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "webhooks" | "sync" | "activity" | "health";
 
 function Overview({ d }: { d: IntegrationDetail }) {
+  const queryClient = useQueryClient();
+  const [checkMsg, setCheckMsg] = useState<string | null>(null);
+  const checkStatus = useMutation({
+    mutationFn: () => api.checkIntegrationStatus(d.key),
+    onSuccess: (res) => {
+      setCheckMsg(res.message);
+      queryClient.invalidateQueries({ queryKey: ["integration-detail", d.key] });
+      queryClient.invalidateQueries({ queryKey: ["integration-hub"] });
+    },
+    onError: (e: any) => setCheckMsg(e?.message || "Status check failed."),
+  });
+
   return (
     <div className="space-y-3 text-sm">
       {d.isConnected && (
@@ -49,6 +61,19 @@ function Overview({ d }: { d: IntegrationDetail }) {
         <div><dt className="text-ink-3">Health</dt><dd className="mt-0.5"><Badge tone={HEALTH_TONE[d.health]}>{HEALTH_LABEL[d.health]}</Badge></dd></div>
         <div><dt className="text-ink-3">Mode</dt><dd className="mt-0.5"><Badge tone={MODE_TONE[d.mode]}>{MODE_LABEL[d.mode]}</Badge></dd></div>
       </dl>
+      <div className="flex items-center justify-between pt-2 border-t border-line/60">
+        <span className="text-xs text-ink-3">Connection status & check</span>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={checkStatus.isPending}
+          onClick={() => { setCheckMsg(null); checkStatus.mutate(); }}
+          data-testid="overview-check-status"
+        >
+          {checkStatus.isPending ? "Checking…" : "Check Status"}
+        </Button>
+      </div>
+      {checkMsg && <p className="text-xs text-primary-700 bg-primary-50 rounded px-2.5 py-1.5 border border-primary-200" role="status">{checkMsg}</p>}
       {d.capability && (
         <p className="text-xs text-ink-2">
           The on/off switch lives in <Link href="/settings?section=features" className="text-primary-700 underline-offset-2 hover:underline">Settings → Features</Link>. Turning it on does not configure or connect anything.
@@ -74,7 +99,10 @@ function ConfigurationForm({ d, secrets }: { d: IntegrationDetail; secrets: bool
       queryClient.invalidateQueries({ queryKey: ["integration-detail", d.key] });
       queryClient.invalidateQueries({ queryKey: ["integration-hub"] });
     },
-    onError: () => setMessage("Could not save — check the values and your permission."),
+    onError: (e: any) => {
+      const err = e as ApiError;
+      setMessage(err?.message ? `Could not save: ${err.message}` : "Could not save — check the values and your permission.");
+    },
   });
   const allowed = secrets ? d.canManageSecrets : d.canConfigure;
   if (fields.length === 0) return <p className="text-sm text-ink-2">{secrets ? "No credentials are needed." : "Nothing to configure."}</p>;
@@ -143,6 +171,120 @@ const SYNC_ERR: Record<string, string> = {
   too_soon: "A sync just finished — wait a minute before syncing again.",
 };
 
+/** Telephony (IVR / Runo) sync and diagnostic section */
+function TelephonySyncSection({ d }: { d: IntegrationDetail }) {
+  const queryClient = useQueryClient();
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [testMessage, setTestMessage] = useState<string | null>(null);
+
+  const checkStatus = useMutation({
+    mutationFn: () => api.checkIntegrationStatus(d.key),
+    onSuccess: (res) => {
+      setStatusMessage(res.message);
+      queryClient.invalidateQueries({ queryKey: ["integration-detail", d.key] });
+      queryClient.invalidateQueries({ queryKey: ["integration-hub"] });
+    },
+    onError: (e: any) => setStatusMessage(e?.message || "Status check failed."),
+  });
+
+  const testEvent = useMutation({
+    mutationFn: () => api.testIntegrationEvent(d.key),
+    onSuccess: (res) => {
+      setTestMessage(res.message);
+      queryClient.invalidateQueries({ queryKey: ["integration-detail", d.key] });
+      queryClient.invalidateQueries({ queryKey: ["integration-hub"] });
+    },
+    onError: (e: any) => setTestMessage(e?.message || "Test event failed."),
+  });
+
+  return (
+    <div className="space-y-4 text-sm" data-testid="telephony-sync-section">
+      <div className="rounded-card border border-line bg-surface p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-ink">Inbound Event Stream</span>
+          <Badge tone={d.health === "HEALTHY" ? "success" : "neutral"}>
+            {d.health === "HEALTHY" ? "Live Stream Active" : "Waiting for Events"}
+          </Badge>
+        </div>
+        <p className="text-xs text-ink-2">
+          Telephony and IVR calls stream into PulseOS in real-time as calls occur. You can check endpoint readiness or send a test call event to verify that call data flows properly.
+        </p>
+        <dl className="grid grid-cols-2 gap-3 text-xs pt-1 border-t border-line/60">
+          <div><dt className="text-ink-3">Last event</dt><dd className="font-medium text-ink">{d.lastEventAt ? relativeTime(d.lastEventAt) : "No events received yet"}</dd></div>
+          <div><dt className="text-ink-3">Last verified</dt><dd className="font-medium text-ink">{d.lastSyncAt ? relativeTime(d.lastSyncAt) : "Never"}</dd></div>
+        </dl>
+      </div>
+
+      <div className="space-y-2">
+        <span className="block text-xs font-semibold text-ink">Sync & Diagnostic Actions</span>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={checkStatus.isPending}
+            onClick={() => { setStatusMessage(null); checkStatus.mutate(); }}
+            data-testid="telephony-check-status"
+          >
+            {checkStatus.isPending ? "Checking status…" : "Check Status"}
+          </Button>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={testEvent.isPending || !d.canConfigure}
+            onClick={() => { setTestMessage(null); testEvent.mutate(); }}
+            data-testid="telephony-test-call"
+          >
+            {testEvent.isPending ? "Sending test call…" : "⚡ Send Test Call Event"}
+          </Button>
+        </div>
+        {statusMessage && <p className="text-xs text-primary-700 bg-primary-50 rounded px-2.5 py-1.5 border border-primary-200" role="status">{statusMessage}</p>}
+        {testMessage && <p className="text-xs text-emerald-700 bg-emerald-50 rounded px-2.5 py-1.5 border border-emerald-200" role="status">{testMessage}</p>}
+      </div>
+
+      <div className="space-y-2 pt-2 border-t border-line">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-ink">Recent Inbound Calls</span>
+          <span className="text-[11px] text-ink-3">{(d.recentCalls ?? []).length} recorded</span>
+        </div>
+        {(d.recentCalls ?? []).length === 0 ? (
+          <div className="rounded-card border border-dashed border-line p-3 text-center bg-surface">
+            <p className="text-xs font-medium text-ink">No calls received yet</p>
+            <p className="text-[11px] text-ink-3 mt-1">
+              External calls from your IVR number stream into PulseOS automatically in real time as they occur. Click &ldquo;⚡ Send Test Call Event&rdquo; above to verify the pipeline.
+            </p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-line rounded-card border border-line bg-surface text-xs" data-testid="recent-telephony-calls">
+            {(d.recentCalls ?? []).map((c) => (
+              <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
+                <div className="flex items-center gap-2">
+                  <Badge tone={c.status === "completed" ? "success" : c.status === "missed" ? "danger" : "neutral"}>
+                    {c.status}
+                  </Badge>
+                  <span className="font-medium text-ink">{c.patientName || c.phone}</span>
+                  {c.patientName && <span className="text-ink-3 text-[11px]">({c.phone})</span>}
+                </div>
+                <div className="flex items-center gap-3 text-ink-3 text-[11px]">
+                  {c.durationSeconds != null && <span>{c.durationSeconds}s</span>}
+                  <span>{c.startedAt ? relativeTime(c.startedAt) : "Just now"}</span>
+                  {c.journeyId && (
+                    <a
+                      href={`/journeys/${c.journeyId}`}
+                      className="text-primary-600 hover:text-primary-700 font-medium underline"
+                    >
+                      View Journey →
+                    </a>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Read-only pull of reporting numbers. Nothing here changes anything at the ad platform. */
 function SyncSection({ d }: { d: IntegrationDetail }) {
   const queryClient = useQueryClient();
@@ -183,15 +325,41 @@ function SyncSection({ d }: { d: IntegrationDetail }) {
 }
 
 function Health({ d }: { d: IntegrationDetail }) {
+  const queryClient = useQueryClient();
+  const [checkMessage, setCheckMessage] = useState<string | null>(null);
+  const checkStatus = useMutation({
+    mutationFn: () => api.checkIntegrationStatus(d.key),
+    onSuccess: (res) => {
+      setCheckMessage(res.message);
+      queryClient.invalidateQueries({ queryKey: ["integration-detail", d.key] });
+      queryClient.invalidateQueries({ queryKey: ["integration-hub"] });
+    },
+    onError: (e: any) => setCheckMessage(e?.message || "Status check failed."),
+  });
+
   return (
-    <div className="space-y-2 text-sm">
-      <p>
+    <div className="space-y-3 text-sm">
+      <div className="flex items-center justify-between">
         <Badge tone={HEALTH_TONE[d.health]}>{HEALTH_LABEL[d.health]}</Badge>
-      </p>
-      <p className="text-xs text-ink-2">Health only reflects what the provider last confirmed. A configured connection stays &ldquo;Not verified&rdquo; until a real event or sync succeeds.</p>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={checkStatus.isPending}
+          onClick={() => { setCheckMessage(null); checkStatus.mutate(); }}
+          data-testid="health-check-status"
+        >
+          {checkStatus.isPending ? "Checking…" : "Check Status Now"}
+        </Button>
+      </div>
+      {checkMessage && (
+        <p className="rounded-control border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-800" role="status">
+          {checkMessage}
+        </p>
+      )}
+      <p className="text-xs text-ink-2">Health reflects the last verified connection state. Use &ldquo;Check Status Now&rdquo; to test endpoint readiness and verify configuration.</p>
       <dl className="grid grid-cols-2 gap-3 text-xs">
-        <div><dt className="text-ink-3">Last event</dt><dd>{relativeTime(d.lastEventAt)}</dd></div>
-        <div><dt className="text-ink-3">Last sync</dt><dd>{relativeTime(d.lastSyncAt)}</dd></div>
+        <div><dt className="text-ink-3">Last event</dt><dd>{d.lastEventAt ? relativeTime(d.lastEventAt) : "Never"}</dd></div>
+        <div><dt className="text-ink-3">Last sync</dt><dd>{d.lastSyncAt ? relativeTime(d.lastSyncAt) : "Never"}</dd></div>
       </dl>
       {d.lastError && <p className="rounded-control border border-danger-100 bg-danger-100/50 px-3 py-2 text-xs text-danger-700">Last error: {d.lastError}</p>}
     </div>
@@ -202,6 +370,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
   const q = useQuery({ queryKey: ["integration-detail", integrationKey], queryFn: () => api.integrationDetail(integrationKey) });
   const [section, setSection] = useState<SectionKey>("overview");
   const d = q.data;
+  const isTelephony = d?.key === "ccs_ivr" || d?.key === "runo";
   const sections: { key: SectionKey; label: string }[] = d
     ? [
         { key: "overview", label: "Overview" },
@@ -209,7 +378,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
         ...(d.secretFields.length ? [{ key: "credentials" as const, label: "Credentials" }] : []),
         ...(d.mappingNotes ? [{ key: "mappings" as const, label: "Mappings" }] : []),
         ...(d.webhookUrl ? [{ key: "webhooks" as const, label: "Webhooks" }] : []),
-        ...(d.syncRuns ? [{ key: "sync" as const, label: "Sync" }] : []),
+        ...(d.syncRuns || isTelephony ? [{ key: "sync" as const, label: "Sync" }] : []),
         ...(d.key !== "webhooks" && !d.blockedReason ? [{ key: "activity" as const, label: "Activity" }, { key: "health" as const, label: "Health" }] : []),
       ]
     : [];
@@ -225,13 +394,21 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
           {section === "credentials" && <ConfigurationForm d={d} secrets />}
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
           {section === "webhooks" && (
-            <div className="space-y-2 text-sm">
+            <div className="space-y-3 text-sm">
               <p className="text-xs text-ink-2">Give the provider this address to send events to PulseOS:</p>
-              <code className="block break-all rounded-control bg-neutral-100 px-2 py-1.5 text-xs" data-testid="provider-webhook-url">{d.webhookUrl}</code>
+              <code className="block break-all rounded-control bg-neutral-100 px-2 py-1.5 text-xs font-mono font-medium" data-testid="provider-webhook-url">{d.webhookUrl}</code>
+              {d.webhookUrl?.includes("localhost") && (
+                <div className="rounded-card border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800 space-y-1">
+                  <p className="font-semibold text-amber-900">⚠️ Localhost URL Detected</p>
+                  <p className="text-[11px] text-amber-800 leading-relaxed">
+                    Cloud IVR providers (like CCS IVR) cannot reach your local computer at <code className="font-mono text-amber-900">localhost</code>. To receive live calls locally, run an HTTPS tunnel (e.g. <code className="font-mono text-amber-900">ngrok http 4310</code>), set <code className="font-mono text-amber-900">PUBLIC_API_BASE_URL</code> in <code className="font-mono text-amber-900">apps/api/.env</code>, and paste the public URL into your CCS IVR webhook settings.
+                  </p>
+                </div>
+              )}
               <p className="text-[11px] text-ink-3">Every request is verified with the provider&apos;s own signature or shared secret before anything is read.</p>
             </div>
           )}
-          {section === "sync" && <SyncSection d={d} />}
+          {section === "sync" && (isTelephony ? <TelephonySyncSection d={d} /> : <SyncSection d={d} />)}
           {section === "activity" && <LogsPanel provider={d.key} />}
           {section === "health" && <Health d={d} />}
         </div>

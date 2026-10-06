@@ -5,7 +5,7 @@ import { recordActivity } from "../activity/activity.service.js";
 import { requirePermission } from "../auth/permission.middleware.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { syncAds } from "../ads/ads-sync.service.js";
-import { configureIntegration, getHubDetail, listHub, listIntegrationLogs } from "./hub.service.js";
+import { configureIntegration, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
@@ -79,6 +79,24 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     if (r.ok) await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "ads.sync_triggered", entityType: "integration", entityKey: key, metadata: { status: r.run.status, rows: r.run.rowsUpserted } });
     if (!r.ok) return reply.status(({ feature_not_available: 403, not_configured: 409, sync_in_progress: 409, too_soon: 429, invalid_range: 422 } as Record<string, number>)[r.reason] ?? 400).send({ error: r.reason });
     return r.run;
+  });
+
+  // Check live status / health of an integration
+  app.post("/integrations/hub/:key/status", { preHandler: requirePermission("VIEW_INTEGRATIONS") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    const key = (request.params as { key: string }).key;
+    const r = await checkIntegrationStatus(app.db, u.tenantId, key, u.role, u.capabilities);
+    if (!r) return reply.status(404).send({ error: "unknown_integration" });
+    return r;
+  });
+
+  // Test event ingestion for telephony (simulate test call)
+  app.post("/integrations/hub/:key/test-event", { preHandler: requirePermission("MANAGE_INTEGRATION_CONFIG") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    const key = (request.params as { key: string }).key;
+    const r = await simulateTelephonyTestCall(app.db, u.tenantId, key, u.id);
+    if (!r.ok) return reply.status(400).send({ error: r.reason });
+    return r;
   });
 
   app.get("/integrations/logs", async (request, reply) => {

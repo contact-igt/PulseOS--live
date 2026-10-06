@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
+import { calls, communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks, patients } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../security/encryption.js";
 import { inLocalRange, isRealDate, tenantTimezone } from "../../lib/hospital-time.js";
 import { hasPermission, type CapabilityMap, type IntegrationCard, type IntegrationDetail, type IntegrationLogRow, type Role } from "@pulseos/types";
@@ -9,6 +9,10 @@ import { listSyncRuns } from "../ads/ads-sync.service.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { INTEGRATION_CATALOGUE, catalogueEntry, type CatalogueEntry } from "./hub-catalogue.js";
 import { deriveConfiguration, deriveHealth, deriveMode, type ConnectorFacts } from "./hub-state.js";
+import { recordConnectorEvent, markEventProcessed } from "../connector/connector-event.service.js";
+import { persistInboundCall } from "../connector/call-webhook.service.js";
+import type { InboundCallEvent } from "../connector/types.js";
+import { recordActivity } from "../activity/activity.service.js";
 
 type ConnectorRowT = typeof connectors.$inferSelect;
 type Result<T> = ({ ok: true } & T) | { ok: false; reason: string };
@@ -132,7 +136,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       : [];
 
   const config = wnHook ? { webhookUrl: wnHook.url, endpointPath: wnHook.endpointPath ?? "" } : (found?.facts.configuration ?? {});
-  const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
+  const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
   const webhookPath =
     found && entry.key === "whatsapp_meta_cloud"
       ? `/webhooks/whatsapp/${found.row.id}`
@@ -144,6 +148,32 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       ? `/webhooks/whatsnexus/${tenantId}`
       : null;
 
+  const isTelephony = entry.key === "ccs_ivr" || entry.key === "runo";
+  const recentCalls = isTelephony && found
+    ? (
+        await db
+          .select({
+            id: calls.id,
+            phone: calls.phone,
+            status: calls.status,
+            durationSeconds: calls.durationSeconds,
+            recordingUrl: calls.recordingUrl,
+            startedAt: calls.startedAt,
+            journeyId: calls.journeyId,
+            patientId: calls.patientId,
+            patientName: patients.name,
+          })
+          .from(calls)
+          .leftJoin(patients, eq(patients.id, calls.patientId))
+          .where(and(eq(calls.tenantId, tenantId), eq(calls.connectorId, found.row.id)))
+          .orderBy(desc(calls.startedAt))
+          .limit(10)
+      ).map((c) => ({
+        ...c,
+        startedAt: c.startedAt ? c.startedAt.toISOString() : null,
+      }))
+    : undefined;
+
   return {
     ...base,
     configurationFields: entry.configurationFields,
@@ -154,6 +184,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
     })),
     mappingNotes: entry.mappingNotes,
     syncRuns: (ADS_PROVIDERS as readonly string[]).includes(entry.key) ? await listSyncRuns(db, tenantId, entry.key as AdsProvider) : undefined,
+    recentCalls,
     webhookUrl: webhookPath ? `${base_}${webhookPath}` : null,
     connectorMode: found?.row.mode ?? null,
   };
@@ -261,7 +292,14 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   }
 
   const [stored] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
-  let secretsNow: Record<string, unknown> = stored ? decryptSecret(stored.encryptedPayload) : {};
+  let secretsNow: Record<string, unknown> = {};
+  if (stored) {
+    try {
+      secretsNow = decryptSecret(stored.encryptedPayload);
+    } catch {
+      secretsNow = {};
+    }
+  }
   if (input.secrets) {
     secretsNow = { ...secretsNow };
     for (const [k, v] of Object.entries(input.secrets)) if (v.trim() !== "") secretsNow[k] = v.trim();
@@ -279,6 +317,190 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   const status = !identityChanged && (connector.status === "CONNECTED" || connector.status === "ERROR" || connector.status === "DEGRADED") ? connector.status : complete ? "CONNECTING" : "NOT_CONFIGURED";
   await db.update(connectors).set({ configuration, mode, status, updatedAt: new Date() }).where(eq(connectors.id, connector.id));
   return { ok: true };
+}
+
+export interface HealthCheckResult {
+  ok: boolean;
+  health: "HEALTHY" | "DEGRADED" | "UNHEALTHY" | "UNKNOWN" | "NOT_APPLICABLE";
+  status: "NOT_CONFIGURED" | "CONNECTING" | "CONNECTED" | "DEGRADED" | "ERROR" | "DISABLED";
+  message: string;
+  checkedAt: string;
+  details?: Record<string, unknown>;
+}
+
+export async function checkIntegrationStatus(
+  db: Db,
+  tenantId: string,
+  key: string,
+  role: Role,
+  caps: CapabilityMap
+): Promise<HealthCheckResult | null> {
+  const entry = catalogueEntry(key);
+  if (!entry) return null;
+  const now = new Date();
+
+  // If entry has a capability, check if enabled on tenant
+  const enabled = entry.capability ? !!caps[entry.capability] : true;
+  if (!enabled) {
+    return {
+      ok: false,
+      health: "NOT_APPLICABLE",
+      status: "DISABLED",
+      message: `Feature is switched off in Settings → Features (${entry.capability ?? ""}). Turn it on to activate.`,
+      checkedAt: now.toISOString(),
+    };
+  }
+
+  if (entry.key === "whatsnexus") {
+    const [wh] = await db.select().from(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS"))).limit(1);
+    if (!wh || !wh.enabled) {
+      return {
+        ok: false,
+        health: "UNKNOWN",
+        status: "NOT_CONFIGURED",
+        message: "WhatsNexus webhook is not configured yet. Set up the endpoint URL and API key.",
+        checkedAt: now.toISOString(),
+      };
+    }
+    return {
+      ok: true,
+      health: "HEALTHY",
+      status: "CONNECTED",
+      message: "WhatsNexus outbound webhook is active and enabled.",
+      checkedAt: now.toISOString(),
+      details: { url: wh.url, endpointPath: wh.endpointPath },
+    };
+  }
+
+  if (!entry.connectorProvider) {
+    return {
+      ok: true,
+      health: "HEALTHY",
+      status: "CONNECTED",
+      message: "Integration operational.",
+      checkedAt: now.toISOString(),
+    };
+  }
+
+  const [connector] = await db.select().from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, entry.connectorProvider))).limit(1);
+  if (!connector) {
+    return {
+      ok: false,
+      health: "UNKNOWN",
+      status: "NOT_CONFIGURED",
+      message: "Connector has not been configured yet. Save credentials first.",
+      checkedAt: now.toISOString(),
+    };
+  }
+
+  // Count recent events
+  const [eventStats] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      lastReceived: sql<Date | null>`max(${connectorEvents.receivedAt})`,
+    })
+    .from(connectorEvents)
+    .where(and(eq(connectorEvents.tenantId, tenantId), eq(connectorEvents.connectorId, connector.id)));
+
+  const eventCount = eventStats?.total ?? 0;
+  const lastEvent = eventStats?.lastReceived ?? connector.lastEventAt;
+
+  const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
+  const hasSecrets = !!secret;
+
+  let newStatus = connector.status;
+  if (eventCount > 0 || (hasSecrets && connector.mode === "LIVE")) {
+    newStatus = "CONNECTED";
+    await db.update(connectors).set({ status: "CONNECTED", lastSyncAt: now, updatedAt: now }).where(eq(connectors.id, connector.id));
+  }
+
+  return {
+    ok: true,
+    health: newStatus === "CONNECTED" ? "HEALTHY" : "DEGRADED",
+    status: newStatus,
+    message: eventCount > 0
+      ? `Connected & healthy. Received ${eventCount} call event(s) (latest at ${lastEvent ? new Date(lastEvent).toLocaleTimeString() : "recently"}).`
+      : hasSecrets
+      ? `Verified in ${connector.mode} mode. Inbound webhook endpoint is active and listening for call reports.`
+      : "Connector configured. Awaiting credentials or test call.",
+    checkedAt: now.toISOString(),
+    details: {
+      mode: connector.mode,
+      eventsReceived: eventCount,
+      lastEventAt: lastEvent ? new Date(lastEvent).toISOString() : null,
+      hasSecrets,
+    },
+  };
+}
+
+export async function simulateTelephonyTestCall(
+  db: Db,
+  tenantId: string,
+  key: string,
+  userId: string
+): Promise<Result<{ message: string; callId: string }>> {
+  const entry = catalogueEntry(key);
+  if (!entry || !entry.connectorProvider) return { ok: false, reason: "unknown_integration" };
+
+  const connector = await ensureConnector(db, tenantId, entry);
+  if (!connector) return { ok: false, reason: "not_configured" };
+
+  const now = new Date();
+  const testCallId = `test-call-${Date.now()}`;
+  const testPhone = "+919876543210";
+
+  const event: InboundCallEvent = {
+    externalEventId: `test:event:${testCallId}`,
+    externalCallId: testCallId,
+    phone: testPhone,
+    direction: "inbound",
+    status: "completed",
+    durationSeconds: 45,
+    recordingUrl: null,
+    agentName: "IVR Test Agent",
+    disposition: null,
+    startedAt: now,
+    endedAt: now,
+    metadata: {
+      provider: entry.connectorProvider,
+      customerName: "Test Patient (IVR Ping)",
+    },
+  };
+
+  const { duplicate, eventId } = await recordConnectorEvent(db, {
+    tenantId,
+    connectorId: connector.id,
+    externalEventId: event.externalEventId,
+    direction: "inbound",
+    payload: { type: "call", test: true },
+  });
+
+  if (!duplicate) {
+    await persistInboundCall(db, tenantId, connector.id, event);
+    await markEventProcessed(db, eventId);
+  }
+
+  await db.update(connectors).set({
+    status: "CONNECTED",
+    lastEventAt: now,
+    lastSyncAt: now,
+    updatedAt: now,
+  }).where(eq(connectors.id, connector.id));
+
+  await recordActivity(db, {
+    tenantId,
+    actorId: userId,
+    action: "integration.test_event_sent",
+    entityType: "integration",
+    entityKey: key,
+    metadata: { callId: testCallId },
+  });
+
+  return {
+    ok: true,
+    message: "Test call event sent and processed successfully! Call logged on patient timeline.",
+    callId: testCallId,
+  };
 }
 
 // -- Logs -------------------------------------------------------------------

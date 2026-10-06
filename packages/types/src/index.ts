@@ -2768,6 +2768,18 @@ export interface IntegrationCard {
   isConnected?: boolean;
 }
 
+export interface TelephonyCallRecord {
+  id: string;
+  phone: string;
+  status: string;
+  durationSeconds: number | null;
+  startedAt: string | null;
+  recordingUrl: string | null;
+  journeyId: string | null;
+  patientId: string | null;
+  patientName: string | null;
+}
+
 export interface IntegrationDetail extends IntegrationCard {
   configurationFields: IntegrationFieldSpec[];
   /** Non-secret values currently set. */
@@ -2778,6 +2790,8 @@ export interface IntegrationDetail extends IntegrationCard {
   mappingNotes: string | null;
   /** Ads providers only: the latest sync runs (what was pulled, when, and any failure). */
   syncRuns?: AdsSyncRunVm[];
+  /** Telephony providers: recent received calls */
+  recentCalls?: TelephonyCallRecord[];
   webhookUrl: string | null;
   connectorMode: "FIXTURE" | "SANDBOX" | "LIVE" | null;
 }
