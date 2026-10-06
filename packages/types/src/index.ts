@@ -1612,6 +1612,13 @@ export interface CreateCommunicationEndpointInput {
   departmentId?: string | null;
 }
 
+/** A team member a provider agent can be mapped to. */
+export interface AgentMappingOption {
+  id: string;
+  name: string;
+  role: Role;
+}
+
 /** A provider's agent/member, as the provider names them, mapped to a PulseOS team member. */
 export interface ConnectorAgentMappingVm {
   id: string;
@@ -2793,9 +2800,20 @@ export interface IntegrationCard {
 export interface TelephonyCallRecord {
   id: string;
   phone: string;
+  direction: "inbound" | "outbound";
   status: string;
   durationSeconds: number | null;
   startedAt: string | null;
+  /** Who handled the call: a provider agent mapped to a team member (null when unmapped; the provider's name is `agentName`). */
+  handledByName: string | null;
+  agentName: string | null;
+  /** The hospital line it arrived on (when the line is configured), and the Source the call's Journey carries. */
+  lineLabel: string | null;
+  sourceLabel: string | null;
+  /** The open callback this call needs, if any. */
+  nextAction: { taskId: string; type: string; dueAt: string } | null;
+  /** A simulated call from "Send test call event". Never a real provider report. */
+  isTest: boolean;
   /** Whether a recording exists. The provider's URL is never sent to the browser: playback goes through GET /calls/:id/recording. */
   hasRecording: boolean;
   journeyId: string | null;
@@ -2810,6 +2828,28 @@ export interface IntegrationInboundState {
   /** Last call report that authenticated and was processed; null if none yet. */
   lastValidEventAt: string | null;
   note: string;
+}
+
+/** One call, opened. Provider context is metadata the provider reported; nothing here is a secret or the recording URL. */
+export interface TelephonyCallDetail extends TelephonyCallRecord {
+  providerCallId: string | null;
+  providerLabel: string | null;
+  calledLine: string | null;
+  callGroup: string | null;
+  /** Telecom circle: approximate provider metadata, never the patient's location. */
+  circle: string | null;
+  ivrSelection: string | null;
+  providerStatus: string | null;
+  answeredAt: string | null;
+  endedAt: string | null;
+  sourceDetail: string | null;
+}
+
+/** Which field names real provider reports carry: for mapping a provider's real payload. Names and status-like values only. */
+export interface PayloadShapes {
+  events: number;
+  fields: { name: string; seen: number; recognised: boolean }[];
+  values: Record<string, string[]>;
 }
 
 export interface IntegrationDetail extends IntegrationCard {
@@ -2828,6 +2868,8 @@ export interface IntegrationDetail extends IntegrationCard {
   recentCalls?: TelephonyCallRecord[];
   /** Telephony providers that receive call reports by webhook: readiness as separate facts (never a claimed connection). */
   inbound?: IntegrationInboundState;
+  /** The connector row behind this integration (for the line and agent mapping calls); null until it exists. */
+  connectorId?: string | null;
   webhookUrl: string | null;
   connectorMode: "FIXTURE" | "SANDBOX" | "LIVE" | null;
 }

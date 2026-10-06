@@ -14,6 +14,11 @@ async function ownConnector(db: Db, tenantId: string, connectorId: string) {
   return !!c;
 }
 
+/** The people a provider agent can be mapped to: every member of THIS hospital. */
+export async function listAgentMappingOptions(db: Db, tenantId: string): Promise<{ id: string; name: string; role: (typeof users.$inferSelect)["role"] }[]> {
+  return db.select({ id: users.id, name: users.name, role: users.role }).from(users).where(eq(users.tenantId, tenantId)).orderBy(users.name);
+}
+
 export async function listAgentMappings(db: Db, tenantId: string, connectorId: string): Promise<ConnectorAgentMappingVm[]> {
   const rows = await db
     .select({ m: connectorAgentMappings, userName: users.name })

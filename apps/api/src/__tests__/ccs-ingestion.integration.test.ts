@@ -259,6 +259,14 @@ describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (in
       expect((await api(x, "SUPER_ADMIN", "GET", `/connectors/${ccs}/agent-mappings`)).json()).toEqual([]);
       expect((await api(x, "SUPER_ADMIN", "PATCH", `/connectors/${ccs}/endpoints/${campEndpoint.id}`, { sourceDetail: "hijack" })).statusCode).toBe(404);
     });
+    it("the team-member picker lists only this hospital's people, to a Super Admin only", async () => {
+      const mine = (await api(t, "SUPER_ADMIN", "GET", `/connectors/${ccs}/agent-mapping-options`)).json() as { id: string; role: string }[];
+      expect(mine.map((u) => u.id).sort()).toEqual(Object.values(t.userIds).sort());
+      expect(mine.every((u) => !("email" in u) && !("passwordHash" in u))).toBe(true);
+      const theirs = (await api(x, "SUPER_ADMIN", "GET", `/connectors/${ccsX}/agent-mapping-options`)).json() as { id: string }[];
+      expect(theirs.some((u) => Object.values(t.userIds).includes(u.id))).toBe(false);
+      expect((await api(t, "HOSPITAL_ADMIN", "GET", `/connectors/${ccs}/agent-mapping-options`)).statusCode).toBe(403);
+    });
     it("agent mappings list, re-point and delete", async () => {
       const list = (await api(t, "SUPER_ADMIN", "GET", `/connectors/${ccs}/agent-mappings`)).json() as ConnectorAgentMappingVm[];
       expect(list).toHaveLength(1);
@@ -287,6 +295,83 @@ describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (in
       const after = await perf();
       expect(after!.attended).toBe(attendedBefore + 1);
       expect(after!.enquiries).toBe(before!.enquiries);
+    });
+  });
+  describe("what staff and the Super Admin see", () => {
+    it("Recent calls say who called, how it went, who handled it, where it came from, and what is next", async () => {
+      const num = phone();
+      const missed = report({ caller_number: num, status: "No Answer", duration: "0", agent_name: undefined });
+      await send(missed);
+      const answered = report({ caller_number: phone(), agent_name: "Shivi", recording_url: "pulseos-fixture://silence.wav?recent-1" });
+      await send(answered);
+      const detail = (await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr")).json() as { recentCalls: Record<string, unknown>[] };
+      const m = detail.recentCalls.find((c) => c.phone === `+91${num}` || c.phone === num)!;
+      const a = detail.recentCalls.find((c) => c.hasRecording === true)!;
+      expect(m).toMatchObject({ direction: "inbound", status: "missed", sourceLabel: "Free Health Camp", lineLabel: "Health camp line" });
+      expect((m.nextAction as { type: string } | null)?.type).toBe("CALLBACK");
+      expect(a).toMatchObject({ status: "completed", handledByName: expect.stringContaining("frontdesk"), hasRecording: true, durationSeconds: 86 });
+      expect(JSON.stringify(detail)).not.toContain("recent-1");
+    });
+
+    it("a simulated test call is flagged as a test in the list and the detail; a real call is not", async () => {
+      expect((await api(t, "SUPER_ADMIN", "POST", "/integrations/hub/ccs_ivr/test-event")).statusCode).toBe(200);
+      const real = report();
+      await send(real);
+      const detail = (await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr")).json() as { recentCalls: { id: string; isTest: boolean; agentName: string | null }[] };
+      const tests = detail.recentCalls.filter((c) => c.agentName === "IVR Test Agent");
+      expect(tests.length).toBeGreaterThan(0);
+      expect(tests.every((c) => c.isTest)).toBe(true);
+      const realId = (await callRow(real.call_id)).id;
+      const realRow = detail.recentCalls.find((c) => c.id === realId)!;
+      expect(realRow.isTest).toBe(false);
+      const one = (await api(t, "HOSPITAL_ADMIN", "GET", `/integrations/hub/ccs_ivr/calls/${tests[0]!.id}`)).json() as { isTest: boolean };
+      expect(one.isTest).toBe(true);
+    });
+
+    it("one call opens as a detail with provider context, source attribution and the next action, and no secret", async () => {
+      const r = report({ call_group: "Camp desk", ivr_key: "2", answer_time: ist(new Date()), recording_url: "pulseos-fixture://silence.wav?detail-1" });
+      await send(r);
+      const call = await callRow(r.call_id);
+      const res = await api(t, "HOSPITAL_ADMIN", "GET", `/integrations/hub/ccs_ivr/calls/${call.id}`);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        id: call.id, providerCallId: r.call_id, direction: "inbound", status: "completed", calledLine: CAMP_LINE, lineLabel: "Health camp line", callGroup: "Camp desk", circle: "Karnataka",
+        ivrSelection: "2", sourceLabel: "Free Health Camp", sourceDetail: "Dhanbad camp, Oct", providerLabel: "CCS Express IVR", journeyId: call.journeyId, hasRecording: true,
+      });
+      expect(res.body).not.toMatch(new RegExp(`detail-1|${KEY}`));
+    });
+
+    it("the call detail is tenant-scoped: another hospital, or a role without integration access, gets nothing", async () => {
+      const r = report();
+      await send(r);
+      const call = await callRow(r.call_id);
+      expect((await api(x, "SUPER_ADMIN", "GET", `/integrations/hub/ccs_ivr/calls/${call.id}`)).statusCode).toBe(404);
+      expect((await api(t, "FRONT_DESK", "GET", `/integrations/hub/ccs_ivr/calls/${call.id}`)).statusCode).toBe(403);
+      expect((await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr/calls/not-a-uuid")).statusCode).toBe(404);
+    });
+
+    it("the Super Admin can see which field names real CCS reports carry (names and status-like values, never phones or secrets)", async () => {
+      await send(report({ campaign_tag: "diwali-camp", call_status: "Answered" }));
+      const res = await api(t, "SUPER_ADMIN", "GET", "/integrations/hub/ccs_ivr/payload-shapes");
+      expect(res.statusCode).toBe(200);
+      const shapes = res.json() as { events: number; fields: { name: string; seen: number; recognised: boolean }[]; values: Record<string, string[]> };
+      expect(shapes.events).toBeGreaterThan(0);
+      const byName = Object.fromEntries(shapes.fields.map((f) => [f.name, f]));
+      expect(byName.caller_number).toMatchObject({ recognised: true });
+      expect(byName.campaign_tag).toMatchObject({ recognised: false }); // exactly the fields that still need mapping
+      expect(shapes.values.call_status ?? shapes.values.status).toContain("Answered");
+      expect(res.body).not.toMatch(/98\d{8}|synthetic-ccs-ingest-key/);
+      expect((await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr/payload-shapes")).statusCode).toBe(403);
+      expect((await api(t, "SUPER_ADMIN", "GET", "/integrations/hub/google_ads/payload-shapes")).statusCode).toBe(404);
+    });
+
+    it("an unreachable or expired provider recording fails safely: no provider URL, no secret in the response", async () => {
+      const r = report({ recording_url: "http://127.0.0.1:1/recordings/expired-9.mp3" });
+      await send(r);
+      const call = await callRow(r.call_id);
+      const res = await api(t, "HOSPITAL_ADMIN", "GET", `/calls/${call.id}/recording`);
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+      expect(res.body).not.toMatch(/127\.0\.0\.1|expired-9/);
     });
   });
 });

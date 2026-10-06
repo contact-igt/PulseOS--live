@@ -59,8 +59,12 @@ const ALIASES = {
   customerName: ["customername", "callername", "name"],
 } as const;
 
-const CREDENTIAL_KEYS = new Set(["apikey", "key", "secret", "secretkey", "integrationkey", "token", "accesstoken", "authorization", "password", "signature"]);
+/** Whether PulseOS already maps this raw field name (so a diagnostic can show what still needs mapping). */
+export const isRecognisedCcsField = (name: string): boolean => RECOGNISED.has(key(name));
+
 const RECOGNISED = new Set<string>(Object.values(ALIASES).flat());
+const CREDENTIAL_KEYS = new Set(["apikey", "key", "secret", "secretkey", "integrationkey", "token", "accesstoken", "authorization", "password", "signature"]);
+
 
 function pick(index: Map<string, unknown>, names: readonly string[]): unknown {
   for (const n of names) {

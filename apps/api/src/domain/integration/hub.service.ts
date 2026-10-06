@@ -3,6 +3,7 @@ import type { Db } from "../../db/client.js";
 import { calls, communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks, patients } from "../../db/schema.js";
 import { decryptSecret, encryptSecret, isEncryptionConfigured } from "../security/encryption.js";
 import { readSecretFacts } from "./secret-facts.js";
+import { getPayloadShapes, getTelephonyCallDetail, listRecentCalls } from "./telephony-calls.js";
 import { inLocalRange, isRealDate, tenantTimezone } from "../../lib/hospital-time.js";
 import { hasPermission, type CapabilityMap, type IntegrationCard, type IntegrationDetail, type IntegrationLogRow, type Role } from "@pulseos/types";
 import { redactLogText } from "../security/redact.js";
@@ -144,30 +145,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       : null;
 
   const isTelephony = entry.key === "ccs_ivr" || entry.key === "runo";
-  const recentCalls = isTelephony && found
-    ? (
-        await db
-          .select({
-            id: calls.id,
-            phone: calls.phone,
-            status: calls.status,
-            durationSeconds: calls.durationSeconds,
-            hasRecording: sql<boolean>`${calls.recordingUrl} is not null`,
-            startedAt: calls.startedAt,
-            journeyId: calls.journeyId,
-            patientId: calls.patientId,
-            patientName: patients.name,
-          })
-          .from(calls)
-          .leftJoin(patients, eq(patients.id, calls.patientId))
-          .where(and(eq(calls.tenantId, tenantId), eq(calls.connectorId, found.row.id)))
-          .orderBy(desc(calls.startedAt))
-          .limit(10)
-      ).map((c) => ({
-        ...c,
-        startedAt: c.startedAt ? c.startedAt.toISOString() : null,
-      }))
-    : undefined;
+  const recentCalls = isTelephony && found ? await listRecentCalls(db, tenantId, found.row.id) : undefined;
 
   return {
     ...base,
@@ -178,6 +156,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       hasSecret: entry.key === "whatsnexus" ? !!(wnHook?.headers as any[])?.some((h) => h.key === "x-api-key" && h.value) : !!found?.facts.secretKeys.includes(f.key),
     })),
     secretsUnreadable: !!found?.facts.secretsUnreadable,
+    connectorId: isTelephony ? found?.row.id ?? null : undefined,
     inbound: isTelephony && found ? inboundState(entry, base.enabled, found, await lastRealEventAt(db, tenantId, found.row.id)) : undefined,
     mappingNotes: entry.mappingNotes,
     syncRuns: (ADS_PROVIDERS as readonly string[]).includes(entry.key) ? await listSyncRuns(db, tenantId, entry.key as AdsProvider) : undefined,
@@ -527,6 +506,7 @@ export async function simulateTelephonyTestCall(
     metadata: {
       provider: entry.connectorProvider,
       customerName: "Test Patient (IVR Ping)",
+      simulated: true,
     },
   };
 
@@ -614,4 +594,23 @@ export async function listIntegrationLogs(db: Db, tenantId: string, filters: Log
   }
 
   return rows.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+}
+
+/** The connector row behind a telephony catalogue key for this tenant, or null (not telephony, or not set up yet). */
+async function telephonyConnectorId(db: Db, tenantId: string, key: string): Promise<string | null> {
+  const entry = catalogueEntry(key);
+  if (!entry || !entry.connectorProvider || !(key === "ccs_ivr" || key === "runo")) return null;
+  const [row] = await db.select({ id: connectors.id }).from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, entry.connectorProvider))).limit(1);
+  return row?.id ?? null;
+}
+
+export async function getCallDetail(db: Db, tenantId: string, key: string, callId: string) {
+  const connectorId = await telephonyConnectorId(db, tenantId, key);
+  return connectorId ? getTelephonyCallDetail(db, tenantId, connectorId, callId) : null;
+}
+
+export async function getCcsPayloadShapes(db: Db, tenantId: string, key: string) {
+  if (key !== "ccs_ivr") return null;
+  const connectorId = await telephonyConnectorId(db, tenantId, key);
+  return connectorId ? getPayloadShapes(db, tenantId, connectorId) : { events: 0, fields: [], values: {} };
 }

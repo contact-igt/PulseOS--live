@@ -5,13 +5,15 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@pulseos/api-client";
 import { Badge, Button, ErrorState, SideSheet, Skeleton, Tabs, relativeTime } from "@pulseos/ui";
-import type { IntegrationDetail, IntegrationInboundState } from "@pulseos/types";
+import { hasPermission, type IntegrationDetail, type IntegrationInboundState } from "@pulseos/types";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 import { LogsPanel } from "./LogsPanel";
+import { CallDetailPanel, RecentCalls } from "./TelephonyCalls";
+import { LinesAndTeam } from "./LinesAndTeam";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 
-type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "webhooks" | "sync" | "activity" | "health";
+type SectionKey = "overview" | "configuration" | "credentials" | "lines" | "mappings" | "webhooks" | "sync" | "activity" | "health";
 
 const WEBHOOK_LABEL = { READY: "Ready", NOT_READY: "Not ready" } as const;
 const CREDENTIAL_LABEL = { SAVED: "Saved", NOT_CONFIGURED: "Not configured", UNREADABLE: "Unreadable" } as const;
@@ -212,6 +214,11 @@ function TelephonySyncSection({ d }: { d: IntegrationDetail }) {
   const queryClient = useQueryClient();
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [testMessage, setTestMessage] = useState<string | null>(null);
+  const [openCallId, setOpenCallId] = useState<string | null>(null);
+  const session = useQuery({ queryKey: ["session"], queryFn: api.session, retry: false });
+  const role = session.data?.user.role;
+  const canPlay = !!role && hasPermission(role, "VIEW_CALL_RECORDING");
+  const canDownload = !!role && hasPermission(role, "DOWNLOAD_CALL_RECORDING");
 
   const checkStatus = useMutation({
     mutationFn: () => api.checkIntegrationStatus(d.key),
@@ -232,6 +239,8 @@ function TelephonySyncSection({ d }: { d: IntegrationDetail }) {
     },
     onError: (e: any) => setTestMessage(e?.message || "Test event failed."),
   });
+
+  if (openCallId) return <CallDetailPanel integrationKey={d.key} callId={openCallId} onBack={() => setOpenCallId(null)} canPlay={canPlay} canDownload={canDownload} />;
 
   return (
     <div className="space-y-4 text-sm" data-testid="telephony-sync-section">
@@ -270,52 +279,19 @@ function TelephonySyncSection({ d }: { d: IntegrationDetail }) {
             onClick={() => { setTestMessage(null); testEvent.mutate(); }}
             data-testid="telephony-test-call"
           >
-            {testEvent.isPending ? "Sending test call…" : "⚡ Send Test Call Event"}
+            {testEvent.isPending ? "Sending test call…" : "Send test call event"}
           </Button>
         </div>
         {statusMessage && <p className="text-xs text-primary-700 bg-primary-50 rounded px-2.5 py-1.5 border border-primary-200" role="status">{statusMessage}</p>}
         {testMessage && <p className="text-xs text-emerald-700 bg-emerald-50 rounded px-2.5 py-1.5 border border-emerald-200" role="status">{testMessage}</p>}
       </div>
 
-      <div className="space-y-2 pt-2 border-t border-line">
+      <div className="space-y-2 border-t border-line pt-2">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-ink">Recent Inbound Calls</span>
-          <span className="text-[11px] text-ink-3">{(d.recentCalls ?? []).length} recorded</span>
+          <span className="text-xs font-semibold text-ink">Recent calls</span>
+          <span className="text-[11px] text-ink-3">{(d.recentCalls ?? []).length} shown</span>
         </div>
-        {(d.recentCalls ?? []).length === 0 ? (
-          <div className="rounded-card border border-dashed border-line p-3 text-center bg-surface">
-            <p className="text-xs font-medium text-ink">No calls received yet</p>
-            <p className="text-[11px] text-ink-3 mt-1">
-              External calls from your IVR number stream into PulseOS automatically in real time as they occur. Click &ldquo;⚡ Send Test Call Event&rdquo; above to verify the pipeline.
-            </p>
-          </div>
-        ) : (
-          <ul className="divide-y divide-line rounded-card border border-line bg-surface text-xs" data-testid="recent-telephony-calls">
-            {(d.recentCalls ?? []).map((c) => (
-              <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
-                <div className="flex items-center gap-2">
-                  <Badge tone={c.status === "completed" ? "success" : c.status === "missed" ? "danger" : "neutral"}>
-                    {c.status}
-                  </Badge>
-                  <span className="font-medium text-ink">{c.patientName || c.phone}</span>
-                  {c.patientName && <span className="text-ink-3 text-[11px]">({c.phone})</span>}
-                </div>
-                <div className="flex items-center gap-3 text-ink-3 text-[11px]">
-                  {c.durationSeconds != null && <span>{c.durationSeconds}s</span>}
-                  <span>{c.startedAt ? relativeTime(c.startedAt) : "Just now"}</span>
-                  {c.journeyId && (
-                    <a
-                      href={`/journeys/${c.journeyId}`}
-                      className="text-primary-600 hover:text-primary-700 font-medium underline"
-                    >
-                      View Journey →
-                    </a>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <RecentCalls calls={d.recentCalls ?? []} onOpen={setOpenCallId} />
       </div>
     </div>
   );
@@ -412,6 +388,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
         { key: "overview", label: "Overview" },
         ...(d.configurationFields.length ? [{ key: "configuration" as const, label: "Configuration" }] : []),
         ...(d.secretFields.length ? [{ key: "credentials" as const, label: "Credentials" }] : []),
+        ...(d.key === "ccs_ivr" && d.connectorId && d.canManageSecrets ? [{ key: "lines" as const, label: "Lines & team" }] : []),
         ...(d.mappingNotes ? [{ key: "mappings" as const, label: "Mappings" }] : []),
         ...(d.webhookUrl ? [{ key: "webhooks" as const, label: "Webhooks" }] : []),
         ...(d.syncRuns || isTelephony ? [{ key: "sync" as const, label: "Sync" }] : []),
@@ -428,6 +405,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
           {section === "overview" && <Overview d={d} />}
           {section === "configuration" && <ConfigurationForm d={d} secrets={false} />}
           {section === "credentials" && <ConfigurationForm d={d} secrets />}
+          {section === "lines" && d.connectorId && <LinesAndTeam connectorId={d.connectorId} />}
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
           {section === "webhooks" && (
             <div className="space-y-3 text-sm">
@@ -435,13 +413,18 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
               <code className="block break-all rounded-control bg-neutral-100 px-2 py-1.5 text-xs font-mono font-medium" data-testid="provider-webhook-url">{d.webhookUrl}</code>
               {d.webhookUrl?.includes("localhost") && (
                 <div className="rounded-card border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800 space-y-1">
-                  <p className="font-semibold text-amber-900">⚠️ Localhost URL Detected</p>
+                  <p className="font-semibold text-amber-900">Localhost address detected</p>
                   <p className="text-[11px] text-amber-800 leading-relaxed">
                     Cloud IVR providers (like CCS IVR) cannot reach your local computer at <code className="font-mono text-amber-900">localhost</code>. To receive live calls locally, run an HTTPS tunnel (e.g. <code className="font-mono text-amber-900">ngrok http 4310</code>), set <code className="font-mono text-amber-900">PUBLIC_API_BASE_URL</code> in <code className="font-mono text-amber-900">apps/api/.env</code>, and paste the public URL into your CCS IVR webhook settings.
                   </p>
                 </div>
               )}
-              <p className="text-[11px] text-ink-3">Every request is verified with the provider&apos;s own signature or shared secret before anything is read.</p>
+              <p className="text-[11px] text-ink-3">Every request must carry a saved key or shared secret; anything else is refused before it is read.</p>
+              {d.key === "ccs_ivr" && (
+                <p className="text-[11px] text-ink-3">
+                  If CCS cannot send a header, add one of your saved keys to this address as <code className="font-mono">?api_key=&lt;key&gt;</code> when you paste it into CCS. PulseOS does not log or store it.
+                </p>
+              )}
             </div>
           )}
           {section === "sync" && (isTelephony ? <TelephonySyncSection d={d} /> : <SyncSection d={d} />)}

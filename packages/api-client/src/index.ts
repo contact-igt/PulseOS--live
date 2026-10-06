@@ -60,6 +60,10 @@ import type {
   CampaignPerformanceRow,
   FrontDeskDashboard,
   CommunicationEndpointVm,
+  AgentMappingOption,
+  ConnectorAgentMappingVm,
+  PayloadShapes,
+  TelephonyCallDetail,
   ConnectorDetail,
   CallFeedbackInput,
   CreateFollowUpInput,
@@ -466,6 +470,15 @@ export const api = {
     request<CommunicationEndpointVm>(`/connectors/${connectorId}/endpoints`, { method: "POST", body: JSON.stringify(input) }),
   updateCommunicationEndpoint: (connectorId: string, endpointId: string, input: UpdateCommunicationEndpointInput) =>
     request<CommunicationEndpointVm>(`/connectors/${connectorId}/endpoints/${endpointId}`, { method: "PATCH", body: JSON.stringify(input) }),
+
+  // CCS / telephony: one call opened, the field names real reports carry, and provider agent -> team member mapping
+  integrationCall: (key: string, callId: string) => request<TelephonyCallDetail>(`/integrations/hub/${key}/calls/${callId}`),
+  integrationPayloadShapes: (key: string) => request<PayloadShapes>(`/integrations/hub/${key}/payload-shapes`),
+  agentMappings: (connectorId: string) => request<ConnectorAgentMappingVm[]>(`/connectors/${connectorId}/agent-mappings`),
+  agentMappingOptions: (connectorId: string) => request<AgentMappingOption[]>(`/connectors/${connectorId}/agent-mapping-options`),
+  setAgentMapping: (connectorId: string, input: { externalAgent: string; userId: string }) =>
+    request<ConnectorAgentMappingVm>(`/connectors/${connectorId}/agent-mappings`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteAgentMapping: (connectorId: string, mappingId: string) => request<void>(`/connectors/${connectorId}/agent-mappings/${mappingId}`, { method: "DELETE" }),
 
   // Leads (CRM-2/3/4)
   leads: (filters: { status?: LeadStatus; specialtyKey?: string; source?: string; owner?: "mine" | "unassigned" | (string & {}) } = {}) => request<LeadRow[]>(`/leads${toQuery({ ...filters })}`),

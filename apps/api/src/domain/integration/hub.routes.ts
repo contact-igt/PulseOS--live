@@ -5,7 +5,7 @@ import { recordActivity } from "../activity/activity.service.js";
 import { requirePermission } from "../auth/permission.middleware.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { syncAds } from "../ads/ads-sync.service.js";
-import { configureIntegration, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
+import { configureIntegration, getCallDetail, getCcsPayloadShapes, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
@@ -50,6 +50,22 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     const detail = await getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key);
     if (!detail) return reply.status(404).send({ error: "unknown_integration" });
     return detail;
+  });
+
+  // One call opened (provider context, attribution, next action). Same audience as the Integrations screen it opens from.
+  app.get("/integrations/hub/:key/calls/:callId", async (request, reply) => {
+    const u = request.sessionUser!;
+    const { key, callId } = request.params as { key: string; callId: string };
+    const call = await getCallDetail(app.db, u.tenantId, key, callId);
+    if (!call) return reply.status(404).send({ error: "call_not_found" });
+    return call;
+  });
+
+  // Which field names real CCS reports carry, so the first real payload can be mapped. Super Admin only.
+  app.get("/integrations/hub/:key/payload-shapes", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request, reply) => {
+    const shapes = await getCcsPayloadShapes(app.db, request.sessionUser!.tenantId, (request.params as { key: string }).key);
+    if (!shapes) return reply.status(404).send({ error: "unknown_integration" });
+    return shapes;
   });
 
   // Operational settings: Admin and Super Admin. Credentials and the connection mode: Super Admin only — refused outright

@@ -10,7 +10,7 @@ import {
   resolveEndpointByProviderRef,
   updateCommunicationEndpoint,
 } from "./communication-endpoint.service.js";
-import { deleteAgentMapping, listAgentMappings, setAgentMapping } from "./agent-mapping.service.js";
+import { deleteAgentMapping, listAgentMappingOptions, listAgentMappings, setAgentMapping } from "./agent-mapping.service.js";
 import type { CreateCommunicationEndpointInput, UpdateCommunicationEndpointInput } from "@pulseos/types";
 
 const REASON_STATUS: Record<string, number> = {
@@ -102,6 +102,10 @@ export async function connectorRoutes(app: FastifyInstance) {
 
   // Provider agent -> team member. Super Admin only: it decides who a call is credited to. Mapping an agent never changes
   // who owns a Journey.
+  app.get("/connectors/:id/agent-mapping-options", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request) => {
+    return listAgentMappingOptions(app.db, request.sessionUser!.tenantId);
+  });
+
   app.get("/connectors/:id/agent-mappings", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request) => {
     return listAgentMappings(app.db, request.sessionUser!.tenantId, (request.params as { id: string }).id);
   });
