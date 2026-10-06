@@ -220,4 +220,102 @@ describe.skipIf(!DEMO_PASSWORD)("CCS IVR webhook (integration)", () => {
       expect((bDetail.recentCalls ?? []).some((c) => c.id === call!.id)).toBe(false);
     });
   });
+  // CCS's Webhook Configuration takes only a URL and a method: no header, and its POST carried no credential at all. A dedicated,
+  // PulseOS-generated token in the URL PATH is the one secret that survives however CCS builds the request, and unlike the CCS API
+  // key it unlocks nothing but this one inbox.
+  describe("dedicated webhook token in the URL path", () => {
+    const mint = async (t: TestTenant = a) => {
+      const r = await app.inject({ method: "POST", url: "/integrations/hub/ccs_ivr/webhook-token", cookies: { pulseos_session: t.cookie.SUPER_ADMIN! } });
+      return { res: r, url: (r.json() as { webhookUrl?: string }).webhookUrl ?? "" };
+    };
+    const pathOf = (url: string) => new URL(url).pathname;
+    const tokenOf = (url: string) => pathOf(url).split("/").pop()!;
+
+    it("a Super Admin mints it; the URL comes back once, complete, and is never cacheable", async () => {
+      const { res, url } = await mint();
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toMatch(/no-store/);
+      expect(url).toMatch(/\/webhooks\/ccs\/[0-9a-f-]{36}\/[A-Za-z0-9_-]{32,}$/);
+      expect(pathOf(url).startsWith(`/webhooks/ccs/${ccsA}/`)).toBe(true);
+    });
+
+    it("only a Super Admin may; nobody else, and not for an integration that has none", async () => {
+      for (const role of ["HOSPITAL_ADMIN", "FRONT_DESK", "DOCTOR"] as Role[]) {
+        expect((await app.inject({ method: "POST", url: "/integrations/hub/ccs_ivr/webhook-token", cookies: { pulseos_session: a.cookie[role]! } })).statusCode, role).toBe(403);
+      }
+      expect((await app.inject({ method: "POST", url: "/integrations/hub/google_ads/webhook-token", cookies: { pulseos_session: a.cookie.SUPER_ADMIN! } })).statusCode).toBe(404);
+    });
+
+    it("a call delivered to the token URL with NO header and NO query is accepted and ingested (this is how CCS posts)", async () => {
+      const { url } = await mint();
+      const p = callPayload();
+      const r = await app.inject({ method: "POST", url: pathOf(url), headers: { "content-type": "application/json" }, payload: p });
+      expect(r.statusCode).toBe(200);
+      expect(await callsFor(a.tenantId, p.call_id)).toHaveLength(1);
+    });
+
+    it("a wrong token, a missing token and another hospital's token are refused, and nothing is stored", async () => {
+      const { url } = await mint();
+      await setAuth(ccsB, { apiKey: KEY_B });
+      const other = await mint(b);
+      const p = callPayload();
+      for (const target of [`/webhooks/ccs/${ccsA}/synthetic-wrong-token-0000000000000000`, `/webhooks/ccs/${ccsB}/${tokenOf(url)}`, `/webhooks/ccs/${ccsA}/${tokenOf(other.url)}`]) {
+        const r = await app.inject({ method: "POST", url: target, payload: p });
+        expect(r.statusCode, target).toBe(401);
+        expect(r.json()).toEqual({ error: "unauthorized" });
+      }
+      expect(await callsFor(a.tenantId, p.call_id)).toHaveLength(0);
+      expect(await callsFor(b.tenantId, p.call_id)).toHaveLength(0);
+    });
+
+    it("minting again replaces the token: the old URL stops working and the new one works; the saved CCS keys are untouched", async () => {
+      const first = await mint();
+      const second = await mint();
+      expect(tokenOf(second.url)).not.toBe(tokenOf(first.url));
+      expect((await app.inject({ method: "POST", url: pathOf(first.url), payload: callPayload() })).statusCode).toBe(401);
+      expect((await app.inject({ method: "POST", url: pathOf(second.url), payload: callPayload() })).statusCode).toBe(200);
+      expect((await hook(ccsA, callPayload(), { "x-api-key": KEY_A })).statusCode).toBe(200); // keys still authenticate
+    });
+
+    it("the token never comes back from the Integrations API; only that one exists; and it counts as saved credentials", async () => {
+      await setAuth(ccsA, null);
+      const { url } = await mint();
+      const detail = (await asRole(a, "SUPER_ADMIN", "/integrations/hub/ccs_ivr")).json() as IntegrationDetail;
+      expect(JSON.stringify(detail)).not.toContain(tokenOf(url));
+      expect(detail.inbound).toMatchObject({ webhook: "READY", credentials: "SAVED", webhookTokenSet: true });
+      expect(detail.webhookUrl).not.toContain(tokenOf(url));
+      for (const view of [(await asRole(a, "SUPER_ADMIN", "/integrations/logs")).body, (await asRole(a, "HOSPITAL_ADMIN", "/integrations/hub/ccs_ivr")).body]) expect(view).not.toContain(tokenOf(url));
+    });
+
+    it("minting without an encryption key is a safe 503, and nothing is changed", async () => {
+      const original = process.env.CONNECTOR_ENCRYPTION_KEY;
+      delete process.env.CONNECTOR_ENCRYPTION_KEY;
+      try {
+        const r = await app.inject({ method: "POST", url: "/integrations/hub/ccs_ivr/webhook-token", cookies: { pulseos_session: a.cookie.SUPER_ADMIN! } });
+        expect(r.statusCode).toBe(503);
+        expect(r.json()).toEqual({ error: "encryption_not_configured" });
+      } finally {
+        process.env.CONNECTOR_ENCRYPTION_KEY = original;
+      }
+    });
+
+    it("the token never reaches a log line, in the path or anywhere else", async () => {
+      const lines: string[] = [];
+      const logged = await buildApp({ logStream: { write: (m: string) => void lines.push(m) } });
+      await logged.ready();
+      try {
+        const { url } = await mint();
+        const token = tokenOf(url);
+        lines.length = 0;
+        await logged.inject({ method: "POST", url: pathOf(url), payload: callPayload({ caller_number: "9811100099" }) });
+        await logged.inject({ method: "POST", url: `/webhooks/ccs/${ccsA}/${token}-tampered`, payload: callPayload() });
+        const everything = lines.join("");
+        expect(everything).not.toContain(token);
+        expect(everything).not.toContain("9811100099");
+        expect(everything).toContain(`/webhooks/ccs/${ccsA}/[redacted]`);
+      } finally {
+        await logged.close();
+      }
+    });
+  });
 });

@@ -473,6 +473,8 @@ export const api = {
 
   // CCS / telephony: one call opened, the field names real reports carry, and provider agent -> team member mapping
   integrationCall: (key: string, callId: string) => request<TelephonyCallDetail>(`/integrations/hub/${key}/calls/${callId}`),
+  /** Mints (or replaces) the dedicated webhook token and returns the complete address ONCE. Super Admin only. */
+  mintWebhookToken: (key: string) => request<{ webhookUrl: string }>(`/integrations/hub/${key}/webhook-token`, { method: "POST" }),
   integrationPayloadShapes: (key: string) => request<PayloadShapes>(`/integrations/hub/${key}/payload-shapes`),
   agentMappings: (connectorId: string) => request<ConnectorAgentMappingVm[]>(`/connectors/${connectorId}/agent-mappings`),
   agentMappingOptions: (connectorId: string) => request<AgentMappingOption[]>(`/connectors/${connectorId}/agent-mapping-options`),

@@ -54,7 +54,7 @@ const ALIASES = {
   status: ["status", "callstatus", "dialstatus", "callstate", "disposition"],
   direction: ["direction", "calltype", "type"],
   circle: ["circle", "telecomcircle", "operatorcircle"],
-  ivrSelection: ["ivrkey", "dtmf", "keypressed", "keypress", "ivrselection", "menuoption", "digit", "digits", "selection"],
+  ivrSelection: ["ivrkey", "key", "dtmf", "keypressed", "keypress", "ivrselection", "menuoption", "digit", "digits", "selection"],
   recording: ["recordingurl", "recording", "recordurl", "audiourl", "fileurl", "callrecording", "recordfile", "voicerecord"],
   customerName: ["customername", "callername", "name"],
 } as const;
@@ -63,7 +63,7 @@ const ALIASES = {
 export const isRecognisedCcsField = (name: string): boolean => RECOGNISED.has(key(name));
 
 const RECOGNISED = new Set<string>(Object.values(ALIASES).flat());
-const CREDENTIAL_KEYS = new Set(["apikey", "key", "secret", "secretkey", "integrationkey", "token", "accesstoken", "authorization", "password", "signature"]);
+const CREDENTIAL_KEYS = new Set(["apikey", "secret", "secretkey", "integrationkey", "token", "accesstoken", "authorization", "password", "signature"]);
 
 
 function pick(index: Map<string, unknown>, names: readonly string[]): unknown {

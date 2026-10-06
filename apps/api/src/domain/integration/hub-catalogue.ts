@@ -110,7 +110,7 @@ export const INTEGRATION_CATALOGUE: CatalogueEntry[] = [
     requiredConfig: [],
     requiredSecrets: [],
     // The webhook refuses every call report unless one of these keys is presented, so one must be saved to receive anything.
-    requiredAnySecret: ["apiKey", "secretKey", "integrationKey"],
+    requiredAnySecret: ["apiKey", "secretKey", "integrationKey", "webhookToken"],
   },
   {
     key: "whatsapp_meta_cloud",

@@ -10,6 +10,7 @@ import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_
 import { LogsPanel } from "./LogsPanel";
 import { CallDetailPanel, RecentCalls } from "./TelephonyCalls";
 import { LinesAndTeam } from "./LinesAndTeam";
+import { WebhookAddress } from "./WebhookAddress";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 
@@ -409,7 +410,8 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
           {section === "webhooks" && (
             <div className="space-y-3 text-sm">
-              <p className="text-xs text-ink-2">Give the provider this address to send events to PulseOS:</p>
+              {d.key === "ccs_ivr" && <WebhookAddress integrationKey={d.key} tokenSet={!!d.inbound?.webhookTokenSet} canManage={d.canManageSecrets} />}
+              <p className="text-xs text-ink-2">{d.key === "ccs_ivr" ? "The base address (it is not enough on its own: requests without the secret token are refused):" : "Give the provider this address to send events to PulseOS:"}</p>
               <code className="block break-all rounded-control bg-neutral-100 px-2 py-1.5 text-xs font-mono font-medium" data-testid="provider-webhook-url">{d.webhookUrl}</code>
               {d.webhookUrl?.includes("localhost") && (
                 <div className="rounded-card border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800 space-y-1">
@@ -419,12 +421,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
                   </p>
                 </div>
               )}
-              <p className="text-[11px] text-ink-3">Every request must carry a saved key or shared secret; anything else is refused before it is read.</p>
-              {d.key === "ccs_ivr" && (
-                <p className="text-[11px] text-ink-3">
-                  If CCS cannot send a header, add one of your saved keys to this address as <code className="font-mono">?api_key=&lt;key&gt;</code> when you paste it into CCS. PulseOS does not log or store it.
-                </p>
-              )}
+              <p className="text-[11px] text-ink-3">Every request must carry a saved key or the secret token; anything else is refused before it is read.</p>
             </div>
           )}
           {section === "sync" && (isTelephony ? <TelephonySyncSection d={d} /> : <SyncSection d={d} />)}

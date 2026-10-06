@@ -35,6 +35,22 @@ describe("ccsTelephonyAdapter", () => {
       expect(verify({}, { "x-api-key": secrets.apiKey, "secret-key": "wrong" })).toBe(false);
     });
 
+    it("a dedicated webhook token (carried in the URL path) authenticates on its own, and a wrong one is refused", () => {
+      const tokenOnly = { webhookToken: "synthetic-webhook-token-0004" };
+      expect(verify({}, { "x-webhook-token": tokenOnly.webhookToken }, tokenOnly)).toBe(true);
+      expect(verify({}, { "x-webhook-token": "wrong" }, tokenOnly)).toBe(false);
+      expect(verify({}, {}, tokenOnly)).toBe(false);
+      // with keys saved as well, the token is one more way in; a presented wrong one still refuses
+      expect(verify({}, { "x-webhook-token": tokenOnly.webhookToken }, { ...secrets, ...tokenOnly })).toBe(true);
+      expect(verify({}, { "x-webhook-token": "wrong" }, { ...secrets, ...tokenOnly })).toBe(false);
+    });
+
+    it("an IVR 'key' field in the call report is data, never a credential: it cannot authenticate and cannot poison a valid request", () => {
+      expect(verify({ key: secrets.apiKey }, {})).toBe(false);
+      expect(verify({ key: "--", caller_number: "9810157258" }, { "x-api-key": secrets.apiKey })).toBe(true);
+      expect(verify({ key: "2" }, { "x-webhook-token": "synthetic-webhook-token-0004" }, { webhookToken: "synthetic-webhook-token-0004" })).toBe(true);
+    });
+
     it("an unrelated header cannot stand in for a key", () => {
       expect(verify({}, { authorization: secrets.apiKey })).toBe(false);
     });

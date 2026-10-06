@@ -81,6 +81,18 @@ Unassigned queue; no Appointment or Visit; replaying the same call changes nothi
 | Authentication | One saved key, presented as a header (`x-api-key` / `secret-key` / `integration-key` and their variants) **or** as a query/body parameter (`api_key` / `secret_key` / `integration_key`). Without one, the answer is `401` and nothing is stored |
 | Responses | `200` accepted (a retry is also `200`), `401` unauthorised, `422` authenticated but no readable caller, `400` not JSON, `503` credential storage not configured |
 
+## What CCS actually does (observed, 2026-10-06)
+
+The first real delivery arrived as `POST`, `application/json`, user agent `axios/1.7.7`, about 20 seconds after an unanswered call ended,
+and carried **no credential**: no header, no query parameter and no credential-named body field. CCS's Webhook Configuration offers only a
+URL, a method and event tick-boxes. So the only place a secret can travel is the **URL**.
+
+Do not put the CCS API key in the URL: it grants CCS account access and would sit in CCS's configuration and Railway's logs. Instead,
+Integrations -> CCS IVR -> Webhooks -> **Create secure webhook address** mints a dedicated token that PulseOS generates, stores encrypted, and
+puts in the URL **path** (`/webhooks/ccs/<connector-id>/<token>`). It survives however CCS builds the request, unlocks only this one inbox,
+is shown **once**, and can be replaced (the old one then stops working). It is redacted from PulseOS's request logs. The `?api_key=` query
+form still works for any sender that can carry it.
+
 ## What is NOT known: the CCS side
 
 **PROVIDER WEBHOOK CONFIGURATION REQUIRES EXPRESS IVR SUPPORT/DOCUMENTATION.** `ccs.ivrsms.com` is a login page with no public

@@ -1,11 +1,11 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { hasPermission } from "@pulseos/types";
 import { recordActivity } from "../activity/activity.service.js";
 import { requirePermission } from "../auth/permission.middleware.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { syncAds } from "../ads/ads-sync.service.js";
-import { configureIntegration, getCallDetail, getCcsPayloadShapes, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
+import { configureIntegration, getCallDetail, getCcsPayloadShapes, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, mintWebhookToken, simulateTelephonyTestCall } from "./hub.service.js";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
@@ -37,6 +37,13 @@ const logQuerySchema = z
   })
   .superRefine(refineDayRange);
 
+/** Where this request reached the API, as the operator would paste it: behind Railway's proxy the scheme comes from X-Forwarded-Proto. */
+function publicOrigin(request: FastifyRequest): string {
+  const forwarded = String(request.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim().toLowerCase();
+  const proto = forwarded === "https" || forwarded === "http" ? forwarded : request.protocol;
+  return `${proto}://${request.host}`;
+}
+
 export async function integrationHubRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requirePermission("VIEW_INTEGRATIONS"));
 
@@ -47,7 +54,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
 
   app.get("/integrations/hub/:key", async (request, reply) => {
     const u = request.sessionUser!;
-    const detail = await getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key, `${request.protocol}://${request.host}`);
+    const detail = await getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key, publicOrigin(request));
     if (!detail) return reply.status(404).send({ error: "unknown_integration" });
     return detail;
   });
@@ -59,6 +66,14 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     const call = await getCallDetail(app.db, u.tenantId, key, callId);
     if (!call) return reply.status(404).send({ error: "call_not_found" });
     return call;
+  });
+
+  // Mint (or replace) the dedicated webhook token and return the complete address ONCE. Super Admin only; never cacheable.
+  app.post("/integrations/hub/:key/webhook-token", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    const r = await mintWebhookToken(app.db, u.tenantId, (request.params as { key: string }).key, u.id, publicOrigin(request));
+    if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason });
+    return reply.header("cache-control", "no-store").send({ webhookUrl: r.webhookUrl });
   });
 
   // Which field names real CCS reports carry, so the first real payload can be mapped. Super Admin only.
@@ -83,7 +98,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     request.log.info({ integration: { key, userId: u.id, tenantId: u.tenantId, changed: Object.keys(parsed.data) } }, "integration configured");
     // Which kinds of setting changed and which secret NAMES were touched — never a value.
     await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: parsed.data.secrets ? "integration.secret_changed" : "integration.configured", entityType: "integration", entityKey: key, metadata: { settings: Object.keys(parsed.data.configuration ?? {}), protectedFieldNames: Object.keys(parsed.data.secrets ?? {}), mode: parsed.data.mode ?? null } });
-    return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key, `${request.protocol}://${request.host}`);
+    return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key, publicOrigin(request));
   });
 
   // "Sync now": a read-only pull of reporting numbers. Never contacts the provider unless it is configured and switched on;

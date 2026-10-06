@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
@@ -184,13 +185,13 @@ function inboundState(entry: CatalogueEntry, enabled: boolean, found: { row: Con
     credentials === "UNREADABLE"
       ? "Saved credentials cannot be read by this server, so every call report is refused until they are re-entered."
       : credentials === "NOT_CONFIGURED"
-      ? "Call reports are refused until at least one key is saved: PulseOS will not accept unauthenticated calls."
+      ? "Call reports are refused until at least one key is saved or a secure webhook address is created: PulseOS will not accept unauthenticated calls."
       : !enabled || disabled
       ? "Switched off: call reports are acknowledged and ignored."
       : entry.key === "ccs_ivr"
-      ? "Each call report must carry a saved key: as a header, or add ?api_key=<key> to the webhook URL pasted into CCS."
+      ? "CCS can only be given a web address, so use the secure webhook address from the Webhooks tab: it carries a secret token PulseOS generated."
       : "Each call report must carry the saved shared secret in its x-api-key header.";
-  return { webhook, credentials, lastValidEventAt: lastValidEventAt?.toISOString() ?? null, note };
+  return { webhook, credentials, webhookTokenSet: found.facts.secretKeys.includes("webhookToken"), lastValidEventAt: lastValidEventAt?.toISOString() ?? null, note };
 }
 
 /** The last call report that authenticated and was processed. The "send test call" button's simulated events do not count. */
@@ -200,6 +201,35 @@ async function lastRealEventAt(db: Db, tenantId: string, connectorId: string): P
     .from(connectorEvents)
     .where(and(eq(connectorEvents.tenantId, tenantId), eq(connectorEvents.connectorId, connectorId), eq(connectorEvents.status, "processed"), sql`coalesce(${connectorEvents.payload}->>'test', 'false') <> 'true'`));
   return row?.at ? new Date(row.at) : null;
+}
+
+/**
+ * Mints the dedicated webhook token for a connector and returns the COMPLETE address to paste into the provider. The token is the
+ * only secret that survives a provider that accepts nothing but a URL (CCS: no header, query dropped), and unlike the provider's
+ * own API key it unlocks nothing but this one inbox. It is stored encrypted next to the connector's other secrets (which are kept)
+ * and is returned exactly once, here: nothing else ever sends it back. Minting again replaces it.
+ */
+export async function mintWebhookToken(db: Db, tenantId: string, key: string, userId: string, origin: string): Promise<Result<{ webhookUrl: string }>> {
+  const entry = catalogueEntry(key);
+  if (!entry || key !== "ccs_ivr") return { ok: false, reason: "unknown_integration" };
+  if (!isEncryptionConfigured()) return { ok: false, reason: "encryption_not_configured" };
+  const connector = await ensureConnector(db, tenantId, entry);
+  if (!connector) return { ok: false, reason: "blocked" };
+  const [stored] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
+  let secretsNow: Record<string, unknown> = {};
+  if (stored) {
+    try {
+      secretsNow = decryptSecret(stored.encryptedPayload);
+    } catch {
+      secretsNow = {}; // unreadable (key changed): the other secrets are already unusable; the token starts fresh
+    }
+  }
+  const token = randomBytes(24).toString("base64url");
+  const encryptedPayload = encryptSecret({ ...secretsNow, webhookToken: token });
+  await db.insert(connectorSecrets).values({ connectorId: connector.id, encryptedPayload }).onConflictDoUpdate({ target: connectorSecrets.connectorId, set: { encryptedPayload, updatedAt: new Date() } });
+  await recordActivity(db, { tenantId, actorId: userId, action: "integration.webhook_token_minted", entityType: "integration", entityKey: key, metadata: {} });
+  const base = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || origin;
+  return { ok: true, webhookUrl: `${base}/webhooks/ccs/${connector.id}/${token}` };
 }
 
 /** The connectors row behind a catalogue entry, created on first configuration (FIXTURE until a Super Admin says otherwise). */

@@ -12,6 +12,16 @@ describe("credential redaction", () => {
     expect(withoutCredentials({ api_key: "synthetic-k" })).toEqual({});
   });
 
+  it("a webhook token carried in the URL PATH is replaced in a loggable URL, with or without a query", () => {
+    const id = "b9e2e67c-61e5-44d0-a9c7-6b5f363cef0e";
+    expect(redactUrlSecrets(`/webhooks/ccs/${id}/synthetic-path-token-abc`)).toBe(`/webhooks/ccs/${id}/[redacted]`);
+    const q = redactUrlSecrets(`/webhooks/ccs/${id}/synthetic-path-token-abc?caller_number=9810157258`);
+    expect(q).not.toMatch(/synthetic-path-token|9810157258/);
+    expect(q).toContain(`/webhooks/ccs/${id}/[redacted]?caller_number=[redacted]`);
+    expect(redactUrlSecrets(`/webhooks/ccs/${id}`)).toBe(`/webhooks/ccs/${id}`); // the connector id alone is not a secret
+    expect(redactUrlSecrets("/integrations/hub/ccs_ivr")).toBe("/integrations/hub/ccs_ivr");
+  });
+
   it("redacts credential query values in a loggable URL and leaves other parameters alone", () => {
     const out = redactUrlSecrets("/connectors/abc?api_key=synthetic-key-1&call_id=42&secretKey=synthetic-2");
     expect(out).not.toContain("synthetic-key-1");

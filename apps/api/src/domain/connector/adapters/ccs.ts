@@ -22,9 +22,12 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
     const presented = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
     const checks: { expected: string | null; provided: string | undefined }[] = [
-      { expected: stored(secrets.apiKey), provided: presented(headers["x-api-key"] || headers["api-key"] || headers["apikey"] || p.apiKey || p.api_key || p.key) },
+      // A bare "key" is NOT an alias: CCS's call report has an IVR "KEY" column (the digit pressed), which must stay data.
+      { expected: stored(secrets.apiKey), provided: presented(headers["x-api-key"] || headers["api-key"] || headers["apikey"] || p.apiKey || p.api_key) },
       { expected: stored(secrets.secretKey), provided: presented(headers["secret-key"] || headers["x-secret-key"] || headers["secretkey"] || p.secretKey || p.secret_key || p.secret) },
       { expected: stored(secrets.integrationKey), provided: presented(headers["integration-key"] || headers["x-integration-key"] || p.integrationKey || p.integration_key) },
+      // The dedicated token PulseOS generated for this connector. The webhook route feeds the URL-path token in as this header.
+      { expected: stored(secrets.webhookToken), provided: presented(headers["x-webhook-token"] || p.webhookToken || p.webhook_token) },
     ];
     const configured = checks.filter((c) => c.expected !== null);
     if (configured.length === 0) return false;

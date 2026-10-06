@@ -176,7 +176,7 @@ export async function webhookRoutes(app: FastifyInstance) {
   });
 
   async function handleCcsWebhook(request: FastifyRequest, reply: FastifyReply) {
-    const { connectorId } = request.params as { connectorId: string };
+    const { connectorId, token } = request.params as { connectorId: string; token?: string };
     const connector = await getConnectorById(app.db, connectorId);
     // Unknown, disabled or not-a-CCS connector: acknowledged and ignored, so the URL cannot be probed for what exists.
     if (!connector || connector.status === "DISABLED" || connector.provider !== "ccs_ivr") return reply.status(200).send({ ok: true });
@@ -193,7 +193,10 @@ export async function webhookRoutes(app: FastifyInstance) {
       ...(typeof request.body === "object" && request.body !== null ? (request.body as Record<string, unknown>) : {}),
     };
 
-    if (!adapter.verifyWebhook(rawPayload, request.headers as Record<string, string | undefined>, secrets)) {
+    // The dedicated token in the URL path reaches the adapter as one more credential (never as a header the caller controls).
+    const credentialHeaders = { ...(request.headers as Record<string, string | undefined>), "x-webhook-token": token } as Record<string, string | undefined>;
+    if (!token) delete credentialHeaders["x-webhook-token"];
+    if (!adapter.verifyWebhook(rawPayload, credentialHeaders, secrets)) {
       // To diagnose a 401 without a secret: WHICH kinds of credential arrived (names only) vs which are saved. Never a value.
       const ua = request.headers["user-agent"];
       request.log.warn(
@@ -202,7 +205,8 @@ export async function webhookRoutes(app: FastifyInstance) {
             connectorId,
             presentedHeaders: Object.keys(request.headers).filter((h) => /key|secret|token|auth|signature/i.test(h)),
             presentedParams: Object.keys(rawPayload).filter(isCredentialName),
-            savedKeyKinds: ["apiKey", "secretKey", "integrationKey"].filter((k) => typeof secrets[k] === "string" && (secrets[k] as string).trim() !== ""),
+            pathToken: !!token,
+            savedKeyKinds: ["apiKey", "secretKey", "integrationKey", "webhookToken"].filter((k) => typeof secrets[k] === "string" && (secrets[k] as string).trim() !== ""),
             userAgent: typeof ua === "string" ? ua.slice(0, 80) : null,
             contentType: typeof request.headers["content-type"] === "string" ? request.headers["content-type"].split(";")[0] : null,
           },
@@ -259,6 +263,8 @@ export async function webhookRoutes(app: FastifyInstance) {
 
   app.post("/webhooks/ccs/:connectorId", handleCcsWebhook);
   app.get("/webhooks/ccs/:connectorId", handleCcsWebhook);
+  app.post("/webhooks/ccs/:connectorId/:token", handleCcsWebhook);
+  app.get("/webhooks/ccs/:connectorId/:token", handleCcsWebhook);
 
   app.get("/webhooks/meta-lead-ads/:connectorId", async (request, reply) => {
     const { connectorId } = request.params as { connectorId: string };

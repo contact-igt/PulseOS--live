@@ -2825,6 +2825,8 @@ export interface IntegrationInboundState {
   /** Would a correctly authenticated call report be accepted right now. */
   webhook: "READY" | "NOT_READY";
   credentials: "SAVED" | "NOT_CONFIGURED" | "UNREADABLE";
+  /** A dedicated webhook token (carried in the URL path) exists. The token itself is never returned after it is minted. */
+  webhookTokenSet?: boolean;
   /** Last call report that authenticated and was processed; null if none yet. */
   lastValidEventAt: string | null;
   note: string;

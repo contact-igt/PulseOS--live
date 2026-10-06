@@ -1,6 +1,6 @@
 // Credential-shaped parameter names a provider (or an operator, in a webhook URL) may use to carry a key. Compared
 // case-insensitively with separators ignored, so api_key, apiKey and API-KEY are the same name.
-const SENSITIVE = new Set(["apikey", "key", "secret", "secretkey", "integrationkey", "token", "accesstoken", "authorization", "password", "signature"]);
+const SENSITIVE = new Set(["apikey", "secret", "secretkey", "integrationkey", "token", "accesstoken", "authorization", "password", "signature"]);
 const normalize = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
 export const isCredentialName = (name: string): boolean => SENSITIVE.has(normalize(name));
 
@@ -15,9 +15,13 @@ export function withoutCredentials<T extends Record<string, unknown>>(payload: T
  */
 export function redactUrlSecrets(url: string): string {
   const q = url.indexOf("?");
-  if (q === -1) return url;
-  const everyValue = url.slice(0, q).startsWith("/webhooks/");
+  const rawPath = q === -1 ? url : url.slice(0, q);
+  // /webhooks/<provider>/<connector id>/<token>: the token is a secret carried in the PATH.
+  const segs = rawPath.split("/");
+  const path = rawPath.startsWith("/webhooks/") && segs.length >= 5 ? [...segs.slice(0, 4), "[redacted]"].join("/") : rawPath;
+  if (q === -1) return path;
+  const everyValue = rawPath.startsWith("/webhooks/");
   const params = new URLSearchParams(url.slice(q + 1));
   for (const name of [...new Set([...params.keys()])]) if (everyValue || isCredentialName(name)) params.set(name, "[redacted]");
-  return `${url.slice(0, q)}?${params.toString().replace(/%5Bredacted%5D/g, "[redacted]")}`;
+  return `${path}?${params.toString().replace(/%5Bredacted%5D/g, "[redacted]")}`;
 }
