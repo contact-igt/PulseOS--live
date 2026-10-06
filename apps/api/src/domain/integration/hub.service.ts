@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { calls, communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks, patients } from "../../db/schema.js";
+import { communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
 import { decryptSecret, encryptSecret, isEncryptionConfigured } from "../security/encryption.js";
 import { readSecretFacts } from "./secret-facts.js";
 import { getPayloadShapes, getTelephonyCallDetail, listRecentCalls } from "./telephony-calls.js";

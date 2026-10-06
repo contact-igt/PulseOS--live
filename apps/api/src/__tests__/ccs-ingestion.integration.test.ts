@@ -300,9 +300,11 @@ describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (in
   describe("what staff and the Super Admin see", () => {
     it("Recent calls say who called, how it went, who handled it, where it came from, and what is next", async () => {
       const num = phone();
-      const missed = report({ caller_number: num, status: "No Answer", duration: "0", agent_name: undefined });
+      // Dated slightly ahead so they are the newest rows however many calls earlier tests created in the same second.
+      const ahead = ist(new Date(Date.now() + 120_000));
+      const missed = report({ caller_number: num, status: "No Answer", duration: "0", agent_name: undefined, start_time: ahead });
       await send(missed);
-      const answered = report({ caller_number: phone(), agent_name: "Shivi", recording_url: "pulseos-fixture://silence.wav?recent-1" });
+      const answered = report({ caller_number: phone(), agent_name: "Shivi", recording_url: "pulseos-fixture://silence.wav?recent-1", start_time: ahead });
       await send(answered);
       const detail = (await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr")).json() as { recentCalls: Record<string, unknown>[] };
       const m = detail.recentCalls.find((c) => c.phone === `+91${num}` || c.phone === num)!;
@@ -315,17 +317,15 @@ describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (in
 
     it("a simulated test call is flagged as a test in the list and the detail; a real call is not", async () => {
       expect((await api(t, "SUPER_ADMIN", "POST", "/integrations/hub/ccs_ivr/test-event")).statusCode).toBe(200);
-      const real = report();
+      const real = report({ start_time: ist(new Date(Date.now() + 180_000)) });
       await send(real);
-      const detail = (await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr")).json() as { recentCalls: { id: string; isTest: boolean; agentName: string | null }[] };
-      const tests = detail.recentCalls.filter((c) => c.agentName === "IVR Test Agent");
-      expect(tests.length).toBeGreaterThan(0);
-      expect(tests.every((c) => c.isTest)).toBe(true);
+      const [simulated] = await db.select().from(calls).where(and(eq(calls.tenantId, t.tenantId), eq(calls.agentName, "IVR Test Agent")));
       const realId = (await callRow(real.call_id)).id;
-      const realRow = detail.recentCalls.find((c) => c.id === realId)!;
-      expect(realRow.isTest).toBe(false);
-      const one = (await api(t, "HOSPITAL_ADMIN", "GET", `/integrations/hub/ccs_ivr/calls/${tests[0]!.id}`)).json() as { isTest: boolean };
-      expect(one.isTest).toBe(true);
+      const detailOf = async (id: string) => (await api(t, "HOSPITAL_ADMIN", "GET", `/integrations/hub/ccs_ivr/calls/${id}`)).json() as { isTest: boolean };
+      expect((await detailOf(simulated!.id)).isTest).toBe(true);
+      expect((await detailOf(realId)).isTest).toBe(false);
+      const list = (await api(t, "HOSPITAL_ADMIN", "GET", "/integrations/hub/ccs_ivr")).json() as { recentCalls: { id: string; isTest: boolean }[] };
+      expect(list.recentCalls.find((c) => c.id === realId)).toMatchObject({ isTest: false });
     });
 
     it("one call opens as a detail with provider context, source attribution and the next action, and no secret", async () => {

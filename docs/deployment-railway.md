@@ -45,10 +45,17 @@ The CCS webhook (`/webhooks/ccs/<connector id>`) no longer accepts call reports 
 - **Cut-over check:** before relying on this build, make sure the webhook configured at ccs.ivrsms.com sends a saved key.
   Until it does, new call reports are refused (401) rather than silently accepted.
 
+## Database migration 0043 (CCS call ingestion)
+
+This release adds migration `0043_ccs_call_ingestion` (additive only: five nullable columns and one new table, no data rewritten).
+Run `pnpm db:migrate` against the production database **before** the new API starts serving, from a trusted shell. It is the
+operator's step: nothing in the repository or the test tooling runs it against production.
+Order: take a backup or snapshot -> `pnpm db:migrate` -> deploy the API -> set up lines and agents under Integrations -> CCS IVR -> Lines & team.
+
 ## Before a release
 
 - [ ] `CONNECTOR_ENCRYPTION_KEY` present on the API service (name only — check the Variables tab, don't print it).
-- [ ] `pnpm db:migrate` run if the release contains a new migration (this one does not).
+- [ ] `pnpm db:migrate` run if the release contains a new migration (this one does: 0043, see above).
 - [ ] Tests ran against a **local/disposable** Postgres. The API test runner refuses non-local hosts
       (`apps/api/src/test-setup`); set `PULSEOS_TEST_ALLOW_REMOTE_DB=1` only for a deliberately disposable remote DB.
 - [ ] CCS webhook sends a saved key (see above).
