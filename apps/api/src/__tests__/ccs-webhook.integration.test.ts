@@ -124,14 +124,16 @@ describe.skipIf(!DEMO_PASSWORD)("CCS IVR webhook (integration)", () => {
       expect(await callsFor(a.tenantId, p.call_id)).toHaveLength(0);
     });
 
-    it("an authenticated but malformed payload is refused; an empty ping (a provider's setup check) is acknowledged and stores nothing", async () => {
-      const before = (await db.select().from(connectorEvents).where(eq(connectorEvents.connectorId, ccsA))).length;
+    it("an authenticated but malformed payload is refused and leaves only a failed shape event; an empty ping (a provider's setup check) is acknowledged and stores nothing", async () => {
+      const count = async () => (await db.select().from(connectorEvents).where(eq(connectorEvents.connectorId, ccsA))).length;
+      const before = await count();
       const bad = await hook(ccsA, { call_id: "x", note: "no caller number here" }, { "x-api-key": KEY_A });
       expect(bad.statusCode).toBe(422);
       expect(bad.json()).toEqual({ error: "invalid_payload" });
+      expect(await count()).toBe(before + 1); // the failed event holds the payload's SHAPE only
       const ping = await hook(ccsA, {}, { "x-api-key": KEY_A });
       expect(ping.statusCode).toBe(200);
-      expect((await db.select().from(connectorEvents).where(eq(connectorEvents.connectorId, ccsA))).length).toBe(before);
+      expect(await count()).toBe(before + 1); // a ping adds nothing
       // Garbage JSON is refused by the framework before any of this.
       const garbage = await app.inject({ method: "POST", url: `/webhooks/ccs/${ccsA}`, headers: { "content-type": "application/json", "x-api-key": KEY_A }, payload: "{not json" });
       expect(garbage.statusCode).toBe(400);
@@ -316,6 +318,42 @@ describe.skipIf(!DEMO_PASSWORD)("CCS IVR webhook (integration)", () => {
       } finally {
         await logged.close();
       }
+    });
+  });
+  // The first real CCS payload was authenticated but not readable as a call. Such a payload must not vanish: its SHAPE (names, and the
+  // values of category-like fields only) is recorded so the Super Admin can see what CCS really sends, without storing the call itself.
+  describe("a payload that cannot be read as a call leaves its shape behind", () => {
+    const weird = () => ({ event: "call_report", seq: 7, data: { src_no: "9811177711", dst_no: "08062987312", status: "No Answer", agent: { name: "Secret Agent Name" } }, items: [{ pin: "123456" }] });
+
+    it("is refused (422), stores no patient/call, and records only its shape as a failed event", async () => {
+      const before = (await db.select().from(calls).where(eq(calls.tenantId, a.tenantId))).length;
+      const r = await hook(ccsA, weird(), { "x-api-key": KEY_A });
+      expect(r.statusCode).toBe(422);
+      expect((await db.select().from(calls).where(eq(calls.tenantId, a.tenantId))).length).toBe(before);
+      const ev = (await db.select().from(connectorEvents).where(eq(connectorEvents.connectorId, ccsA))).find((e) => e.status === "failed" && JSON.stringify(e.payload).includes("src_no"));
+      expect(ev).toBeDefined();
+      expect(ev!.error).toBe("no_caller_number");
+      const stored = JSON.stringify(ev!.payload);
+      for (const value of ["9811177711", "08062987312", "Secret Agent Name", "123456"]) expect(stored, value).not.toContain(value);
+      expect(stored).toContain("src_no"); // names are kept
+      expect(stored).toContain("No Answer"); // a category-like value (status) is kept
+    });
+
+    it("payload-shapes lists the nested field names, marks them unrecognised, and still shows no value except category-like ones", async () => {
+      const res = await asRole(a, "SUPER_ADMIN", "/integrations/hub/ccs_ivr/payload-shapes");
+      const shapes = res.json() as { fields: { name: string; recognised: boolean }[]; values: Record<string, string[]> };
+      const names = shapes.fields.map((f) => f.name);
+      expect(names).toEqual(expect.arrayContaining(["event", "seq", "data.src_no", "data.dst_no", "data.status", "data.agent.name", "items[].pin"]));
+      expect(shapes.fields.find((f) => f.name === "data.src_no")!.recognised).toBe(false); // the normalizer reads top-level names only
+      expect(shapes.values["data.status"]).toContain("No Answer");
+      expect(res.body).not.toMatch(/9811177711|08062987312|Secret Agent Name|123456/);
+    });
+
+    it("an empty ping is still just acknowledged, and a readable call is unaffected", async () => {
+      expect((await hook(ccsA, {}, { "x-api-key": KEY_A })).statusCode).toBe(200);
+      const p = callPayload();
+      expect((await hook(ccsA, p, { "x-api-key": KEY_A })).statusCode).toBe(200);
+      expect(await callsFor(a.tenantId, p.call_id)).toHaveLength(1);
     });
   });
 });

@@ -13,6 +13,8 @@ import { processProviderLead } from "../acquisition/lead-webhook.service.js";
 import { ingestNormalizedLead } from "../acquisition/lead-ingestion.service.js";
 import { isCredentialName, withoutCredentials } from "../../lib/credential-redaction.js";
 import { isRecognisedCcsField } from "./adapters/ccs-normalizer.js";
+import { shapeOf } from "../../lib/payload-shape.js";
+import { randomUUID } from "node:crypto";
 
 interface RequestWithRawBody extends FastifyRequest {
   rawBody?: string;
@@ -228,6 +230,9 @@ export async function webhookRoutes(app: FastifyInstance) {
     const calls = adapter.parseWebhookPayload(safePayload);
     if (calls.length === 0) {
       request.log.warn({ ccs: { connectorId, fieldNames, reason: "no_caller_number" } }, "ccs call report not normalized");
+      // Keep the SHAPE (names, category-like values only) so the real payload can be read in payload-shapes: never the call's own data.
+      const { eventId } = await recordConnectorEvent(app.db, { tenantId: connector.tenantId, connectorId, externalEventId: `ccs:unparsed:${randomUUID()}`, direction: "inbound", payload: { type: "unparsed", raw: shapeOf(safePayload) } });
+      await markEventFailed(app.db, eventId, "no_caller_number");
       return reply.status(422).send({ error: "invalid_payload" });
     }
     request.log.info({ ccs: { connectorId, events: calls.length, fieldNames } }, "ccs call report received");

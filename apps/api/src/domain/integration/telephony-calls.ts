@@ -5,6 +5,7 @@ import { calls, communicationEndpoints, connectorEvents, journeys, leadSources, 
 import type { PayloadShapes, TelephonyCallDetail, TelephonyCallRecord } from "@pulseos/types";
 import { isRecognisedCcsField } from "../connector/adapters/ccs-normalizer.js";
 import { isCredentialName } from "../../lib/credential-redaction.js";
+import { leaves } from "../../lib/payload-shape.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const handler = alias(users, "handler");
@@ -109,11 +110,6 @@ export async function getTelephonyCallDetail(db: Db, tenantId: string, connector
   };
 }
 
-// Field names where a handful of distinct values is useful to see (status wording, direction wording, circle...). Never a
-// phone, a name or a URL: only fields whose NAME says they are a category.
-const CATEGORY_FIELDS = new Set(["status", "callstatus", "dialstatus", "callstate", "disposition", "direction", "calltype", "type", "circle", "telecomcircle", "callgroup", "group", "ivrkey", "dtmf", "keypressed", "ivrselection", "menuoption", "selection"]);
-const norm = (n: string) => n.toLowerCase().replace(/[^a-z0-9]/g, "");
-
 /**
  * What real CCS call reports actually carry, so the first real payload can be mapped from facts instead of guesses.
  * Field names (credential-named ones left out) with how often each was seen and whether PulseOS already maps it, plus the
@@ -131,19 +127,24 @@ export async function getPayloadShapes(db: Db, tenantId: string, connectorId: st
   for (const { payload } of rows) {
     const raw = (payload as { raw?: unknown } | null)?.raw;
     if (!raw || typeof raw !== "object") continue;
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      if (isCredentialName(k)) continue;
-      seen.set(k, (seen.get(k) ?? 0) + 1);
-      if (CATEGORY_FIELDS.has(norm(k)) && v !== null && typeof v !== "object") {
-        const set = values.get(k) ?? new Set<string>();
-        if (set.size < 20) set.add(String(v).slice(0, 40));
-        values.set(k, set);
+    const seenHere = new Set<string>();
+    for (const leaf of leaves(raw)) {
+      if (isCredentialName(leaf.path.split(/[.\[\]]+/).filter(Boolean).pop() ?? leaf.path)) continue;
+      if (!seenHere.has(leaf.path)) {
+        seenHere.add(leaf.path);
+        seen.set(leaf.path, (seen.get(leaf.path) ?? 0) + 1);
+      }
+      if (leaf.value !== null) {
+        const set = values.get(leaf.path) ?? new Set<string>();
+        if (set.size < 20) set.add(leaf.value);
+        values.set(leaf.path, set);
       }
     }
   }
   return {
     events: rows.length,
-    fields: [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, seen: n, recognised: isRecognisedCcsField(name) })),
+    // The normalizer reads TOP-LEVEL names only, so a nested name is never "recognised".
+    fields: [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, seen: n, recognised: !/[.\[]/.test(name) && isRecognisedCcsField(name) })),
     values: Object.fromEntries([...values.entries()].map(([k, set]) => [k, [...set]])),
   };
 }
