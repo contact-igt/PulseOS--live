@@ -19,6 +19,12 @@ const MAIN_LINE = "08040005678";
 // CCS shows India local time without an offset.
 const ist = (d: Date) => new Date(d.getTime() + 5.5 * 3_600_000).toISOString().slice(0, 19).replace("T", " ");
 
+/** The shape of the structured CCS diagnostics lines (names and booleans only). */
+interface LogLine {
+  msg?: string;
+  ccs: { fieldNames: { recognised: string[]; unrecognised: string[] }; presentedHeaders: string[]; presentedParams: string[] } & Record<string, unknown>;
+}
+
 describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (integration)", () => {
   let app: FastifyInstance;
   let t: TestTenant;
@@ -372,6 +378,71 @@ describe.skipIf(!DEMO_PASSWORD)("CCS call ingestion into the patient journey (in
       const res = await api(t, "HOSPITAL_ADMIN", "GET", `/calls/${call.id}/recording`);
       expect(res.statusCode).toBeGreaterThanOrEqual(400);
       expect(res.body).not.toMatch(/127\.0\.0\.1|expired-9/);
+    });
+  });
+  describe("first-real-call diagnostics: what is logged, and what never is", () => {
+    const PRIVATE_PHONE = `98${String(70000000 + ++phoneSeq * 977 + 123).padStart(8, "0")}`;
+    const lines: string[] = [];
+    let logged: FastifyInstance;
+    const parsed = () => lines.flatMap((l) => l.split(/\r?\n/)).filter(Boolean).map((l) => { try { return JSON.parse(l) as LogLine; } catch { return null; } }).filter((x): x is LogLine => !!x);
+    const post = (payload: Record<string, unknown>, headers: Record<string, string> = { "x-api-key": KEY }, query = "") => logged.inject({ method: "POST", url: `/webhooks/ccs/${ccs}${query}`, headers, payload });
+
+    beforeAll(async () => {
+      logged = await buildApp({ logStream: { write: (m: string) => void lines.push(m) } });
+      await logged.ready();
+    });
+    afterAll(async () => {
+      await logged.close();
+    });
+
+    it("a new answered call logs the field names, the line/source resolution and the match/create outcomes, as safe structured facts", async () => {
+      lines.length = 0;
+      const r = report({ caller_number: PRIVATE_PHONE, customer_name: "Secret Patient Name", recording_url: "https://ccs.example.test/rec/private-9.mp3?token=zzz", campaign_tag: "diwali" });
+      expect((await post(r, {}, `?api_key=${KEY}`)).statusCode).toBe(200);
+      const logs = parsed();
+      const received = logs.find((l) => l.msg === "ccs call report received")!;
+      expect(received.ccs).toMatchObject({ connectorId: ccs, events: 1 });
+      expect(received.ccs.fieldNames.recognised).toEqual(expect.arrayContaining(["call_id", "caller_number", "called_number", "status", "duration", "recording_url"]));
+      expect(received.ccs.fieldNames.unrecognised).toEqual(["campaign_tag"]);
+      const done = logs.find((l) => l.msg === "ccs call ingested")!;
+      expect(done.ccs).toMatchObject({ connectorId: ccs, direction: "inbound", outcome: "completed", patient: "created", journey: "created", callSaved: true, duplicate: false, taskCreated: false, lineResolved: true, sourceMapped: true, recordingAvailable: true, idDerived: false });
+    });
+
+    it("never logs the phone number, the name, the recording URL, any credential, or a payload value", async () => {
+      const everything = lines.join("");
+      for (const secret of [PRIVATE_PHONE, "Secret Patient Name", "private-9", "token=zzz", KEY, "diwali", "Dhanbad"]) expect(everything, secret).not.toContain(secret);
+      expect(everything).toContain("api_key=[redacted]"); // the request line, with the key redacted
+    });
+
+    it("a retry logs as a duplicate with the patient matched, and a missed call logs that its callback task was created", async () => {
+      lines.length = 0;
+      const r = report({ caller_number: PRIVATE_PHONE, status: "No Answer", duration: "0" });
+      await post(r);
+      await post(r);
+      const done = parsed().filter((l) => l.msg === "ccs call ingested").map((l) => l.ccs);
+      expect(done).toHaveLength(2);
+      expect(done[0]).toMatchObject({ outcome: "missed", patient: "matched", journey: "reused", callSaved: true, taskCreated: true });
+      expect(done[1]).toMatchObject({ callSaved: false, duplicate: true, taskCreated: false });
+    });
+
+    it("a refused request logs which kinds of credential were PRESENTED and which are saved (names only), so a 401 can be diagnosed without a secret", async () => {
+      lines.length = 0;
+      const res = await post(report(), { "x-wrong-header": "synthetic-leak-check", authorization: "Bearer synthetic-bearer", "user-agent": "CCS-Webhook/1.0" }, "?token=synthetic-token-value");
+      expect(res.statusCode).toBe(401);
+      const rejected = parsed().find((l) => l.msg === "CCS IVR webhook authentication rejected")!;
+      expect(rejected.ccs).toMatchObject({ connectorId: ccs, savedKeyKinds: ["apiKey"], userAgent: "CCS-Webhook/1.0" });
+      expect(rejected.ccs.presentedHeaders).toEqual(expect.arrayContaining(["authorization"]));
+      expect(rejected.ccs.presentedParams).toEqual(expect.arrayContaining(["token"]));
+      const everything = lines.join("");
+      for (const secret of ["synthetic-leak-check", "synthetic-bearer", "synthetic-token-value", KEY]) expect(everything, secret).not.toContain(secret);
+    });
+
+    it("a report that cannot be read as a call logs the field names it had, so the real shape can be mapped", async () => {
+      lines.length = 0;
+      expect((await post({ call_id: "x", note: "no caller", weird_field: "v" })).statusCode).toBe(422);
+      const l = parsed().find((x) => x.msg === "ccs call report not normalized")!;
+      expect(l.ccs.fieldNames.unrecognised).toEqual(expect.arrayContaining(["note", "weird_field"]));
+      expect(lines.join("")).not.toContain("no caller");
     });
   });
 });

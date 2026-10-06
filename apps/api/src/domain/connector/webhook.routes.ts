@@ -11,7 +11,8 @@ import { applyDeliveryStatus } from "../notification/notification.service.js";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { processProviderLead } from "../acquisition/lead-webhook.service.js";
 import { ingestNormalizedLead } from "../acquisition/lead-ingestion.service.js";
-import { withoutCredentials } from "../../lib/credential-redaction.js";
+import { isCredentialName, withoutCredentials } from "../../lib/credential-redaction.js";
+import { isRecognisedCcsField } from "./adapters/ccs-normalizer.js";
 
 interface RequestWithRawBody extends FastifyRequest {
   rawBody?: string;
@@ -193,7 +194,21 @@ export async function webhookRoutes(app: FastifyInstance) {
     };
 
     if (!adapter.verifyWebhook(rawPayload, request.headers as Record<string, string | undefined>, secrets)) {
-      app.log.warn({ connectorId }, "CCS IVR webhook authentication rejected");
+      // To diagnose a 401 without a secret: WHICH kinds of credential arrived (names only) vs which are saved. Never a value.
+      const ua = request.headers["user-agent"];
+      request.log.warn(
+        {
+          ccs: {
+            connectorId,
+            presentedHeaders: Object.keys(request.headers).filter((h) => /key|secret|token|auth|signature/i.test(h)),
+            presentedParams: Object.keys(rawPayload).filter(isCredentialName),
+            savedKeyKinds: ["apiKey", "secretKey", "integrationKey"].filter((k) => typeof secrets[k] === "string" && (secrets[k] as string).trim() !== ""),
+            userAgent: typeof ua === "string" ? ua.slice(0, 80) : null,
+            contentType: typeof request.headers["content-type"] === "string" ? request.headers["content-type"].split(";")[0] : null,
+          },
+        },
+        "CCS IVR webhook authentication rejected",
+      );
       return reply.status(401).send({ error: "unauthorized" });
     }
 
@@ -203,8 +218,15 @@ export async function webhookRoutes(app: FastifyInstance) {
     const safePayload = withoutCredentials(rawPayload);
     if (Object.keys(safePayload).length === 0) return reply.status(200).send({ ok: true, accepted: 0 }); // a provider's setup ping
 
+    // Field NAMES only (never a value): what the first real CCS report actually looks like, and what is already mapped.
+    const names = Object.keys(safePayload);
+    const fieldNames = { recognised: names.filter(isRecognisedCcsField), unrecognised: names.filter((n) => !isRecognisedCcsField(n)) };
     const calls = adapter.parseWebhookPayload(safePayload);
-    if (calls.length === 0) return reply.status(422).send({ error: "invalid_payload" });
+    if (calls.length === 0) {
+      request.log.warn({ ccs: { connectorId, fieldNames, reason: "no_caller_number" } }, "ccs call report not normalized");
+      return reply.status(422).send({ error: "invalid_payload" });
+    }
+    request.log.info({ ccs: { connectorId, events: calls.length, fieldNames } }, "ccs call report received");
     for (const call of calls) {
       const { duplicate, eventId } = await recordConnectorEvent(app.db, {
         tenantId: connector.tenantId,
@@ -213,13 +235,20 @@ export async function webhookRoutes(app: FastifyInstance) {
         direction: "inbound",
         payload: { type: "call", raw: safePayload },
       });
-      if (duplicate) continue;
+      const facts = { connectorId, direction: call.direction, outcome: call.status, idDerived: call.metadata.idDerived === true, recordingAvailable: !!call.recordingUrl };
+      if (duplicate) {
+        request.log.info({ ccs: { ...facts, callSaved: false, duplicate: true, taskCreated: false, stage: "event" } }, "ccs call ingested");
+        continue;
+      }
 
       try {
-        await persistInboundCall(app.db, connector.tenantId, connectorId, call);
+        const summary = await persistInboundCall(app.db, connector.tenantId, connectorId, call);
         await markEventProcessed(app.db, eventId);
         await touchConnectorSuccess(app.db, connectorId);
+        request.log.info({ ccs: { ...facts, ...summary } }, "ccs call ingested");
       } catch (err) {
+        // Class and database code only: an error MESSAGE can carry the query and its parameters (a phone number).
+        request.log.error({ ccs: { ...facts, stage: "ingest", errorName: (err as Error).name, dbCode: (err as { code?: string }).code ?? null } }, "ccs call ingestion failed");
         await markEventFailed(app.db, eventId, (err as Error).message);
         await touchConnectorError(app.db, connectorId, (err as Error).message);
       }

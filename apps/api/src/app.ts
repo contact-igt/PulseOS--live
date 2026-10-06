@@ -43,12 +43,13 @@ import { reportRoutes } from "./domain/report/report.routes.js";
 import { secretErrorCode } from "./domain/security/encryption.js";
 import { redactUrlSecrets } from "./lib/credential-redaction.js";
 
-export async function buildApp() {
+export async function buildApp(opts: { logStream?: { write(msg: string): void } } = {}) {
   // Behind a reverse proxy set TRUST_PROXY=<number of proxy hops> (usually 1) so request.ip is the client's address — the
   // sign-in throttle keys on it. Unset trusts no proxy: all clients then share the proxy's address.
   const options: FastifyServerOptions = {
     // The request log line carries the URL, and an operator may put a webhook key in the query string: never log it.
     logger: {
+      ...(opts.logStream ? { stream: opts.logStream } : {}),
       serializers: {
         req: (req) => ({ method: req.method, url: redactUrlSecrets(req.url ?? ""), host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort }),
       },

@@ -47,7 +47,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
 
   app.get("/integrations/hub/:key", async (request, reply) => {
     const u = request.sessionUser!;
-    const detail = await getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key);
+    const detail = await getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key, `${request.protocol}://${request.host}`);
     if (!detail) return reply.status(404).send({ error: "unknown_integration" });
     return detail;
   });
@@ -83,7 +83,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     request.log.info({ integration: { key, userId: u.id, tenantId: u.tenantId, changed: Object.keys(parsed.data) } }, "integration configured");
     // Which kinds of setting changed and which secret NAMES were touched — never a value.
     await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: parsed.data.secrets ? "integration.secret_changed" : "integration.configured", entityType: "integration", entityKey: key, metadata: { settings: Object.keys(parsed.data.configuration ?? {}), protectedFieldNames: Object.keys(parsed.data.secrets ?? {}), mode: parsed.data.mode ?? null } });
-    return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key);
+    return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key, `${request.protocol}://${request.host}`);
   });
 
   // "Sync now": a read-only pull of reporting numbers. Never contacts the provider unless it is configured and switched on;

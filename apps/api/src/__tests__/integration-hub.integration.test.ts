@@ -204,6 +204,22 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
       expect(d.inbound!.note).toMatch(/refused until at least one key is saved/i);
     });
 
+    it("the webhook URL to paste into CCS is complete: the host the API is reached on, or PUBLIC_API_BASE_URL when it is set", async () => {
+      const urlFor = async (headers: Record<string, string> = {}) =>
+        ((await app.inject({ method: "GET", url: ccsUrl, headers, cookies: { pulseos_session: v1.cookie.SUPER_ADMIN! } })).json() as IntegrationDetail).webhookUrl;
+      const original = process.env.PUBLIC_API_BASE_URL;
+      try {
+        delete process.env.PUBLIC_API_BASE_URL;
+        const derived = (await urlFor({ host: "preview-api.example.test" }))!;
+        expect(derived).toMatch(/^http:\/\/preview-api\.example\.test\/webhooks\/ccs\/[0-9a-f-]{36}$/);
+        process.env.PUBLIC_API_BASE_URL = "https://api.hospital.example/";
+        expect(await urlFor({ host: "ignored.example.test" })).toBe(derived.replace("http://preview-api.example.test", "https://api.hospital.example"));
+      } finally {
+        if (original === undefined) delete process.env.PUBLIC_API_BASE_URL;
+        else process.env.PUBLIC_API_BASE_URL = original;
+      }
+    });
+
     it("first save stores apiKey, secretKey and integrationKey; partial updates keep the rest; mode persists; nothing raw comes back", async () => {
       const first = await put(v1, { secrets: { apiKey: "synthetic-api-1", secretKey: "synthetic-secret-1", integrationKey: "synthetic-integration-1" }, mode: "LIVE" });
       expect(first.statusCode).toBe(200);

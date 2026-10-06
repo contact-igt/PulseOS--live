@@ -2,7 +2,7 @@ import { emitIntegrationEvent } from "../integration/domain-events.js";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { calls, connectors, journeys, leadSources, tasks, timelineEvents } from "../../db/schema.js";
-import { findMostRecentActiveJourney, findOrCreatePatientByPhone } from "../patient/identity.service.js";
+import { findMostRecentActiveJourney, resolveOrCreatePatient } from "../patient/identity.service.js";
 import { getSoleActiveEndpointForConnector, resolveEndpointByCalledNumber } from "./communication-endpoint.service.js";
 import { resolveMappedUser } from "./agent-mapping.service.js";
 import type { InboundCallEvent } from "./types.js";
@@ -95,13 +95,24 @@ async function applyDispositionMapping(
  * Task — in a single transaction. The provider's own call id is unique per connector, so a re-delivery of the same
  * call is a no-op: no second Call, no second Task.
  */
-export async function persistInboundCall(db: Db, tenantId: string, connectorId: string, event: InboundCallEvent, mapping: DispositionMapping = DEFAULT_DISPOSITION_MAPPING): Promise<void> {
+/** What ingesting one call did, as facts safe to log: no phone, no name, no URL, no payload value. */
+export interface CallIngestSummary {
+  callSaved: boolean;
+  duplicate: boolean;
+  patient: "created" | "matched";
+  journey: "created" | "reused" | "none";
+  taskCreated: boolean;
+  lineResolved: boolean;
+  sourceMapped: boolean;
+}
+
+export async function persistInboundCall(db: Db, tenantId: string, connectorId: string, event: InboundCallEvent, mapping: DispositionMapping = DEFAULT_DISPOSITION_MAPPING): Promise<CallIngestSummary> {
   const customerName = (event.metadata.customerName as string | null | undefined) ?? null;
   // The hospital line the call arrived on. A provider that REPORTS the line (CCS) is matched on it, and a reported line
   // that matches nothing stays unresolved: it is never guessed. A provider that does not report one (Runo) can only use the
   // connector's sole active line, a real default, never a pick among several.
   const endpoint = event.calledLine ? await resolveEndpointByCalledNumber(db, tenantId, connectorId, event.calledLine) : await getSoleActiveEndpointForConnector(db, tenantId, connectorId);
-  const patient = await findOrCreatePatientByPhone(db, tenantId, event.phone, customerName, endpoint?.branchId ?? null);
+  const { patient, isNewPatient } = await resolveOrCreatePatient(db, { tenantId, phone: event.phone, name: customerName, branchId: endpoint?.branchId ?? null });
   const existingJourney = await findMostRecentActiveJourney(db, tenantId, patient.id);
   const [connector] = await db.select({ mode: connectors.mode }).from(connectors).where(eq(connectors.id, connectorId)).limit(1);
   // WHO handled the call (a provider agent mapped to a team member). Recorded on the call only: it never moves the Journey.
@@ -119,6 +130,8 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
   const allocated = openNew ? await pickOwnerForNewJourney(db, tenantId, { source: sourceBucket, journeyType: PHONE_ENQUIRY, branchId: endpoint?.branchId ?? null }) : null;
 
   let stored: { id: string; journeyId: string | null } | null = null;
+  let journeyOutcome: CallIngestSummary["journey"] = existingJourney ? "reused" : "none";
+  let taskCreated = false;
   await db.transaction(async (tx) => {
     const [insertedCall] = await tx
       .insert(calls)
@@ -157,6 +170,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
         })
         .returning();
       journey = created!;
+      journeyOutcome = "created";
       await tx.update(calls).set({ journeyId: journey.id }).where(eq(calls.id, insertedCall.id));
       await tx.insert(timelineEvents).values({
         tenantId, patientId: patient.id, journeyId: journey.id, actorType: "system", eventType: "journey_created", title: `${PHONE_ENQUIRY} journey opened`,
@@ -189,6 +203,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
     // must never ALSO trigger a disposition-mapped task — that would double
     // up the follow-up task for one missed call.
     if (event.status === "missed") {
+      taskCreated = true;
       await createMissedCallTask(tx, tenantId, patient.id, journey?.id ?? null, endpoint?.displayLabel ?? null);
     } else {
       await applyDispositionMapping(tx, tenantId, patient.id, journey?.id ?? null, event.disposition, mapping);
@@ -198,6 +213,15 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
   if (call && (event.status === "completed" || event.status === "missed")) {
     emitIntegrationEvent({ type: event.status === "completed" ? "call.completed" : "call.missed", tenantId, eventId: `call.${event.status}:${call.id}`, occurredAt: event.endedAt ?? event.startedAt ?? new Date(), data: { callId: call.id, journeyId: call.journeyId, direction: event.direction } });
   }
+  return {
+    callSaved: !!call,
+    duplicate: !call,
+    patient: isNewPatient ? "created" : "matched",
+    journey: call ? journeyOutcome : existingJourney ? "reused" : "none",
+    taskCreated: !!call && taskCreated,
+    lineResolved: !!endpoint,
+    sourceMapped: !!mappedSource,
+  };
 }
 
 const PHONE_ENQUIRY = "Phone enquiry";

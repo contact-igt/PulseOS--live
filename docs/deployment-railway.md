@@ -45,6 +45,25 @@ The CCS webhook (`/webhooks/ccs/<connector id>`) no longer accepts call reports 
 - **Cut-over check:** before relying on this build, make sure the webhook configured at ccs.ivrsms.com sends a saved key.
   Until it does, new call reports are refused (401) rather than silently accepted.
 
+## Testing a real CCS call without touching production
+
+CCS cannot reach `localhost`, so a real call needs a publicly reachable API running this branch. Do not point the existing production
+service at the branch. Create a **separate Railway environment (or a second API + web + Postgres)** for `feat/ccs-call-ingestion`:
+
+- **Its own database.** Never the production `DATABASE_URL`. The new code needs migration 0043, and a real caller's number must not
+  land in a production database during a test.
+- Variables on the **preview API** (names only): `DATABASE_URL` (preview DB), `CONNECTOR_ENCRYPTION_KEY` (its own value),
+  `WEB_ORIGIN` (the preview web origin), `PUBLIC_API_BASE_URL` (the preview API's public https URL: this is what the Webhooks tab prints
+  for CCS), `NODE_ENV=production`, `TRUST_PROXY=1`, `COOKIE_SAMESITE` as the existing cross-domain setup requires, `DEMO_PASSWORD` only
+  if the preview DB is seeded.
+- **Preview web:** `NEXT_PUBLIC_API_URL` (build time) = the preview API's public URL.
+- On the preview DB, once: `pnpm db:migrate`, then `pnpm db:seed` (demo hospital data) so a Super Admin can sign in and add the CCS
+  connector. The seeded data is fictional; the only real data is the caller's number from your test calls.
+- Deploy branch: `feat/ccs-call-ingestion` for the preview services only.
+
+Then: Integrations -> CCS IVR -> Credentials (save a key) -> Webhooks (copy the URL) -> configure CCS -> follow the real-call procedure in
+`ccs-call-ingestion.md`.
+
 ## Database migration 0043 (CCS call ingestion)
 
 This release adds migration `0043_ccs_call_ingestion` (additive only: five nullable columns and one new table, no data rewritten).

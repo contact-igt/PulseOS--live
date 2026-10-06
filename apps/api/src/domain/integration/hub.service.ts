@@ -119,7 +119,11 @@ export async function listHub(db: Db, tenantId: string, role: Role, caps: Capabi
   return INTEGRATION_CATALOGUE.map((e) => card(e, caps, role, e.connectorProvider ? facts.get(e.connectorProvider) : undefined, wh));
 }
 
-export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: CapabilityMap, key: string): Promise<IntegrationDetail | null> {
+/**
+ * `requestOrigin` is where this very request reached the API (protocol + host). It is the fallback for the webhook URL shown to the
+ * operator when PUBLIC_API_BASE_URL is not set, so the URL is always complete enough to paste into a provider.
+ */
+export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: CapabilityMap, key: string, requestOrigin?: string): Promise<IntegrationDetail | null> {
   const entry = catalogueEntry(key);
   if (!entry) return null;
   const facts = await loadFacts(db, tenantId);
@@ -132,7 +136,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       : [];
 
   const config = wnHook ? { webhookUrl: wnHook.url, endpointPath: wnHook.endpointPath ?? "" } : (found?.facts.configuration ?? {});
-  const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
+  const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || requestOrigin || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
   const webhookPath =
     found && entry.key === "whatsapp_meta_cloud"
       ? `/webhooks/whatsapp/${found.row.id}`

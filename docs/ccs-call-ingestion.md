@@ -71,3 +71,29 @@ Unassigned queue; no Appointment or Visit; replaying the same call changes nothi
 - The webhook is the only CCS ingress; there is no outbound CCS API, so there is no "test connection".
 - A call with neither a CCS id nor a start time derives its identity from the minute it arrives: two different calls from one
   caller to one line within the same minute would merge.
+
+## What PulseOS expects from CCS (the receiving side: proven by tests)
+
+| | |
+|---|---|
+| URL | `https://<api-host>/webhooks/ccs/<connector-id>`, exactly as shown in Integrations -> CCS IVR -> Webhooks (complete once the API is reached on its public host; set `PUBLIC_API_BASE_URL` so the scheme is right behind a proxy) |
+| Method | `POST` (JSON or `application/x-www-form-urlencoded`) or `GET` with the fields in the query string |
+| Authentication | One saved key, presented as a header (`x-api-key` / `secret-key` / `integration-key` and their variants) **or** as a query/body parameter (`api_key` / `secret_key` / `integration_key`). Without one, the answer is `401` and nothing is stored |
+| Responses | `200` accepted (a retry is also `200`), `401` unauthorised, `422` authenticated but no readable caller, `400` not JSON, `503` credential storage not configured |
+
+## What is NOT known: the CCS side
+
+**PROVIDER WEBHOOK CONFIGURATION REQUIRES EXPRESS IVR SUPPORT/DOCUMENTATION.** `ccs.ivrsms.com` is a login page with no public
+documentation, and nothing in this repository proves the dashboard's webhook settings. The only repository text on it is a note from
+the original integration ("paste it into ccs.ivrsms.com > Webhook Configuration, select Call Report"), written without CCS
+documentation. Before the real-call test, read the account's **API & Integration** page (or ask CCS support) and establish:
+
+1. Is there a setting that **pushes** a call report to a URL when a call ends (a webhook / "callback URL")? Where is it, and is it per IVR line or per account?
+2. Which **HTTP method** does CCS use (POST or GET), and which body format (JSON, form-encoded, query string)?
+3. **How can authentication be sent?** A custom header, an extra query parameter on the URL, or neither. This decides whether CCS can reach PulseOS at all, because PulseOS refuses unauthenticated calls and will not be made public again to suit a provider.
+4. Which **event** triggers it (call end, answered, missed), and are **missed / no-answer calls** pushed too?
+5. Does it send the **called IVR line**, **agent/member**, **call group**, **circle**, **IVR key** and a **recording** reference, and under what field names? (A real captured request answers this; see "Capturing the first real payload".)
+
+If CCS can send a custom header or extra URL parameter, use one of the forms in the table above. If it can do neither, ingestion needs
+a different secure mechanism that CCS actually supports (for example a longer unguessable path token, or provider IP allow-listing if CCS
+publishes fixed addresses); that is a decision to make with evidence, not by weakening the check.
