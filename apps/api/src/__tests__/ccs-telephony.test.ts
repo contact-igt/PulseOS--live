@@ -2,27 +2,42 @@ import { describe, expect, it } from "vitest";
 import { ccsTelephonyAdapter } from "../domain/connector/adapters/ccs.js";
 
 describe("ccsTelephonyAdapter", () => {
-  it("verifies webhook with matching apiKey, secretKey or integrationKey", () => {
-    const secrets = {
-      apiKey: "93250a2de829a1b0481c6d9b908bd45c",
-      secretKey: "3d0ce39f0f64a006c36bcc0c54cdc95e",
-      integrationKey: "23913d0ce39f0f64a006c36bcc0c54cdc95e",
-    };
+  // Webhook authentication FAILS CLOSED. Any one saved key, presented by the caller and matching, is enough; nothing
+  // saved, nothing presented, or anything presented that does not match is a refusal.
+  describe("verifyWebhook (fails closed)", () => {
+    const secrets = { apiKey: "synthetic-api-key-0001", secretKey: "synthetic-secret-key-0002", integrationKey: "synthetic-integration-key-0003" };
+    const verify = (payload: unknown, headers: Record<string, string>, s: Record<string, unknown> = secrets) => ccsTelephonyAdapter.verifyWebhook(payload, headers, s);
 
-    // Header matching apiKey
-    expect(ccsTelephonyAdapter.verifyWebhook({}, { "x-api-key": "93250a2de829a1b0481c6d9b908bd45c" }, secrets)).toBe(true);
+    it("accepts a matching apiKey, secretKey or integrationKey from headers or the payload/query", () => {
+      expect(verify({}, { "x-api-key": secrets.apiKey })).toBe(true);
+      expect(verify({}, { "secret-key": secrets.secretKey })).toBe(true);
+      expect(verify({ integrationKey: secrets.integrationKey }, {})).toBe(true);
+      expect(verify({ api_key: secrets.apiKey }, {})).toBe(true);
+    });
 
-    // Header matching secretKey
-    expect(ccsTelephonyAdapter.verifyWebhook({}, { "secret-key": "3d0ce39f0f64a006c36bcc0c54cdc95e" }, secrets)).toBe(true);
+    it("rejects a wrong key", () => {
+      expect(verify({}, { "x-api-key": "wrong-key" })).toBe(false);
+      expect(verify({ integrationKey: "wrong" }, {})).toBe(false);
+    });
 
-    // Payload body matching integrationKey
-    expect(ccsTelephonyAdapter.verifyWebhook({ integrationKey: "23913d0ce39f0f64a006c36bcc0c54cdc95e" }, {}, secrets)).toBe(true);
+    it("rejects a request that presents no credential at all (this used to be accepted)", () => {
+      expect(verify({ caller_number: "9810157258" }, {})).toBe(false);
+    });
 
-    // Invalid key provided
-    expect(ccsTelephonyAdapter.verifyWebhook({}, { "x-api-key": "wrong-key" }, secrets)).toBe(false);
+    it("rejects when nothing is configured: no keys, blank keys or non-string values (this used to be accepted)", () => {
+      expect(verify({}, {}, {})).toBe(false);
+      expect(verify({}, { "x-api-key": "anything" }, {})).toBe(false);
+      expect(verify({}, {}, { apiKey: "", secretKey: "   ", integrationKey: null })).toBe(false);
+      expect(verify({ api_key: "" }, { "x-api-key": "" }, { apiKey: "", secretKey: 123 })).toBe(false);
+    });
 
-    // No secrets configured yet -> accepts for setup
-    expect(ccsTelephonyAdapter.verifyWebhook({}, {}, {})).toBe(true);
+    it("a wrong credential is not rescued by a right one sent alongside it", () => {
+      expect(verify({}, { "x-api-key": secrets.apiKey, "secret-key": "wrong" })).toBe(false);
+    });
+
+    it("an unrelated header cannot stand in for a key", () => {
+      expect(verify({}, { authorization: secrets.apiKey })).toBe(false);
+    });
   });
 
   it("parses completed call reports from CCS Express IVR", () => {

@@ -2774,10 +2774,20 @@ export interface TelephonyCallRecord {
   status: string;
   durationSeconds: number | null;
   startedAt: string | null;
-  recordingUrl: string | null;
+  /** Whether a recording exists. The provider's URL is never sent to the browser: playback goes through GET /calls/:id/recording. */
+  hasRecording: boolean;
   journeyId: string | null;
   patientId: string | null;
   patientName: string | null;
+}
+
+export interface IntegrationInboundState {
+  /** Would a correctly authenticated call report be accepted right now. */
+  webhook: "READY" | "NOT_READY";
+  credentials: "SAVED" | "NOT_CONFIGURED" | "UNREADABLE";
+  /** Last call report that authenticated and was processed; null if none yet. */
+  lastValidEventAt: string | null;
+  note: string;
 }
 
 export interface IntegrationDetail extends IntegrationCard {
@@ -2786,12 +2796,16 @@ export interface IntegrationDetail extends IntegrationCard {
   configurationValues: Record<string, string>;
   /** One entry per secret field; the value itself is never sent. */
   secretFields: (IntegrationFieldSpec & { hasSecret: boolean })[];
+  /** Credentials are stored but the server cannot decrypt them (its encryption key is missing or changed): not "Not set". */
+  secretsUnreadable?: boolean;
   /** Provider dispositions / actions mapped to PulseOS next actions (calling), or other mapping notes. */
   mappingNotes: string | null;
   /** Ads providers only: the latest sync runs (what was pulled, when, and any failure). */
   syncRuns?: AdsSyncRunVm[];
   /** Telephony providers: recent received calls */
   recentCalls?: TelephonyCallRecord[];
+  /** Telephony providers that receive call reports by webhook: readiness as separate facts (never a claimed connection). */
+  inbound?: IntegrationInboundState;
   webhookUrl: string | null;
   connectorMode: "FIXTURE" | "SANDBOX" | "LIVE" | null;
 }

@@ -40,12 +40,19 @@ import { campaignRoutes } from "./domain/campaign/campaign.routes.js";
 import { analyticsRoutes } from "./domain/analytics/analytics.routes.js";
 import { websiteFormRoutes } from "./domain/acquisition/website-form.routes.js";
 import { reportRoutes } from "./domain/report/report.routes.js";
+import { secretErrorCode } from "./domain/security/encryption.js";
+import { redactUrlSecrets } from "./lib/credential-redaction.js";
 
 export async function buildApp() {
   // Behind a reverse proxy set TRUST_PROXY=<number of proxy hops> (usually 1) so request.ip is the client's address — the
   // sign-in throttle keys on it. Unset trusts no proxy: all clients then share the proxy's address.
   const options: FastifyServerOptions = {
-    logger: true,
+    // The request log line carries the URL, and an operator may put a webhook key in the query string: never log it.
+    logger: {
+      serializers: {
+        req: (req) => ({ method: req.method, url: redactUrlSecrets(req.url ?? ""), host: req.host, remoteAddress: req.ip, remotePort: req.socket?.remotePort }),
+      },
+    },
     // Fastify accepts a hop count at runtime (proxy-addr); its type declaration omits `number`.
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY) as FastifyServerOptions["trustProxy"],
   };
@@ -56,6 +63,13 @@ export async function buildApp() {
   // names and ids) must never reach the browser. Expected 4xx errors keep
   // their specific, non-sensitive Fastify codes/messages.
   app.setErrorHandler((error: FastifyError, request, reply) => {
+    // Credential storage unavailable (encryption key missing/changed): a configuration problem the operator must fix, so
+    // answer 503 with a specific, safe code rather than an anonymous 500. The detail stays in the server log.
+    const secretCode = secretErrorCode(error);
+    if (secretCode) {
+      request.log.error({ err: error }, "connector secret storage unavailable");
+      return reply.status(503).send({ error: secretCode });
+    }
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
     if (status >= 500) {
       request.log.error({ err: error }, "unhandled error");

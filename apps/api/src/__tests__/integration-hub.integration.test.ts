@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import type { IntegrationCard, IntegrationDetail, IntegrationLogRow, Role } from "@pulseos/types";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { connectorEvents, outboundWebhookDeliveries } from "../db/schema.js";
+import { connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries } from "../db/schema.js";
 import { deliverDueWebhooks, enqueueWebhookDeliveries, type WebhookFetch } from "../domain/integration/outbound-webhook.service.js";
 import { emitIntegrationEvent } from "../domain/integration/domain-events.js";
 import { verifyWebhookSignature } from "../domain/integration/webhook-rules.js";
@@ -177,5 +177,101 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
     expect(((await call(v1, "HOSPITAL_ADMIN", "GET", "/integrations/logs?provider=webhooks")).json() as IntegrationLogRow[]).every((r) => r.provider === "webhooks")).toBe(true);
     expect(((await call(v1, "HOSPITAL_ADMIN", "GET", "/integrations/logs?from=2020-01-01&to=2020-01-02")).json() as IntegrationLogRow[])).toHaveLength(0);
     expect(((await call(other, "HOSPITAL_ADMIN", "GET", "/integrations/logs")).json() as IntegrationLogRow[])).toHaveLength(0);
+  });
+  // CCS IVR credential save (Railway "Could not save: internal_error"). Synthetic values only.
+  describe("CCS IVR credentials", () => {
+    const ccsUrl = "/integrations/hub/ccs_ivr";
+    const put = (t: TestTenant, body: object) => call(t, "SUPER_ADMIN", "PUT", `${ccsUrl}/configuration`, body);
+    const detail = async (t: TestTenant) => (await call(t, "SUPER_ADMIN", "GET", ccsUrl)).json() as IntegrationDetail;
+    const has = (d: IntegrationDetail) => Object.fromEntries(d.secretFields.map((f) => [f.key, f.hasSecret]));
+    const withKey = async (value: string | undefined, fn: () => Promise<void>) => {
+      const original = process.env.CONNECTOR_ENCRYPTION_KEY;
+      if (value === undefined) delete process.env.CONNECTOR_ENCRYPTION_KEY;
+      else process.env.CONNECTOR_ENCRYPTION_KEY = value;
+      try {
+        await fn();
+      } finally {
+        if (original === undefined) delete process.env.CONNECTOR_ENCRYPTION_KEY;
+        else process.env.CONNECTOR_ENCRYPTION_KEY = original;
+      }
+    };
+
+    it("a CCS connector with settings but no key saved is Not configured and its webhook is Not ready: calls are refused, and the screen says so", async () => {
+      expect((await put(other, { configuration: { accountEmail: "frontdesk@hospital.test" } })).statusCode).toBe(200);
+      const d = await detail(other);
+      expect(d).toMatchObject({ configuration: "NOT_CONFIGURED", health: "UNKNOWN", isConnected: false });
+      expect(d.inbound).toMatchObject({ webhook: "NOT_READY", credentials: "NOT_CONFIGURED", lastValidEventAt: null });
+      expect(d.inbound!.note).toMatch(/refused until at least one key is saved/i);
+    });
+
+    it("first save stores apiKey, secretKey and integrationKey; partial updates keep the rest; mode persists; nothing raw comes back", async () => {
+      const first = await put(v1, { secrets: { apiKey: "synthetic-api-1", secretKey: "synthetic-secret-1", integrationKey: "synthetic-integration-1" }, mode: "LIVE" });
+      expect(first.statusCode).toBe(200);
+      expect(has(await detail(v1))).toEqual({ apiKey: true, secretKey: true, integrationKey: true });
+      // Update ONLY the secret key; the other two stay.
+      expect((await put(v1, { secrets: { secretKey: "synthetic-secret-2" } })).statusCode).toBe(200);
+      // Blank values (an unchanged form) keep everything and are not an error.
+      expect((await put(v1, { secrets: { apiKey: "", secretKey: "", integrationKey: "" } })).statusCode).toBe(200);
+      const d = await detail(v1);
+      expect(has(d)).toEqual({ apiKey: true, secretKey: true, integrationKey: true });
+      expect(d.connectorMode).toBe("LIVE");
+      expect(d.secretsUnreadable).toBe(false);
+      expect(d.inbound).toMatchObject({ webhook: "READY", credentials: "SAVED" });
+      for (const body of [first.body, JSON.stringify(d), JSON.stringify(await hub(v1, "SUPER_ADMIN"))]) expect(body).not.toMatch(/synthetic-(api|secret|integration)-\d/);
+    });
+
+    it("another hospital sees none of it and cannot disturb it", async () => {
+      expect(has(await detail(other))).toEqual({ apiKey: false, secretKey: false, integrationKey: false });
+      expect((await put(other, { secrets: { apiKey: "synthetic-other" } })).statusCode).toBe(200);
+      expect(has(await detail(v1))).toEqual({ apiKey: true, secretKey: true, integrationKey: true });
+    });
+
+    it("with no encryption key the save is a safe 503 with a specific code, and nothing already stored is lost", async () => {
+      await withKey(undefined, async () => {
+        const res = await put(v1, { secrets: { apiKey: "synthetic-api-3" } });
+        expect(res.statusCode).toBe(503);
+        expect(res.json()).toEqual({ error: "encryption_not_configured" });
+        expect(res.body).not.toMatch(/synthetic-api-3|CONNECTOR_ENCRYPTION_KEY|stack|select|insert/i);
+      });
+      expect(has(await detail(v1))).toEqual({ apiKey: true, secretKey: true, integrationKey: true });
+    });
+
+    it("stored credentials this server cannot decrypt read as unreadable, not as 'Not set', 'Configured' or 'Healthy'", async () => {
+      expect((await call(v1, "SUPER_ADMIN", "POST", `${ccsUrl}/test-event`)).statusCode).toBe(200); // a real-looking event marks the connector Connected
+      // A simulated call is not a provider report: it must not read as "last valid call report".
+      expect((await detail(v1)).inbound!.lastValidEventAt).toBeNull();
+      await withKey("a-different-key-than-the-one-that-saved-them", async () => {
+        const d = await detail(v1);
+        expect(d.secretsUnreadable).toBe(true);
+        expect(has(d)).toEqual({ apiKey: false, secretKey: false, integrationKey: false });
+        expect(d).toMatchObject({ configuration: "PARTIAL", health: "DEGRADED", isConnected: false });
+        expect(d.inbound).toMatchObject({ webhook: "NOT_READY", credentials: "UNREADABLE" });
+        const card = (await hub(v1, "SUPER_ADMIN")).find((c) => c.key === "ccs_ivr")!;
+        expect(card).toMatchObject({ configuration: "PARTIAL", health: "DEGRADED", isConnected: false });
+        const check = (await call(v1, "SUPER_ADMIN", "POST", `${ccsUrl}/status`)).json();
+        expect(check).toMatchObject({ ok: false, health: "DEGRADED" });
+        // Re-entering them under the current key repairs it.
+        expect((await put(v1, { secrets: { apiKey: "synthetic-api-4", secretKey: "synthetic-secret-4", integrationKey: "synthetic-integration-4" } })).statusCode).toBe(200);
+        expect((await detail(v1)).secretsUnreadable).toBe(false);
+      });
+    });
+
+    it("saved credentials alone never mark the connector Connected (Check Status needs a real call report)", async () => {
+      expect((await put(other, { secrets: { apiKey: "synthetic-other-2" }, mode: "LIVE" })).statusCode).toBe(200);
+      const check = (await call(other, "SUPER_ADMIN", "POST", `${ccsUrl}/status`)).json() as { status: string; health: string; message: string };
+      expect(check.status).not.toBe("CONNECTED");
+      expect(check.health).not.toBe("HEALTHY");
+      expect(check.message).toMatch(/waiting for the first call report/i);
+    });
+
+    it("Check Status does not call a CCS connector Connected from old events when no key is saved (its webhook would refuse the next call)", async () => {
+      // `other` has a saved key from the previous test; a test event leaves status CONNECTED + a recorded event. Then the key is
+      // removed (as if never saved): old events must not be read as a live connection.
+      expect((await call(other, "SUPER_ADMIN", "POST", `${ccsUrl}/test-event`)).statusCode).toBe(200);
+      await db.delete(connectorSecrets).where(eq(connectorSecrets.connectorId, (await db.select().from(connectors).where(eq(connectors.tenantId, other.tenantId))).find((c) => c.provider === "ccs_ivr")!.id));
+      const check = (await call(other, "SUPER_ADMIN", "POST", `${ccsUrl}/status`)).json() as { ok: boolean; health: string; message: string };
+      expect(check.health).toBe("UNKNOWN");
+      expect(check.message).toMatch(/refused until at least one key is saved/i);
+    });
   });
 });

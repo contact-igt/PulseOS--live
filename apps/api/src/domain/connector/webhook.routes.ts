@@ -11,6 +11,7 @@ import { applyDeliveryStatus } from "../notification/notification.service.js";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { processProviderLead } from "../acquisition/lead-webhook.service.js";
 import { ingestNormalizedLead } from "../acquisition/lead-ingestion.service.js";
+import { withoutCredentials } from "../../lib/credential-redaction.js";
 
 interface RequestWithRawBody extends FastifyRequest {
   rawBody?: string;
@@ -29,8 +30,9 @@ export async function webhookRoutes(app: FastifyInstance) {
     (req as RequestWithRawBody).rawBody = body as string;
     try {
       done(null, body ? JSON.parse(body as string) : {});
-    } catch (err) {
-      done(err as Error, undefined);
+    } catch {
+      // A body that is not JSON is the caller's mistake: 400, not an anonymous 500 (and no parser detail echoed).
+      done(Object.assign(new Error("invalid_json"), { statusCode: 400 }), undefined);
     }
   });
 
@@ -175,13 +177,15 @@ export async function webhookRoutes(app: FastifyInstance) {
   async function handleCcsWebhook(request: FastifyRequest, reply: FastifyReply) {
     const { connectorId } = request.params as { connectorId: string };
     const connector = await getConnectorById(app.db, connectorId);
-    if (!connector || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
+    // Unknown, disabled or not-a-CCS connector: acknowledged and ignored, so the URL cannot be probed for what exists.
+    if (!connector || connector.status === "DISABLED" || connector.provider !== "ccs_ivr") return reply.status(200).send({ ok: true });
 
     const adapter = getTelephonyAdapter(connector.provider);
     if (!adapter) return reply.status(200).send({ ok: true });
 
-    const secrets = await getConnectorSecrets(app.db, connectorId);
-    if (!secrets) return reply.status(200).send({ ok: true });
+    // Authentication fails closed: no stored credentials means no way to authenticate, which is a refusal, never a pass.
+    // (An unreadable payload throws and the error handler answers 503; the provider retries and nothing is stored.)
+    const secrets = (await getConnectorSecrets(app.db, connectorId)) ?? {};
 
     const rawPayload = {
       ...((request.query as Record<string, unknown>) || {}),
@@ -195,14 +199,19 @@ export async function webhookRoutes(app: FastifyInstance) {
 
     if (!(await tenantCapabilityMap(app.db, connector.tenantId)).CCS_IVR) return reply.status(200).send({ ok: true });
 
-    const calls = adapter.parseWebhookPayload(rawPayload);
+    // The credential has done its job. It must not be stored with the event, copied into the call's metadata or logged.
+    const safePayload = withoutCredentials(rawPayload);
+    if (Object.keys(safePayload).length === 0) return reply.status(200).send({ ok: true, accepted: 0 }); // a provider's setup ping
+
+    const calls = adapter.parseWebhookPayload(safePayload);
+    if (calls.length === 0) return reply.status(422).send({ error: "invalid_payload" });
     for (const call of calls) {
       const { duplicate, eventId } = await recordConnectorEvent(app.db, {
         tenantId: connector.tenantId,
         connectorId,
         externalEventId: call.externalEventId,
         direction: "inbound",
-        payload: { type: "call", raw: rawPayload },
+        payload: { type: "call", raw: safePayload },
       });
       if (duplicate) continue;
 

@@ -6,10 +6,19 @@ export interface ConnectorFacts {
   mode: "FIXTURE" | "SANDBOX" | "LIVE";
   configuration: Record<string, unknown> | null;
   secretKeys: string[];
+  /** Credentials are stored but this server cannot decrypt them (encryption key missing or changed). */
+  secretsUnreadable?: boolean;
 }
+
+/** Fixture mode uses no credentials, except where the provider's own callers are verified with them (CCS inbound). */
+const credentialsMatter = (entry: CatalogueEntry, c: ConnectorFacts) => c.mode !== "FIXTURE" || !!entry.requiredAnySecret;
+const hasAnyKey = (entry: CatalogueEntry, c: ConnectorFacts) => !!entry.requiredAnySecret?.some((k) => c.secretKeys.includes(k));
 
 export function deriveConfiguration(entry: CatalogueEntry, connector: ConnectorFacts | null): IntegrationConfigurationState {
   if (entry.blockedReason) return "BLOCKED";
+  // Stored credentials that cannot be opened are not configuration, whatever the catalogue says is required.
+  if (connector?.secretsUnreadable && credentialsMatter(entry, connector)) return "PARTIAL";
+  if (entry.requiredAnySecret) return connector && hasAnyKey(entry, connector) ? "CONFIGURED" : "NOT_CONFIGURED";
   if (entry.requiredConfig.length === 0 && entry.requiredSecrets.length === 0) return entry.connectorProvider ? (connector ? "CONFIGURED" : "NOT_CONFIGURED") : "CONFIGURED";
   if (!connector) return "NOT_CONFIGURED";
   const hasConfig = (k: string) => {
@@ -28,8 +37,10 @@ export function deriveConfiguration(entry: CatalogueEntry, connector: ConnectorF
 export function deriveHealth(entry: CatalogueEntry, connector: ConnectorFacts | null): IntegrationHealth {
   if (entry.blockedReason || !entry.connectorProvider) return "NOT_APPLICABLE";
   if (!connector) return "UNKNOWN";
+  // A stored "Connected" is history. With no key saved this webhook would refuse the next call, so nothing is verified now.
+  if (entry.requiredAnySecret && !connector.secretsUnreadable && !hasAnyKey(entry, connector)) return "UNKNOWN";
   switch (connector.status) {
-    case "CONNECTED": return "HEALTHY";
+    case "CONNECTED": return connector.secretsUnreadable && credentialsMatter(entry, connector) ? "DEGRADED" : "HEALTHY";
     case "DEGRADED": return "DEGRADED";
     case "ERROR": return "UNHEALTHY";
     default: return "UNKNOWN";

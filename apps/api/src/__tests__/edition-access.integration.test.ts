@@ -10,7 +10,7 @@ const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
 describe("edition capabilities and role groups (unit)", () => {
   it("V1 has none of the growth capabilities by default; V2 has all of them", () => {
     // Revenue tracking is on in every edition by default (a hospital that wants no revenue workflow switches it off itself).
-    expect(EDITION_CAPABILITIES.BETA_V1_CORE).toEqual(["ANALYTICS_CORE", "RUNO_CALLING", "WHATSAPP_NOTIFICATIONS", "REVENUE_TRACKING"]);
+    expect(EDITION_CAPABILITIES.BETA_V1_CORE).toEqual(["ANALYTICS_CORE", "RUNO_CALLING", "CCS_IVR", "WHATSAPP_NOTIFICATIONS", "REVENUE_TRACKING"]); // CCS IVR (Express IVR) is a V1 calling provider alongside Runo
     expect(editionHasCapability("BETA_V1_CORE", "CAMPAIGNS")).toBe(false);
     for (const c of ["WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "MARKETING_ANALYTICS", "SPEND_ATTRIBUTION"] as const) expect(editionHasCapability("BETA_V2_GROWTH", c)).toBe(true);
   });

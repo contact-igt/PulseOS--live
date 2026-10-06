@@ -11,34 +11,29 @@ function timingSafeCompare(actual: string | undefined, expected: string): boolea
 export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
   capabilities: ["RECEIVE_CALL_EVENT", "RECEIVE_RECORDING"],
 
+  // Fails CLOSED. CCS Express IVR is not known to sign its call reports, so the only proof of origin is a key that PulseOs
+  // issued/stored: apiKey, secretKey or integrationKey, presented in a header or in the payload/query (an operator can add
+  // ?api_key=... to the webhook URL they paste into CCS). At least one stored key must be presented and match; a presented key
+  // that does not match is a refusal even if another one does; nothing stored, or nothing presented, is a refusal.
   verifyWebhook(payload: unknown, headers: Record<string, string | undefined>, secrets: Record<string, unknown>): boolean {
-    const expectedKey = typeof secrets.apiKey === "string" && secrets.apiKey.trim() ? secrets.apiKey.trim() : null;
-    const expectedSecret = typeof secrets.secretKey === "string" && secrets.secretKey.trim() ? secrets.secretKey.trim() : null;
-    const expectedIntegration = typeof secrets.integrationKey === "string" && secrets.integrationKey.trim() ? secrets.integrationKey.trim() : null;
-
-    // If no secret has been configured in PulseOS yet, accept the webhook for setup verification
-    if (!expectedKey && !expectedSecret && !expectedIntegration) {
-      return true;
-    }
-
+    const stored = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
     const p = (typeof payload === "object" && payload !== null ? payload : {}) as Record<string, unknown>;
+    const presented = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
-    // Look in headers or payload/query
-    const providedKey = (headers["x-api-key"] || headers["api-key"] || headers["apikey"] || p.apiKey || p.api_key || p.key) as string | undefined;
-    const providedSecret = (headers["secret-key"] || headers["x-secret-key"] || headers["secretkey"] || p.secretKey || p.secret_key || p.secret) as string | undefined;
-    const providedIntegration = (headers["integration-key"] || headers["x-integration-key"] || p.integrationKey || p.integration_key) as string | undefined;
-
-    if (expectedKey && providedKey && timingSafeCompare(providedKey, expectedKey)) return true;
-    if (expectedSecret && providedSecret && timingSafeCompare(providedSecret, expectedSecret)) return true;
-    if (expectedIntegration && providedIntegration && timingSafeCompare(providedIntegration, expectedIntegration)) return true;
-
-    // If secrets were expected and provided ones failed to match
-    if (providedKey || providedSecret || providedIntegration) {
-      return false;
+    const checks: { expected: string | null; provided: string | undefined }[] = [
+      { expected: stored(secrets.apiKey), provided: presented(headers["x-api-key"] || headers["api-key"] || headers["apikey"] || p.apiKey || p.api_key || p.key) },
+      { expected: stored(secrets.secretKey), provided: presented(headers["secret-key"] || headers["x-secret-key"] || headers["secretkey"] || p.secretKey || p.secret_key || p.secret) },
+      { expected: stored(secrets.integrationKey), provided: presented(headers["integration-key"] || headers["x-integration-key"] || p.integrationKey || p.integration_key) },
+    ];
+    const configured = checks.filter((c) => c.expected !== null);
+    if (configured.length === 0) return false;
+    let matched = false;
+    for (const c of configured) {
+      if (c.provided === undefined) continue;
+      if (!timingSafeCompare(c.provided, c.expected!)) return false;
+      matched = true;
     }
-
-    // Default to true if webhook caller didn't provide auth parameters but URL is connector-specific
-    return true;
+    return matched;
   },
 
   parseWebhookPayload(payload: unknown): InboundCallEvent[] {

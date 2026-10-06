@@ -6,7 +6,7 @@ import { ADS_PROVIDERS, ADS_PROVIDER_LABEL } from "@pulseos/types";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { catalogueEntry } from "../integration/hub-catalogue.js";
 import { deriveConfiguration, deriveMode, type ConnectorFacts } from "../integration/hub-state.js";
-import { decryptSecret } from "../security/encryption.js";
+import { readSecretFacts } from "../integration/secret-facts.js";
 import { connectorSecrets } from "../../db/schema.js";
 import { costPer, roas as roasOf } from "../marketing/formulas.js";
 import { fetchJourneys, fetchRevenue, reached, resolvePeriod, sumBy } from "../analytics/analytics.service.js";
@@ -35,7 +35,8 @@ async function providerStatuses(db: Db, tenantId: string, caps: Record<string, b
     let facts: ConnectorFacts | null = null;
     if (c) {
       const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, c.id)).limit(1);
-      facts = { status: c.status, mode: c.mode, configuration: (c.configuration as Record<string, unknown> | null) ?? null, secretKeys: secret ? Object.keys(decryptSecret(secret.encryptedPayload)) : [] };
+      const sf = readSecretFacts(secret?.encryptedPayload);
+      facts = { status: c.status, mode: c.mode, configuration: (c.configuration as Record<string, unknown> | null) ?? null, secretKeys: sf.keys, secretsUnreadable: sf.unreadable };
     }
     const configuration = deriveConfiguration(entry, facts);
     const [ok] = await db.select({ at: adsSyncRuns.finishedAt }).from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, provider), eq(adsSyncRuns.status, "SUCCEEDED"))).orderBy(desc(adsSyncRuns.finishedAt)).limit(1);

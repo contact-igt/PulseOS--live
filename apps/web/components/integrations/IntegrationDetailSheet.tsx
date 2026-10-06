@@ -5,13 +5,31 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@pulseos/api-client";
 import { Badge, Button, ErrorState, SideSheet, Skeleton, Tabs, relativeTime } from "@pulseos/ui";
-import type { IntegrationDetail } from "@pulseos/types";
+import type { IntegrationDetail, IntegrationInboundState } from "@pulseos/types";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 import { LogsPanel } from "./LogsPanel";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 
 type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "webhooks" | "sync" | "activity" | "health";
+
+const WEBHOOK_LABEL = { READY: "Ready", NOT_READY: "Not ready" } as const;
+const CREDENTIAL_LABEL = { SAVED: "Saved", NOT_CONFIGURED: "Not configured", UNREADABLE: "Unreadable" } as const;
+
+/** Inbound-webhook readiness as separate facts. There is no outbound call to "test", so nothing here claims a connection. */
+export function InboundWebhookStatus({ inbound }: { inbound: IntegrationInboundState }) {
+  return (
+    <div className="space-y-2 rounded-control border border-line bg-surface p-3" data-testid="inbound-status">
+      <span className="block text-[11px] font-semibold uppercase tracking-wide text-ink-3">Inbound call reports</span>
+      <dl className="grid grid-cols-3 gap-3 text-xs">
+        <div><dt className="text-ink-3">Webhook</dt><dd className="mt-0.5"><Badge tone={inbound.webhook === "READY" ? "success" : "warning"}><span data-testid="inbound-webhook">{WEBHOOK_LABEL[inbound.webhook]}</span></Badge></dd></div>
+        <div><dt className="text-ink-3">Credentials</dt><dd className="mt-0.5"><Badge tone={inbound.credentials === "SAVED" ? "success" : inbound.credentials === "UNREADABLE" ? "danger" : "neutral"}><span data-testid="inbound-credentials">{CREDENTIAL_LABEL[inbound.credentials]}</span></Badge></dd></div>
+        <div><dt className="text-ink-3">Last valid call report</dt><dd className="mt-0.5 text-ink" data-testid="inbound-last-event">{inbound.lastValidEventAt ? relativeTime(inbound.lastValidEventAt) : "No call report yet"}</dd></div>
+      </dl>
+      <p className="text-[11px] text-ink-2">{inbound.note}</p>
+    </div>
+  );
+}
 
 function Overview({ d }: { d: IntegrationDetail }) {
   const queryClient = useQueryClient();
@@ -53,6 +71,7 @@ function Overview({ d }: { d: IntegrationDetail }) {
           </div>
         </div>
       )}
+      {d.inbound && <InboundWebhookStatus inbound={d.inbound} />}
       <p className="text-ink-2">{d.purpose}</p>
       {d.blockedReason && <p className="rounded-control border border-danger-100 bg-danger-100/50 px-3 py-2 text-xs text-danger-700">{d.blockedReason}. Nothing can be enabled or configured until it is provided.</p>}
       <dl className="grid grid-cols-2 gap-3 text-xs">
@@ -83,7 +102,22 @@ function Overview({ d }: { d: IntegrationDetail }) {
   );
 }
 
-function ConfigurationForm({ d, secrets }: { d: IntegrationDetail; secrets: boolean }) {
+// Known API codes -> safe, useful words. Anything else (including a raw "internal_error") gets the generic line:
+// codes, SQL and stack traces never reach the screen.
+const SAVE_ERR: Record<string, string> = {
+  encryption_not_configured: "Secure credential storage isn't set up on this server yet, so credentials can't be saved. Ask your PulseOS administrator to finish the server setup. What you typed is kept here.",
+  secrets_unreadable: "The credentials already saved can't be read by this server. Enter them again and save.",
+  forbidden: "Only a Super Admin can change credentials.",
+  unknown_field: "One of the fields isn't recognised for this integration.",
+  invalid_request: "Check the values — one of them is too long or malformed.",
+  blocked: "This integration can't be configured yet.",
+};
+export const saveErrorMessage = (e: unknown): string => {
+  const code = (e as ApiError | undefined)?.message ?? "";
+  return SAVE_ERR[code] ?? "Credentials could not be saved. Your entries are still here — try again, and tell your administrator if it keeps happening.";
+};
+
+export function ConfigurationForm({ d, secrets }: { d: IntegrationDetail; secrets: boolean }) {
   const queryClient = useQueryClient();
   const fields = secrets ? d.secretFields : d.configurationFields;
   const [values, setValues] = useState<Record<string, string>>(() => (secrets ? {} : { ...d.configurationValues }));
@@ -99,10 +133,7 @@ function ConfigurationForm({ d, secrets }: { d: IntegrationDetail; secrets: bool
       queryClient.invalidateQueries({ queryKey: ["integration-detail", d.key] });
       queryClient.invalidateQueries({ queryKey: ["integration-hub"] });
     },
-    onError: (e: any) => {
-      const err = e as ApiError;
-      setMessage(err?.message ? `Could not save: ${err.message}` : "Could not save — check the values and your permission.");
-    },
+    onError: (e: unknown) => setMessage(secrets ? saveErrorMessage(e) : SAVE_ERR[(e as ApiError)?.message] ?? "Could not save — check the values and your permission."),
   });
   const allowed = secrets ? d.canManageSecrets : d.canConfigure;
   if (fields.length === 0) return <p className="text-sm text-ink-2">{secrets ? "No credentials are needed." : "Nothing to configure."}</p>;
@@ -116,13 +147,18 @@ function ConfigurationForm({ d, secrets }: { d: IntegrationDetail; secrets: bool
       }}
     >
       {!allowed && <p className="text-xs text-ink-2">{secrets ? "Only a Super Admin can change credentials." : "You can view this, but not change it."}</p>}
+      {secrets && d.secretsUnreadable && (
+        <p role="alert" className="rounded-control border border-warning-100 bg-warning-100/50 px-3 py-2 text-xs text-ink">
+          Credentials are saved for this integration but this server can&apos;t read them (its encryption key is missing or has changed), so they aren&apos;t in use. Re-enter them and save to fix this.
+        </p>
+      )}
       {fields.map((f) => {
         const hasSecret = "hasSecret" in f ? f.hasSecret : false;
         return (
           <label key={f.key} className="block text-xs text-ink-2">
             <span className="flex items-center justify-between gap-2">
               {f.label}
-              {secrets && <Badge tone={hasSecret ? "success" : "neutral"}>{hasSecret ? "Secret saved" : "Not set"}</Badge>}
+              {secrets && (d.secretsUnreadable && !hasSecret ? <Badge tone="warning">Saved · unreadable</Badge> : <Badge tone={hasSecret ? "success" : "neutral"}>{hasSecret ? "Secret saved" : "Not set"}</Badge>)}
             </span>
             <input
               type={secrets ? "password" : "text"}

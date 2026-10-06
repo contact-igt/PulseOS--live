@@ -1,7 +1,8 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { calls, communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks, patients } from "../../db/schema.js";
-import { decryptSecret, encryptSecret } from "../security/encryption.js";
+import { decryptSecret, encryptSecret, isEncryptionConfigured } from "../security/encryption.js";
+import { readSecretFacts } from "./secret-facts.js";
 import { inLocalRange, isRealDate, tenantTimezone } from "../../lib/hospital-time.js";
 import { hasPermission, type CapabilityMap, type IntegrationCard, type IntegrationDetail, type IntegrationLogRow, type Role } from "@pulseos/types";
 import { redactLogText } from "../security/redact.js";
@@ -23,19 +24,13 @@ async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: C
   const out = new Map<string, { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] }>();
   for (const row of rows) {
     const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, row.id)).limit(1);
-    let secretKeys: string[] = [];
-    if (secret) {
-      try {
-        // Only the NAMES of stored secrets leave this function, never a value.
-        secretKeys = Object.entries(decryptSecret(secret.encryptedPayload)).filter(([, v]) => v !== "" && v != null).map(([k]) => k);
-      } catch {
-        secretKeys = [];
-      }
-    }
+    // Only the NAMES of stored secrets leave this function, never a value. A row that cannot be opened (key missing or
+    // changed) is "unreadable", which is not the same as nothing saved.
+    const { keys: secretKeys, unreadable: secretsUnreadable } = readSecretFacts(secret?.encryptedPayload);
     const phoneNumbers = endpoints
       .filter((e) => e.connectorId === row.id)
       .map((e) => ({ number: e.publicNumber, label: e.displayLabel, active: e.isActive }));
-    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys }, phoneNumbers });
+    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys, secretsUnreadable }, phoneNumbers });
   }
   return out;
 }
@@ -90,7 +85,7 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
       : deriveHealth(entry, facts);
 
   const isConnected =
-    found?.row.status === "CONNECTED" ||
+    (found?.row.status === "CONNECTED" && !(found.facts.secretsUnreadable && found.facts.mode !== "FIXTURE") && (!entry.requiredAnySecret || configuration === "CONFIGURED")) ||
     (entry.key === "whatsnexus" && wh.whatsNexusEnabled > 0) ||
     (entry.key === "webhooks" && wh.enabled > 0 && wh.lastDelivery === "SENT");
 
@@ -157,7 +152,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
             phone: calls.phone,
             status: calls.status,
             durationSeconds: calls.durationSeconds,
-            recordingUrl: calls.recordingUrl,
+            hasRecording: sql<boolean>`${calls.recordingUrl} is not null`,
             startedAt: calls.startedAt,
             journeyId: calls.journeyId,
             patientId: calls.patientId,
@@ -182,12 +177,46 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       ...f,
       hasSecret: entry.key === "whatsnexus" ? !!(wnHook?.headers as any[])?.some((h) => h.key === "x-api-key" && h.value) : !!found?.facts.secretKeys.includes(f.key),
     })),
+    secretsUnreadable: !!found?.facts.secretsUnreadable,
+    inbound: isTelephony && found ? inboundState(entry, base.enabled, found, await lastRealEventAt(db, tenantId, found.row.id)) : undefined,
     mappingNotes: entry.mappingNotes,
     syncRuns: (ADS_PROVIDERS as readonly string[]).includes(entry.key) ? await listSyncRuns(db, tenantId, entry.key as AdsProvider) : undefined,
     recentCalls,
     webhookUrl: webhookPath ? `${base_}${webhookPath}` : null,
     connectorMode: found?.row.mode ?? null,
   };
+}
+
+/**
+ * Inbound-webhook readiness, as four separate facts. Credentials: are keys saved, and can this server read them.
+ * Webhook: would it accept a correctly authenticated call report right now. Last valid event: the last call report that
+ * authenticated and was processed (not a status someone typed). None of these claims a connection PulseOS cannot see.
+ */
+function inboundState(entry: CatalogueEntry, enabled: boolean, found: { row: ConnectorRowT; facts: ConnectorFacts }, lastValidEventAt: Date | null): NonNullable<IntegrationDetail["inbound"]> {
+  const keys = entry.requiredAnySecret ?? entry.requiredSecrets;
+  const credentials = found.facts.secretsUnreadable ? "UNREADABLE" : keys.some((k) => found.facts.secretKeys.includes(k)) ? "SAVED" : "NOT_CONFIGURED";
+  const disabled = found.row.status === "DISABLED";
+  const webhook = enabled && !disabled && credentials === "SAVED" ? "READY" : "NOT_READY";
+  const note =
+    credentials === "UNREADABLE"
+      ? "Saved credentials cannot be read by this server, so every call report is refused until they are re-entered."
+      : credentials === "NOT_CONFIGURED"
+      ? "Call reports are refused until at least one key is saved: PulseOS will not accept unauthenticated calls."
+      : !enabled || disabled
+      ? "Switched off: call reports are acknowledged and ignored."
+      : entry.key === "ccs_ivr"
+      ? "Each call report must carry a saved key: as a header, or add ?api_key=<key> to the webhook URL pasted into CCS."
+      : "Each call report must carry the saved shared secret in its x-api-key header.";
+  return { webhook, credentials, lastValidEventAt: lastValidEventAt?.toISOString() ?? null, note };
+}
+
+/** The last call report that authenticated and was processed. The "send test call" button's simulated events do not count. */
+async function lastRealEventAt(db: Db, tenantId: string, connectorId: string): Promise<Date | null> {
+  const [row] = await db
+    .select({ at: sql<Date | null>`max(${connectorEvents.receivedAt})` })
+    .from(connectorEvents)
+    .where(and(eq(connectorEvents.tenantId, tenantId), eq(connectorEvents.connectorId, connectorId), eq(connectorEvents.status, "processed"), sql`coalesce(${connectorEvents.payload}->>'test', 'false') <> 'true'`));
+  return row?.at ? new Date(row.at) : null;
 }
 
 /** The connectors row behind a catalogue entry, created on first configuration (FIXTURE until a Super Admin says otherwise). */
@@ -274,6 +303,10 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   }
 
   if (entry.blockedReason || !entry.connectorProvider) return { ok: false, reason: "blocked" };
+  // Refuse before touching anything: a save that needs to encrypt cannot succeed without a key, and must not leave a
+  // half-written connector behind. (The caller maps this to a 503 with a safe message.)
+  const writesSecrets = Object.values(input.secrets ?? {}).some((v) => v.trim() !== "");
+  if (writesSecrets && !isEncryptionConfigured()) return { ok: false, reason: "encryption_not_configured" };
   const connector = await ensureConnector(db, tenantId, entry);
   if (!connector) return { ok: false, reason: "blocked" };
 
@@ -300,11 +333,12 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
       secretsNow = {};
     }
   }
+  let encryptedPayload: string | null = null;
   if (input.secrets) {
     secretsNow = { ...secretsNow };
     for (const [k, v] of Object.entries(input.secrets)) if (v.trim() !== "") secretsNow[k] = v.trim();
-    const encryptedPayload = encryptSecret(secretsNow);
-    await db.insert(connectorSecrets).values({ connectorId: connector.id, encryptedPayload }).onConflictDoUpdate({ target: connectorSecrets.connectorId, set: { encryptedPayload, updatedAt: new Date() } });
+    // Only write when a value was actually entered: blank means "keep what is stored", never "store an empty payload".
+    if (writesSecrets) encryptedPayload = encryptSecret(secretsNow);
   }
 
   const mode = input.mode ?? connector.mode;
@@ -315,7 +349,13 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   // (a fixture's "connected" must never carry into Live). Plain setting edits keep the status.
   const identityChanged = input.mode !== undefined && input.mode !== connector.mode || !!input.secrets && Object.values(input.secrets).some((v) => v.trim() !== "");
   const status = !identityChanged && (connector.status === "CONNECTED" || connector.status === "ERROR" || connector.status === "DEGRADED") ? connector.status : complete ? "CONNECTING" : "NOT_CONFIGURED";
-  await db.update(connectors).set({ configuration, mode, status, updatedAt: new Date() }).where(eq(connectors.id, connector.id));
+  // The secrets upsert and the connector row move together: no new credentials with the old status, or the reverse.
+  await db.transaction(async (tx) => {
+    if (encryptedPayload) {
+      await tx.insert(connectorSecrets).values({ connectorId: connector.id, encryptedPayload }).onConflictDoUpdate({ target: connectorSecrets.connectorId, set: { encryptedPayload, updatedAt: new Date() } });
+    }
+    await tx.update(connectors).set({ configuration, mode, status, updatedAt: new Date() }).where(eq(connectors.id, connector.id));
+  });
   return { ok: true };
 }
 
@@ -407,28 +447,51 @@ export async function checkIntegrationStatus(
 
   const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
   const hasSecrets = !!secret;
+  const sf = readSecretFacts(secret?.encryptedPayload);
+  const secretsUnreadable = sf.unreadable;
+  // A provider that authenticates its callers with a stored key refuses every call until one is saved: old events say nothing now.
+  const needsKey = !!entry.requiredAnySecret && !secretsUnreadable && !entry.requiredAnySecret.some((k) => sf.keys.includes(k));
+  if (needsKey) {
+    return {
+      ok: false,
+      health: "UNKNOWN",
+      status: connector.status,
+      message: "No key is saved, so call reports are refused until at least one key is saved. Save a key in Credentials.",
+      checkedAt: now.toISOString(),
+      details: { mode: connector.mode, eventsReceived: eventCount, lastEventAt: lastEvent ? new Date(lastEvent).toISOString() : null, hasSecrets, secretsUnreadable },
+    };
+  }
 
+  // Connected means a real call report arrived. Stored credentials prove nothing about the provider: PulseOS only
+  // RECEIVES from CCS/Runo (there is no outbound API call to verify them with), so a secrets row never upgrades the status.
   let newStatus = connector.status;
-  if (eventCount > 0 || (hasSecrets && connector.mode === "LIVE")) {
+  if (eventCount > 0 && !secretsUnreadable) {
     newStatus = "CONNECTED";
     await db.update(connectors).set({ status: "CONNECTED", lastSyncAt: now, updatedAt: now }).where(eq(connectors.id, connector.id));
   }
 
+  const health: HealthCheckResult["health"] = secretsUnreadable
+    ? "DEGRADED"
+    : newStatus === "CONNECTED" ? "HEALTHY" : newStatus === "ERROR" ? "UNHEALTHY" : newStatus === "DEGRADED" ? "DEGRADED" : "UNKNOWN";
+
   return {
-    ok: true,
-    health: newStatus === "CONNECTED" ? "HEALTHY" : "DEGRADED",
+    ok: !secretsUnreadable,
+    health,
     status: newStatus,
-    message: eventCount > 0
+    message: secretsUnreadable
+      ? "Saved credentials cannot be read by this server (its encryption key is missing or has changed). Re-enter the credentials and save to fix it."
+      : eventCount > 0
       ? `Connected & healthy. Received ${eventCount} call event(s) (latest at ${lastEvent ? new Date(lastEvent).toLocaleTimeString() : "recently"}).`
       : hasSecrets
-      ? `Verified in ${connector.mode} mode. Inbound webhook endpoint is active and listening for call reports.`
-      : "Connector configured. Awaiting credentials or test call.",
+      ? `Credentials are saved (${connector.mode} mode). Waiting for the first call report to confirm the connection — PulseOS cannot verify credentials with the provider directly.`
+      : "Connector configured. Awaiting a first call report.",
     checkedAt: now.toISOString(),
     details: {
       mode: connector.mode,
       eventsReceived: eventCount,
       lastEventAt: lastEvent ? new Date(lastEvent).toISOString() : null,
       hasSecrets,
+      secretsUnreadable,
     },
   };
 }

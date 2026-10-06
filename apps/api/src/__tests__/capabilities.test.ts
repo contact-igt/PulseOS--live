@@ -9,7 +9,8 @@ describe("capability defaults by edition (a default bundle, not a fork)", () => 
 
   it("V1 defaults: marketing, ads, inbox and conversation intelligence off; WhatsApp notifications on", () => {
     const v1 = resolveCapabilities("BETA_V1_CORE", {});
-    for (const off of ["MARKETING_ANALYTICS", "GOOGLE_ADS", "META_ADS", "WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "SPEND_ATTRIBUTION", "CCS_IVR", "SMS_NOTIFICATIONS"] as const) expect(v1[off], off).toBe(false);
+    for (const off of ["MARKETING_ANALYTICS", "GOOGLE_ADS", "META_ADS", "WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "SPEND_ATTRIBUTION", "SMS_NOTIFICATIONS"] as const) expect(v1[off], off).toBe(false);
+    expect(v1.CCS_IVR).toBe(true); // a V1 calling provider, switched on with Runo
     for (const on of ["ANALYTICS_CORE", "RUNO_CALLING", "WHATSAPP_NOTIFICATIONS"] as const) expect(v1[on], on).toBe(true);
   });
 

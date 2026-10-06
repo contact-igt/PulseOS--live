@@ -13,6 +13,7 @@ import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
 const REASON_STATUS: Record<string, number> = {
   unknown_integration: 404,
   blocked: 409,
+  encryption_not_configured: 503,
   unknown_field: 422,
   invalid_url: 422,
   https_required: 422,
@@ -77,7 +78,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     if (!(ADS_PROVIDERS as readonly string[]).includes(key)) return reply.status(404).send({ error: "unknown_integration" });
     const r = await syncAds(app.db, u.tenantId, key as AdsProvider, { trigger: "MANUAL" });
     if (r.ok) await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "ads.sync_triggered", entityType: "integration", entityKey: key, metadata: { status: r.run.status, rows: r.run.rowsUpserted } });
-    if (!r.ok) return reply.status(({ feature_not_available: 403, not_configured: 409, sync_in_progress: 409, too_soon: 429, invalid_range: 422 } as Record<string, number>)[r.reason] ?? 400).send({ error: r.reason });
+    if (!r.ok) return reply.status(({ feature_not_available: 403, not_configured: 409, sync_in_progress: 409, too_soon: 429, invalid_range: 422, encryption_not_configured: 503, secrets_unreadable: 409 } as Record<string, number>)[r.reason] ?? 400).send({ error: r.reason });
     return r.run;
   });
 

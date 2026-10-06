@@ -83,7 +83,7 @@ describe.skipIf(!DEMO_PASSWORD)("tenant capabilities (integration)", () => {
     expect((await session(v1, "HOSPITAL_ADMIN")).WHATSAPP_NOTIFICATIONS).toBe(false);
     await put(v1, "HOSPITAL_ADMIN", "WHATSAPP_NOTIFICATIONS", null);
     const adminList = (await call(v1, "HOSPITAL_ADMIN", "GET", "/capabilities")).json() as { capabilities: { key: string; editable: boolean }[] };
-    expect(adminList.capabilities.filter((c) => c.editable).map((c) => c.key).sort()).toEqual(["SMS_NOTIFICATIONS", "WHATSAPP_NOTIFICATIONS"]);
+    expect(adminList.capabilities.filter((c) => c.editable).map((c) => c.key).sort()).toEqual(["CCS_IVR", "SMS_NOTIFICATIONS", "WHATSAPP_NOTIFICATIONS"]); // the operational switches an Admin may flip
     expect((await put(v1, "SUPER_ADMIN", "NOT_A_THING", true)).statusCode).toBe(404);
   });
 

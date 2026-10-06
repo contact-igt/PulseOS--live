@@ -42,12 +42,12 @@ test.describe("M7 capabilities + Integration Hub", () => {
     expect((await api(page, "GET", "/analytics/summary")).status).toBe(403);
   });
 
-  test("Hub: cards show enabled / configuration / health / mode separately; CCS is blocked; V1 and V2 differ only by defaults", async ({ page }) => {
+  test("Hub: cards show enabled / configuration / health / mode separately; CCS IVR is configurable; V1 and V2 differ only by defaults", async ({ page }) => {
     await login(page, "eyev1.admin@pulseos.local");
     await page.goto("/integrations");
     await expect(page.getByTestId("integrations-hub")).toBeVisible();
     for (const key of ["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "sms", "webhooks"]) await expect(page.getByTestId(`hub-card-${key}`)).toBeVisible();
-    await expect(page.getByTestId("hub-blocked-ccs_ivr")).toContainText("Provider API/Webhook documentation required");
+    await expect(page.getByTestId("hub-blocked-ccs_ivr")).toHaveCount(0); // CCS IVR is no longer blocked
     await expect(page.getByTestId("hub-card-google_ads")).toContainText("Disabled");
     await expect(page.getByTestId("hub-card-runo")).toContainText("Fixture");
     // Brand label follows the edition.
@@ -67,13 +67,13 @@ test.describe("M7 capabilities + Integration Hub", () => {
     await expect(sheet).not.toContainText("EAA");
   });
 
-  test("CCS IVR card opens as blocked with no configuration or credentials sections", async ({ page }) => {
+  test("CCS IVR card opens with configuration and credentials sections (it is no longer blocked)", async ({ page }) => {
     await login(page, "eyev1.superadmin@pulseos.local");
     await page.goto("/integrations?open=ccs_ivr");
     const sheet = page.getByTestId("integration-detail");
-    await expect(sheet.getByText("Provider API/Webhook documentation required").first()).toBeVisible();
-    await expect(sheet.getByTestId("detail-tab-configuration")).toHaveCount(0);
-    await expect(sheet.getByTestId("detail-tab-credentials")).toHaveCount(0);
+    await expect(sheet.getByText("Provider API/Webhook documentation required")).toHaveCount(0);
+    await expect(sheet.getByTestId("detail-tab-configuration")).toHaveCount(1);
+    await expect(sheet.getByTestId("detail-tab-credentials")).toHaveCount(1);
   });
 
   test("Webhooks are Super Admin only", async ({ page }) => {

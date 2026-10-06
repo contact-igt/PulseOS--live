@@ -10,10 +10,13 @@ import { processDueNotifications } from "./domain/notification/notification.serv
 import { RECONCILE_DEFAULT_INTERVAL_MS, reconcileJob } from "./domain/notification/reconcile.js";
 import { syncDueAds } from "./domain/ads/ads-sync.service.js";
 import { getSummarizer } from "./domain/conversation/summary/index.js";
+import { encryptionStartupWarning } from "./domain/security/encryption.js";
 
 const port = Number(process.env.PORT ?? 4000);
 
 const app = await buildApp();
+const encryptionWarning = encryptionStartupWarning();
+if (encryptionWarning) app.log.error(encryptionWarning);
 
 // Due-time work runs from the database, not from timers held in memory: summaries of idle conversations
 // now; appointment reminders next. Set JOBS_DISABLED=true to turn the runner off (e.g. a second API

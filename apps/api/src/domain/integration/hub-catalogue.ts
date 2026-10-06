@@ -19,6 +19,8 @@ export interface CatalogueEntry {
   /** Needs this to be set before the entry counts as configured (subset of configurationFields keys). */
   requiredConfig: string[];
   requiredSecrets: string[];
+  /** Inbound-webhook providers that authenticate callers with a stored key: at least ONE of these must be saved, in every mode. */
+  requiredAnySecret?: string[];
 }
 
 // The ONE catalogue the Hub renders. Provider names appear here and in the adapter registry only — never in domain logic.
@@ -100,13 +102,15 @@ export const INTEGRATION_CATALOGUE: CatalogueEntry[] = [
       { key: "accountEmail", label: "Account Email", help: "Your registered login email on ccs.ivrsms.com" },
     ],
     secretFields: [
-      { key: "apiKey", label: "API Key", help: "API Key from ccs.ivrsms.com/admin/api-key" },
-      { key: "secretKey", label: "Secret Key" },
-      { key: "integrationKey", label: "Integration Key" },
+      { key: "apiKey", label: "API Key", help: "API Key from ccs.ivrsms.com/admin/api-key. Save at least one of the three keys: PulseOS refuses CCS call reports that do not carry a saved key." },
+      { key: "secretKey", label: "Secret Key", help: "Any one saved key is enough. A key CCS sends that does not match is refused." },
+      { key: "integrationKey", label: "Integration Key", help: "Any one saved key is enough. A key CCS sends that does not match is refused." },
     ],
     mappingNotes: "Copy the Webhook URL below and paste it into ccs.ivrsms.com > Webhook Configuration, select Call Report, and save.",
     requiredConfig: [],
     requiredSecrets: [],
+    // The webhook refuses every call report unless one of these keys is presented, so one must be saved to receive anything.
+    requiredAnySecret: ["apiKey", "secretKey", "integrationKey"],
   },
   {
     key: "whatsapp_meta_cloud",

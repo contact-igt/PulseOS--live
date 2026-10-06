@@ -8,7 +8,7 @@ import { addDays, localToday, tenantTimezone } from "../../lib/hospital-time.js"
 import { redactLogText } from "../security/redact.js";
 import { catalogueEntry } from "../integration/hub-catalogue.js";
 import { deriveConfiguration } from "../integration/hub-state.js";
-import { decryptSecret } from "../security/encryption.js";
+import { readSecretFacts } from "../integration/secret-facts.js";
 import { connectorSecrets } from "../../db/schema.js";
 import { getAdsProvider } from "./registry.js";
 import { TransientAdsError, type AdsReportingProvider } from "./types.js";
@@ -42,11 +42,15 @@ async function connectorFor(db: Db, tenantId: string, provider: AdsProvider) {
   return c ?? null;
 }
 
-async function isConfigured(db: Db, provider: AdsProvider, c: typeof connectors.$inferSelect): Promise<boolean> {
+type ConfiguredState = { configured: boolean; unusable: "encryption_not_configured" | "secrets_unreadable" | null };
+
+async function configuredState(db: Db, provider: AdsProvider, c: typeof connectors.$inferSelect): Promise<ConfiguredState> {
   const entry = catalogueEntry(provider)!;
   const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, c.id)).limit(1);
-  const secretKeys = secret ? Object.keys(decryptSecret(secret.encryptedPayload)) : [];
-  return deriveConfiguration(entry, { status: c.status, mode: c.mode, configuration: (c.configuration as Record<string, unknown> | null) ?? null, secretKeys }) === "CONFIGURED";
+  const sf = readSecretFacts(secret?.encryptedPayload);
+  // Fixture mode never reads credentials, so unreadable ones do not block it.
+  if (sf.reason && c.mode !== "FIXTURE") return { configured: false, unusable: sf.reason };
+  return { configured: deriveConfiguration(entry, { status: c.status, mode: c.mode, configuration: (c.configuration as Record<string, unknown> | null) ?? null, secretKeys: sf.keys, secretsUnreadable: sf.unreadable }) === "CONFIGURED", unusable: null };
 }
 
 export interface SyncOptions {
@@ -68,7 +72,10 @@ export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, o
   if (!caps[CAPABILITY_FOR[provider]]) return { ok: false, reason: "feature_not_available" };
   const adapter = opts.adapter === undefined ? getAdsProvider(provider) : opts.adapter;
   const connector = await connectorFor(db, tenantId, provider);
-  if (!adapter || !connector || !(await isConfigured(db, provider, connector))) return { ok: false, reason: "not_configured" };
+  if (!adapter || !connector) return { ok: false, reason: "not_configured" };
+  const state = await configuredState(db, provider, connector);
+  if (state.unusable) return { ok: false, reason: state.unusable };
+  if (!state.configured) return { ok: false, reason: "not_configured" };
 
   // One sync at a time per provider, and a manual "Sync now" cannot be used to hammer the provider's API.
   const [latest] = await db.select().from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, provider))).orderBy(desc(adsSyncRuns.startedAt)).limit(1);
