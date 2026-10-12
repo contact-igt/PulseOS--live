@@ -29,21 +29,6 @@ const ERRORS: Record<string, string> = {
   invalid_request: "Check the name, address and required fields.",
 };
 
-const DEFAULT_WHATSNEXUS_HEADERS: WebhookHeader[] = [
-  { key: "x-api-key", value: "19679c7498ead76c8da6281171d4f7d2df5c7b9ebe8adfbecf1ff8c4a51575033" },
-];
-
-const DEFAULT_WHATSNEXUS_PAYLOADS: WebhookPayloadMapping[] = [
-  { key: "call_Id", field: "call_Id", fallbackValue: "" },
-  { key: "customerName", field: "customerName", fallbackValue: "" },
-  { key: "phoneNumber", field: "phoneNumber", fallbackValue: "" },
-  { key: "agentName", field: "agentName", fallbackValue: "" },
-  { key: "createdAt", field: "createdAt", fallbackValue: "" },
-  { key: "status", field: "status", fallbackValue: "OPEN" },
-  { key: "typeOfEnquiry", field: "typeOfEnquiry", fallbackValue: "Follow-up" },
-  { key: "source", field: "source", fallbackValue: "PULSE_OS" },
-];
-
 export function WebhooksPanel({ canManage }: { canManage: boolean }) {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ["webhooks"], queryFn: api.webhooks, enabled: canManage });
@@ -101,18 +86,6 @@ export function WebhooksPanel({ canManage }: { canManage: boolean }) {
     setCategory("CUSTOM");
     setError(null);
     setTestResult(null);
-  };
-
-  const loadWhatsNexusPreset = () => {
-    setName("Interaction");
-    setUrl("https://invictusleadbackend-production.up.railway.app");
-    setEndpointPath("/api/v1/pixeleye/webhook");
-    setHttpMethod("POST");
-    setHeaders(DEFAULT_WHATSNEXUS_HEADERS);
-    setPayloads(DEFAULT_WHATSNEXUS_PAYLOADS);
-    setEvents(["interaction.logged", "whatsapp.followup_requested", "followup.created"]);
-    setCategory("WHATSNEXUS");
-    setError(null);
   };
 
   const startEdit = (w: OutboundWebhookVm) => {
@@ -285,7 +258,7 @@ export function WebhooksPanel({ canManage }: { canManage: boolean }) {
                     <Badge tone="neutral">{w.httpMethod ?? "POST"}</Badge>
                     {w.webhookCategory === "WHATSNEXUS" && (
                       <span className="inline-flex items-center gap-1 rounded bg-accent-orange/10 px-2 py-0.5 text-[11px] font-medium text-accent-orange">
-                        WhatsNexus
+                        Legacy WhatsNexus (not used for sending)
                       </span>
                     )}
                   </div>
@@ -337,14 +310,6 @@ export function WebhooksPanel({ canManage }: { canManage: boolean }) {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={loadWhatsNexusPreset}
-              className="inline-flex items-center gap-1.5 rounded-control border border-accent-orange/40 bg-accent-orange/10 px-3 py-1.5 text-xs font-semibold text-accent-orange transition-all hover:bg-accent-orange/20 active:scale-95"
-              data-testid="load-whatsnexus-preset"
-            >
-              <span>⚡</span> Load WhatsNexus Preset
-            </button>
             {editingId && (
               <button
                 type="button"
@@ -378,7 +343,7 @@ export function WebhooksPanel({ canManage }: { canManage: boolean }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               className={inputClass}
-              placeholder="e.g. Interaction or WhatsNexus Follow-Up"
+              placeholder="e.g. CRM interaction feed"
               required
               data-testid="webhook-name"
             />
@@ -394,7 +359,7 @@ export function WebhooksPanel({ canManage }: { canManage: boolean }) {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 className={inputClass}
-                placeholder="https://invictusleadbackend-production.up.railway.app"
+                placeholder="https://hooks.example.com"
                 required
                 data-testid="webhook-url"
               />
@@ -407,7 +372,7 @@ export function WebhooksPanel({ canManage }: { canManage: boolean }) {
                 value={endpointPath}
                 onChange={(e) => setEndpointPath(e.target.value)}
                 className={inputClass}
-                placeholder="/api/v1/pixeleye/webhook"
+                placeholder="/path/to/receiver"
                 data-testid="webhook-endpoint-path"
               />
               <p className="mt-1 text-[11px] text-ink-3">Optional path to append to the base URL</p>

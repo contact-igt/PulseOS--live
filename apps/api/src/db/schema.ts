@@ -1237,6 +1237,9 @@ export const notifications = pgTable("notifications", {
   reason: text("reason"),
   attempts: integer("attempts").notNull().default(0),
   providerMessageId: text("provider_message_id"),
+  // Which messaging provider this notification was handed to (whatsapp_meta_cloud | whatsnexus). Set before the send so a
+  // retry or a late callback can never be attributed to — or re-sent through — a different provider.
+  provider: text("provider"),
   // The exact text that was (or would be) sent, kept so the message can be audited as the patient saw it.
   renderedText: text("rendered_text"),
   idempotencyKey: text("idempotency_key").notNull(),

@@ -766,6 +766,8 @@ export interface TimelineEventVm {
   call: CallVm | null;
   /** How the summary on a whatsapp_conversation line was produced (FIXTURE/AI/…); null for every other event. */
   summaryMode: SummaryMode | null;
+  /** Delivery state for an outbound WhatsApp notification shown on this timeline row. */
+  notificationStatus: NotificationStatus | null;
 }
 
 export interface Patient360 {
@@ -2979,6 +2981,86 @@ export interface WhatsAppPreview {
   missingVariables: string[];
   canSend: boolean;
   blockedReason: string | null;
+  /** What will really be sent: the provider's approved template and what fills each placeholder. */
+  delivery?: WhatsAppDelivery;
+}
+
+export interface WhatsAppDelivery {
+  /** Who delivers it; null when no WhatsApp provider is connected. */
+  provider: "whatsnexus" | "meta" | null;
+  /** The template name approved with the provider (not the PulseOS label). */
+  templateName: string;
+  language: string;
+  /** Known only for WhatsNexus, once its live list has been read. */
+  category: "utility" | "marketing" | "authentication" | null;
+  /** {{1}}, {{2}} … and the value each gets for this patient. */
+  parameters: { position: number; variable: string; value: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// Provider (WhatsNexus) template catalogue. WhatsNexus owns Meta approval, language, body placeholders and the WABA, so
+// PulseOS never creates templates: it lists what WhatsNexus has approved and only lets a reminder point at a compatible one.
+// ---------------------------------------------------------------------------
+
+/** One approved, sendable template as WhatsNexus reports it. */
+export interface ProviderTemplate {
+  name: string;
+  language: string;
+  status: "APPROVED";
+  /** WhatsApp category as approved by Meta, when WhatsNexus reports it (older versions do not). */
+  category?: "utility" | "marketing" | "authentication" | null;
+  /** The template's format (text, image, video, document …), when reported. */
+  templateType?: string | null;
+  /** How many positional body parameters the provider expects ({{1}}, {{2}} …). */
+  bodyParameterCount: number;
+  hasHeader: boolean;
+  hasButtons: boolean;
+}
+
+/**
+ * The live catalogue, fetched on demand and never stored: Meta approval can change at any time, so it is read when an admin
+ * opens the page or presses Refresh, and WhatsNexus re-checks it again on every send.
+ */
+export interface ProviderTemplateCatalogue {
+  provider: "whatsnexus";
+  /** WhatsNexus is the connector chosen for sending: reminder templates must then come from this list. */
+  active: boolean;
+  state: "OK" | "NOT_CONFIGURED" | "NOT_LIVE" | "DISABLED" | "REJECTED" | "UNAVAILABLE";
+  message: string | null;
+  templates: ProviderTemplate[];
+  fetchedAt: string;
+}
+
+export type ProviderTemplateProblem = "TEMPLATE_NOT_FOUND" | "TEMPLATE_LANGUAGE_MISMATCH" | "TEMPLATE_PARAMETER_COUNT_MISMATCH";
+export type ProviderTemplateCheck = { ok: true } | { ok: false; code: ProviderTemplateProblem; message: string };
+
+const TEMPLATE_VARIABLE = /\{\{\s*([a-z_]+)\s*\}\}/g;
+
+/** The distinct {{variables}} of a message, in order of first use — the order they are handed to the provider as {{1}}, {{2}} … */
+export function templateVariablesUsed(body: string): string[] {
+  return [...new Set([...body.matchAll(TEMPLATE_VARIABLE)].map((m) => m[1]!))];
+}
+
+/**
+ * Can a reminder with this provider template name, language and number of variables be sent with one of the approved
+ * templates? The same three rules WhatsNexus enforces at send time, so a configuration that passes here is not refused
+ * later for these reasons (unless the template changes in between — which is why the send is checked again).
+ */
+export function checkProviderTemplate(want: { providerTemplateName: string; language: string; variableCount: number }, catalogue: readonly ProviderTemplate[]): ProviderTemplateCheck {
+  const name = want.providerTemplateName.trim();
+  const sameName = catalogue.filter((t) => t.name === name);
+  if (!name || sameName.length === 0) {
+    return { ok: false, code: "TEMPLATE_NOT_FOUND", message: name ? `“${name}” is not among the approved templates in WhatsNexus.` : "Choose an approved WhatsNexus template." };
+  }
+  const language = want.language.trim().toLowerCase();
+  const match = sameName.find((t) => t.language.toLowerCase() === language);
+  if (!match) {
+    return { ok: false, code: "TEMPLATE_LANGUAGE_MISMATCH", message: `Template is approved in ${sameName.map((t) => t.language).join(", ")}; this reminder sends ${want.language}.` };
+  }
+  if (match.bodyParameterCount !== want.variableCount) {
+    return { ok: false, code: "TEMPLATE_PARAMETER_COUNT_MISMATCH", message: `Template has ${match.bodyParameterCount} placeholders; this PulseOS reminder needs ${want.variableCount}.` };
+  }
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------

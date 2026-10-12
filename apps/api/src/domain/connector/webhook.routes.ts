@@ -1,13 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
-import { notifications } from "../../db/schema.js";
-import { getConnectorById, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "./connector.service.js";
+import { getConnectorById, getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "./connector.service.js";
 import { markEventFailed, markEventProcessed, recordConnectorEvent } from "./connector-event.service.js";
 import { getAcquisitionAdapter, getMessagingAdapter, getTelephonyAdapter } from "./registry.js";
 import { processInboundWhatsAppMessage, processWhatsAppStatusUpdate } from "./whatsapp-webhook.service.js";
 import { persistInboundCall } from "./call-webhook.service.js";
-import { applyDeliveryStatus } from "../notification/notification.service.js";
+import { applyDeliveryStatus, applyWhatsNexusStatus, WHATSNEXUS_PROVIDER } from "../notification/notification.service.js";
+import { parseWhatsNexusCallback, verifyWhatsNexusCallback } from "./whatsnexus-callback.js";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { processProviderLead } from "../acquisition/lead-webhook.service.js";
 import { ingestNormalizedLead } from "../acquisition/lead-ingestion.service.js";
@@ -349,38 +347,64 @@ export async function webhookRoutes(app: FastifyInstance) {
     return reply.status(200).send({});
   });
 
-  // WhatsNexus Delivery Status & Inbound Message Webhook
-  app.post("/webhooks/whatsnexus", async (request, reply) => {
-    return handleWhatsNexusCallback(app.db, request, reply);
-  });
-
-  app.post("/webhooks/whatsnexus/:tenantId", async (request, reply) => {
-    const { tenantId } = request.params as { tenantId: string };
-    return handleWhatsNexusCallback(app.db, request, reply, tenantId);
-  });
+  // WhatsNexus delivery-status callbacks. Authenticated by an HMAC over `${timestamp}.${rawBody}` with this hospital's own
+  // callback secret (connector_secrets); the tenant in the URL is only the lookup key for that secret and is never trusted
+  // by itself. Unsigned, stale, wrongly signed or other-tenant requests change nothing.
+  app.post("/webhooks/whatsnexus", async (request, reply) => handleWhatsNexusCallback(app, request, reply));
+  app.post("/webhooks/whatsnexus/:tenantId", async (request, reply) => handleWhatsNexusCallback(app, request, reply, (request.params as { tenantId: string }).tenantId));
 }
 
-async function handleWhatsNexusCallback(db: Db, request: FastifyRequest, reply: FastifyReply, explicitTenantId?: string) {
-  const body = (request.body as Record<string, any>) ?? {};
-  const status = (body.status || body.event || body.type || "")?.toLowerCase();
-  const providerMessageId = String(body.messageId || body.providerMessageId || body.call_Id || body.id || "");
-  const now = new Date();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  if (providerMessageId && ["sent", "delivered", "read", "failed"].includes(status)) {
-    let tenantId = explicitTenantId;
-    if (!tenantId) {
-      const [n] = await db
-        .select({ tenantId: notifications.tenantId })
-        .from(notifications)
-        .where(eq(notifications.providerMessageId, providerMessageId))
-        .limit(1);
-      tenantId = n?.tenantId;
-    }
-    if (tenantId) {
-      await applyDeliveryStatus(db, tenantId, providerMessageId, status as any, now);
-      return reply.status(200).send({ ok: true, updated: true });
-    }
+async function handleWhatsNexusCallback(app: FastifyInstance, request: FastifyRequest, reply: FastifyReply, explicitTenantId?: string) {
+  const db = app.db;
+  const header = (name: string) => {
+    const v = request.headers[name];
+    return Array.isArray(v) ? v[0] : v;
+  };
+  const tenantId = explicitTenantId ?? header("x-pulseos-tenant-id") ?? "";
+  const unauthorized = () => reply.status(401).send({ error: "unauthorized" });
+  if (!UUID_RE.test(tenantId)) return unauthorized();
+
+  const connector = await getConnectorByTenantAndProvider(db, tenantId, WHATSNEXUS_PROVIDER);
+  const secrets = connector && connector.status !== "DISABLED" ? await getConnectorSecrets(db, connector.id) : null;
+  const auth = verifyWhatsNexusCallback(secrets, (request as RequestWithRawBody).rawBody ?? "", header("x-whatsnexus-timestamp"), header("x-whatsnexus-signature"));
+  if (!connector || auth !== "ok") {
+    app.log.warn({ tenantId, auth }, "WhatsNexus callback rejected");
+    return unauthorized();
   }
 
-  return reply.status(200).send({ ok: true, received: true });
+  const parsed = parseWhatsNexusCallback(request.body);
+  if (!parsed.ok) return reply.status(400).send({ error: "invalid_payload", reason: parsed.reason });
+  const event = parsed.event;
+
+  const caps = await tenantCapabilityMap(db, tenantId);
+  if (!caps.WHATSAPP_NOTIFICATIONS) return reply.status(200).send({ ok: true, ignored: true });
+
+  // Replay / duplicate protection: the event id is unique per connector.
+  const { duplicate, eventId } = await recordConnectorEvent(db, {
+    tenantId,
+    connectorId: connector.id,
+    externalEventId: `whatsnexus:${event.eventId}`,
+    direction: "inbound",
+    payload: { type: "whatsnexus_status", status: event.status },
+  });
+  if (duplicate) return reply.status(200).send({ ok: true, duplicate: true });
+
+  try {
+    const result = await applyWhatsNexusStatus(db, tenantId, { notificationId: event.externalId, wamid: event.wamid, status: event.status, at: event.occurredAt });
+    if (result === "applied") {
+      await markEventProcessed(db, eventId);
+      await touchConnectorSuccess(db, connector.id);
+      return reply.status(200).send({ ok: true, applied: true });
+    }
+    // Authenticated but not applicable (unknown notification, another provider's notification, a different wamid): acknowledged
+    // so WhatsNexus does not retry forever, and kept in the event log for support.
+    await markEventFailed(db, eventId, result);
+    return reply.status(200).send({ ok: true, applied: false, reason: result });
+  } catch (err) {
+    await markEventFailed(db, eventId, (err as Error).message);
+    // A real processing error: let WhatsNexus retry.
+    return reply.status(500).send({ error: "processing_failed" });
+  }
 }

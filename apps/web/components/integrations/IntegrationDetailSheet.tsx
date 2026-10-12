@@ -8,10 +8,11 @@ import { Badge, Button, ErrorState, SideSheet, Skeleton, Tabs, relativeTime } fr
 import type { IntegrationDetail } from "@pulseos/types";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 import { LogsPanel } from "./LogsPanel";
+import { WhatsNexusTemplatesPanel } from "./WhatsNexusTemplatesPanel";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 
-type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "webhooks" | "sync" | "activity" | "health";
+type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "templates" | "webhooks" | "sync" | "activity" | "health";
 
 function Overview({ d }: { d: IntegrationDetail }) {
   const queryClient = useQueryClient();
@@ -118,6 +119,25 @@ function ConfigurationForm({ d, secrets }: { d: IntegrationDetail; secrets: bool
       {!allowed && <p className="text-xs text-ink-2">{secrets ? "Only a Super Admin can change credentials." : "You can view this, but not change it."}</p>}
       {fields.map((f) => {
         const hasSecret = "hasSecret" in f ? f.hasSecret : false;
+        // Provider choice is an explicit either/or, never free text: exactly one provider sends each message.
+        if (!secrets && d.key === "whatsnexus" && f.key === "useForSending") {
+          return (
+            <label key={f.key} className="block text-xs text-ink-2">
+              {f.label}
+              <select
+                value={values[f.key] === "true" ? "true" : ""}
+                disabled={!allowed}
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                className={`mt-1 ${field}`}
+                data-testid="config-useForSending"
+              >
+                <option value="">WhatsApp Business (Meta Cloud) — default</option>
+                <option value="true">WhatsNexus</option>
+              </select>
+              {f.help && <span className="mt-0.5 block text-[11px] text-ink-3">{f.help}</span>}
+            </label>
+          );
+        }
         return (
           <label key={f.key} className="block text-xs text-ink-2">
             <span className="flex items-center justify-between gap-2">
@@ -377,13 +397,14 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
         ...(d.configurationFields.length ? [{ key: "configuration" as const, label: "Configuration" }] : []),
         ...(d.secretFields.length ? [{ key: "credentials" as const, label: "Credentials" }] : []),
         ...(d.mappingNotes ? [{ key: "mappings" as const, label: "Mappings" }] : []),
+        ...(d.key === "whatsnexus" ? [{ key: "templates" as const, label: "Templates" }] : []),
         ...(d.webhookUrl ? [{ key: "webhooks" as const, label: "Webhooks" }] : []),
         ...(d.syncRuns || isTelephony ? [{ key: "sync" as const, label: "Sync" }] : []),
         ...(d.key !== "webhooks" && !d.blockedReason ? [{ key: "activity" as const, label: "Activity" }, { key: "health" as const, label: "Health" }] : []),
       ]
     : [];
   return (
-    <SideSheet title={d?.name ?? "Integration"} subtitle={d?.provider} onClose={onClose} testId="integration-detail">
+    <SideSheet title={d?.name ?? "Integration"} subtitle={d?.provider} onClose={onClose} testId="integration-detail" presentation="dialog">
       {q.isLoading && <Skeleton className="h-40" />}
       {q.isError && <ErrorState message="Could not load this integration." />}
       {d && (
@@ -393,6 +414,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
           {section === "configuration" && <ConfigurationForm d={d} secrets={false} />}
           {section === "credentials" && <ConfigurationForm d={d} secrets />}
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
+          {section === "templates" && <WhatsNexusTemplatesPanel />}
           {section === "webhooks" && (
             <div className="space-y-3 text-sm">
               <p className="text-xs text-ink-2">Give the provider this address to send events to PulseOS:</p>

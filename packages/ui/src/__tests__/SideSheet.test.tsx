@@ -42,4 +42,14 @@ describe("SideSheet", () => {
     expect(screen.getByTestId("side-sheet-body").className).toMatch(/overflow-y-auto/);
     expect(screen.getByTestId("side-sheet-body").className).toMatch(/min-h-0/);
   });
+
+  it("can present a centered dialog without changing its accessibility behavior", () => {
+    render(
+      <SideSheet title="Integration" onClose={() => {}} presentation="dialog">
+        <p>Details</p>
+      </SideSheet>,
+    );
+    expect(screen.getByRole("dialog").className).toMatch(/items-center/);
+    expect(screen.getByTestId("side-sheet").className).toMatch(/dialog-panel/);
+  });
 });

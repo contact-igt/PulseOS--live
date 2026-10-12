@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { IntegrationCard, IntegrationDetail, IntegrationLogRow, Role } from "@pulseos/types";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { connectorEvents, outboundWebhookDeliveries } from "../db/schema.js";
+import { connectorEvents, connectors, outboundWebhookDeliveries } from "../db/schema.js";
 import { deliverDueWebhooks, enqueueWebhookDeliveries, type WebhookFetch } from "../domain/integration/outbound-webhook.service.js";
 import { emitIntegrationEvent } from "../domain/integration/domain-events.js";
 import { verifyWebhookSignature } from "../domain/integration/webhook-rules.js";
@@ -98,6 +98,15 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
   it("tenant isolation: another hospital's configuration is never visible", async () => {
     const wa = (await hub(other, "SUPER_ADMIN")).find((c) => c.key === "whatsapp_meta_cloud")!;
     expect(wa.configuration).toBe("NOT_CONFIGURED");
+  });
+
+  it("hides Meta's fixture connection when WhatsNexus is the selected WhatsApp sender", async () => {
+    expect((await call(v1, "SUPER_ADMIN", "PUT", "/integrations/hub/whatsnexus/configuration", { configuration: { baseUrl: "https://wn.example.com", tenantId: "T001" } })).statusCode).toBe(200);
+    expect((await call(v1, "SUPER_ADMIN", "PUT", "/integrations/hub/whatsnexus/configuration", { secrets: { apiKey: "wnpk_test_0123456789", callbackSecret: "whcs_test_0123456789" }, mode: "LIVE" })).statusCode).toBe(200);
+    await db.update(connectors).set({ status: "CONNECTED" }).where(and(eq(connectors.tenantId, v1.tenantId), eq(connectors.provider, "whatsnexus")));
+    expect((await call(v1, "SUPER_ADMIN", "PUT", "/integrations/hub/whatsnexus/configuration", { configuration: { useForSending: "true" } })).statusCode).toBe(200);
+    const meta = (await hub(v1, "SUPER_ADMIN")).find((c) => c.key === "whatsapp_meta_cloud")!;
+    expect(meta).toMatchObject({ enabled: false, configuration: "NOT_CONFIGURED", health: "NOT_APPLICABLE", mode: "DISABLED", isConnected: false, phoneNumbers: [] });
   });
 
   it("outbound webhooks: Super Admin only; https/public hosts only in production; secret shown once", async () => {

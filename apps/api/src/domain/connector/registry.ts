@@ -1,5 +1,6 @@
 import type { MessagingProviderAdapter, TelephonyProviderAdapter } from "./types.js";
 import { whatsAppMetaCloudAdapter } from "./adapters/whatsapp-meta-cloud.js";
+import { whatsNexusAdapter } from "./adapters/whatsnexus.js";
 import { runoTelephonyAdapter } from "./adapters/runo.js";
 import { ccsTelephonyAdapter } from "./adapters/ccs.js";
 import type { AcquisitionProviderAdapter } from "../acquisition/types.js";
@@ -12,6 +13,7 @@ import { googleBusinessProfileAdapter } from "../acquisition/adapters/google-bus
 // "runo" — they call through MessagingProviderAdapter/TelephonyProviderAdapter.
 export const MESSAGING_ADAPTERS: Record<string, MessagingProviderAdapter> = {
   whatsapp_meta_cloud: whatsAppMetaCloudAdapter,
+  whatsnexus: whatsNexusAdapter,
 };
 
 export const TELEPHONY_ADAPTERS: Record<string, TelephonyProviderAdapter> = {

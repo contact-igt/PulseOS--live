@@ -1,10 +1,9 @@
-import { TEMPLATE_VARIABLES, type TemplatePurpose } from "@pulseos/types";
+import { TEMPLATE_VARIABLES, templateVariablesUsed, type TemplatePurpose } from "@pulseos/types";
 
 const VAR = /\{\{\s*([a-z_]+)\s*\}\}/g;
 
-export function variablesUsed(body: string): string[] {
-  return [...new Set([...body.matchAll(VAR)].map((m) => m[1]!))];
-}
+/** One definition shared with the settings page, so what it counts is exactly what is sent to the provider. */
+export const variablesUsed = templateVariablesUsed;
 
 /** A body may only use the variables its purpose declares; anything else is a typo or an injection attempt. */
 export function validateTemplateBody(purpose: TemplatePurpose, body: string): { ok: true } | { ok: false; unknown: string[] } {

@@ -302,6 +302,13 @@
       "when": 1791223900000,
       "tag": "0042_dynamic_webhooks_whatsnexus",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791300000000,
+      "tag": "0043_notification_provider",
+      "breakpoints": true
     }
   ]
 }

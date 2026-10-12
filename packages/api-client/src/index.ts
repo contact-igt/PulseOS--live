@@ -8,6 +8,7 @@ import type {
   AdsAnalytics,
   AdsSyncRunVm,
   MessageTemplateVm,
+  ProviderTemplateCatalogue,
   NotificationRuleVm,
   WhatsAppPreview,
   Capability,
@@ -163,10 +164,15 @@ class ApiError extends Error {
   status: number;
   /** Field-level problems the API reported (validation errors), when it sent any. */
   issues: { path: string; message: string }[];
-  constructor(status: number, message: string, issues: { path: string; message: string }[] = []) {
+  /** A machine code and a plain-words explanation, when the API sent one (e.g. an incompatible WhatsNexus template). */
+  code: string | null;
+  detail: string | null;
+  constructor(status: number, message: string, issues: { path: string; message: string }[] = [], extra: { code?: string; detail?: string } = {}) {
     super(message);
     this.status = status;
     this.issues = issues;
+    this.code = extra.code ?? null;
+    this.detail = extra.detail ?? null;
   }
 }
 
@@ -193,8 +199,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include", headers });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string; issues?: { path: string; message: string }[] } | null;
-    throw new ApiError(res.status, body?.error ?? res.statusText, Array.isArray(body?.issues) ? body.issues : []);
+    const body = (await res.json().catch(() => null)) as { error?: string; code?: string; message?: string; issues?: { path: string; message: string }[] } | null;
+    throw new ApiError(res.status, body?.error ?? res.statusText, Array.isArray(body?.issues) ? body.issues : [], { code: typeof body?.code === "string" ? body.code : undefined, detail: typeof body?.message === "string" ? body.message : undefined });
   }
   // 204, or a 200 with no body (e.g. a bare acknowledgement): nothing to parse.
   const text = res.status === 204 ? "" : await res.text();
@@ -441,11 +447,13 @@ export const api = {
   updateNotificationRule: (id: string, body: Partial<Pick<NotificationRuleVm, "enabled" | "offsetValue" | "offsetUnit" | "templateId" | "minGapMinutes">>) =>
     request<NotificationRuleVm>(`/notifications/rules/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   messageTemplates: () => request<MessageTemplateVm[]>("/notifications/templates"),
+  /** The hospital's approved WhatsNexus templates, read live from WhatsNexus on every call (never cached). */
+  providerTemplates: () => request<ProviderTemplateCatalogue>("/notifications/provider-templates"),
   updateMessageTemplate: (id: string, body: Partial<Pick<MessageTemplateVm, "name" | "providerTemplateName" | "language" | "body" | "enabled">>) =>
     request<MessageTemplateVm>(`/notifications/templates/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   whatsappPreview: (journeyId: string) => request<WhatsAppPreview>(`/journeys/${journeyId}/whatsapp/preview`),
   sendWhatsApp: (journeyId: string, idempotencyKey: string) =>
-    request<{ notificationId: string; status: string; duplicate: boolean }>(`/journeys/${journeyId}/whatsapp`, { method: "POST", body: JSON.stringify({ idempotencyKey }) }),
+    request<{ notificationId: string; status: string; duplicate: boolean; reason: string | null }>(`/journeys/${journeyId}/whatsapp`, { method: "POST", body: JSON.stringify({ idempotencyKey }) }),
   connectors: () => request<ConnectorRow[]>("/connectors"),
   connector: (id: string) => request<ConnectorDetail>(`/connectors/${id}`),
   updateConnector: (id: string, input: { displayName?: string; configuration?: Record<string, unknown>; secrets?: Record<string, unknown> }) =>

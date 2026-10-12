@@ -1,27 +1,25 @@
-import { and, asc, desc, eq, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { appointments, branches, connectorEvents, messageTemplates, notificationRules, notifications, outboundWebhooks, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
-import { TEMPLATE_VARIABLES, type MessageTemplateVm, type NotificationOffsetUnit, type NotificationRuleVm, type NotificationSubject, type NotificationVm, type TemplatePurpose, type WhatsAppPreview } from "@pulseos/types";
+import { appointments, branches, connectorEvents, messageTemplates, notificationRules, notifications, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
+import { TEMPLATE_VARIABLES, checkProviderTemplate, type WhatsAppDelivery, type MessageTemplateVm, type NotificationOffsetUnit, type NotificationRuleVm, type NotificationSubject, type NotificationVm, type TemplatePurpose, type WhatsAppPreview } from "@pulseos/types";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
 import { getMessagingAdapter } from "../connector/registry.js";
-import { AmbiguousSendError, type MessagingProviderAdapter } from "../connector/types.js";
+import { AmbiguousSendError, PermanentSendError, RetryableSendError, type MessagingProviderAdapter } from "../connector/types.js";
 import { redactLogText } from "../security/redact.js";
 import { DEFAULT_RULES, notificationKey, planNotifications, type PlanRule } from "./notification-plan.js";
-import { DEFAULT_TEMPLATES, renderTemplate, templateParameters, validateTemplateBody } from "./message-template.js";
-import { buildFullWebhookUrl, resolveDynamicPayload, validateWebhookUrl } from "../integration/webhook-rules.js";
-import { emitIntegrationEvent } from "../integration/domain-events.js";
+import { fetchProviderTemplateCatalogue, validateAgainstProvider, type CatalogueDeps } from "./provider-templates.js";
+import { DEFAULT_TEMPLATES, renderTemplate, templateParameters, validateTemplateBody, variablesUsed } from "./message-template.js";
 
 type Result<T> = ({ ok: true } & T) | { ok: false; reason: string };
-
-const allowInsecure = () => process.env.WEBHOOK_ALLOW_INSECURE === "true" && process.env.NODE_ENV !== "production";
 
 export const MAX_SEND_ATTEMPTS = 3;
 const RETRY_DELAYS_MS = [2 * 60_000, 10 * 60_000];
 const STALE_PROCESSING_MS = 5 * 60_000;
 /** How long after its moment a planned reminder may still go out (the worker ticks every 30 s). */
 const LATE_GRACE_MS = 15 * 60_000;
-const WA_PROVIDER = "whatsapp_meta_cloud";
+const META_PROVIDER = "whatsapp_meta_cloud";
+export const WHATSNEXUS_PROVIDER = "whatsnexus";
 
 // ---------------------------------------------------------------------------
 // Defaults, templates, rules
@@ -80,13 +78,25 @@ export interface UpdateTemplateInput {
   enabled?: boolean;
 }
 
-export async function updateTemplate(db: Db, tenantId: string, id: string, input: UpdateTemplateInput): Promise<Result<{ template: MessageTemplateVm }>> {
+export type UpdateTemplateResult = Result<{ template: MessageTemplateVm }> | { ok: false; reason: "template_incompatible" | "catalogue_unavailable"; detail: { code: string; message: string } };
+
+export async function updateTemplate(db: Db, tenantId: string, id: string, input: UpdateTemplateInput, deps: CatalogueDeps = {}): Promise<UpdateTemplateResult> {
   const [existing] = await db.select().from(messageTemplates).where(and(eq(messageTemplates.tenantId, tenantId), eq(messageTemplates.id, id))).limit(1);
   if (!existing) return { ok: false, reason: "template_not_found" };
   if (input.body !== undefined) {
     if (!input.body.trim() || input.body.length > 1024) return { ok: false, reason: "invalid_body" };
     const check = validateTemplateBody(existing.purpose as TemplatePurpose, input.body);
     if (!check.ok) return { ok: false, reason: "unknown_variable" };
+  }
+  // When WhatsNexus is the sender, what will actually be sent (template name, language, number of variables) must be one it has
+  // approved. Checked whenever any of those change, and when a template is switched ON, against a fresh read of its catalogue.
+  if (input.providerTemplateName !== undefined || input.language !== undefined || input.body !== undefined || input.enabled === true) {
+    const provider = await validateAgainstProvider(db, tenantId, {
+      providerTemplateName: input.providerTemplateName?.trim() || existing.providerTemplateName,
+      language: input.language?.trim() || existing.language,
+      body: input.body ?? existing.body,
+    }, deps);
+    if (!provider.ok) return provider;
   }
   const [row] = await db
     .update(messageTemplates)
@@ -285,22 +295,28 @@ export interface SendDeps {
   fetchImpl?: typeof fetch;
 }
 
-export async function getWhatsNexusWebhook(db: Db, tenantId: string) {
-  const [webhook] = await db
-    .select()
-    .from(outboundWebhooks)
-    .where(
-      and(
-        eq(outboundWebhooks.tenantId, tenantId),
-        eq(outboundWebhooks.enabled, true),
-        or(
-          eq(outboundWebhooks.webhookCategory, "WHATSNEXUS"),
-          sql`${outboundWebhooks.events} @> ARRAY['whatsapp.followup_requested']::text[]`,
-        ),
-      ),
-    )
-    .limit(1);
-  return webhook ?? null;
+export type SendProviderChoice =
+  | { ok: true; provider: string; connector: NonNullable<Awaited<ReturnType<typeof getConnectorByTenantAndProvider>>>; adapter: MessagingProviderAdapter }
+  | { ok: false; reason: "PROVIDER_NOT_CONFIGURED" | "PROVIDER_NOT_READY" };
+
+/**
+ * Exactly ONE sending provider per notification, chosen explicitly:
+ *  - WhatsNexus only when its connector is switched on for sending (configuration.useForSending === "true"), is not
+ *    disabled and is in LIVE mode. If it is selected but not usable the message is BLOCKED — it never falls back to Meta.
+ *  - Otherwise Meta Cloud, exactly as before (existing hospitals are unchanged by default).
+ */
+export async function resolveSendProvider(db: Db, tenantId: string, adapterFor: (provider: string) => MessagingProviderAdapter | null = getMessagingAdapter): Promise<SendProviderChoice> {
+  const wn = await getConnectorByTenantAndProvider(db, tenantId, WHATSNEXUS_PROVIDER);
+  const wnConfig = (wn?.configuration as Record<string, unknown> | null) ?? {};
+  if (wn && String(wnConfig.useForSending ?? "") === "true") {
+    const adapter = adapterFor(WHATSNEXUS_PROVIDER);
+    if (!adapter || wn.status === "DISABLED" || wn.mode !== "LIVE") return { ok: false, reason: "PROVIDER_NOT_READY" };
+    return { ok: true, provider: WHATSNEXUS_PROVIDER, connector: wn, adapter };
+  }
+  const connector = await getConnectorByTenantAndProvider(db, tenantId, META_PROVIDER);
+  const adapter = adapterFor(META_PROVIDER);
+  if (!connector || !adapter || connector.status === "DISABLED") return { ok: false, reason: "PROVIDER_NOT_CONFIGURED" };
+  return { ok: true, provider: META_PROVIDER, connector, adapter };
 }
 
 type Row = typeof notifications.$inferSelect;
@@ -310,11 +326,29 @@ async function finish(db: Db, id: string, patch: Partial<typeof notifications.$i
   await db.update(notifications).set(patch).where(and(eq(notifications.id, id), eq(notifications.status, "PROCESSING")));
 }
 
+/**
+ * The provider accepted the message. Normally the row is still PROCESSING and becomes SENT. A fast delivery callback (or a
+ * reconciliation) may already have moved it on, in which case its status is kept and only the missing facts are filled in.
+ */
+async function finishAfterSend(db: Db, id: string, patch: Partial<typeof notifications.$inferInsert>): Promise<void> {
+  const moved = await db.update(notifications).set(patch).where(and(eq(notifications.id, id), eq(notifications.status, "PROCESSING"))).returning({ id: notifications.id });
+  if (moved.length > 0) return;
+  await db
+    .update(notifications)
+    .set({
+      providerMessageId: sql`coalesce(${notifications.providerMessageId}, ${patch.providerMessageId ?? null}::text)`,
+      renderedText: sql`coalesce(${notifications.renderedText}, ${patch.renderedText ?? null}::text)`,
+      // A Date cannot be bound inside a raw fragment: pass an ISO string with an explicit type.
+      sentAt: sql`coalesce(${notifications.sentAt}, ${patch.sentAt instanceof Date ? patch.sentAt.toISOString() : null}::timestamptz)`,
+    })
+    .where(and(eq(notifications.id, id), inArray(notifications.status, ["SENT", "DELIVERED", "READ"])));
+}
+
 /** Bookkeeping after the provider ACCEPTED a message: retried, and never allowed to turn a delivered message into a resend. */
 async function recordAfterSend(db: Db, n: Row, connectorId: string, tenantId: string, now: Date, patch: Partial<typeof notifications.$inferInsert>): Promise<void> {
   for (let i = 0; i < 3; i++) {
     try {
-      await finish(db, n.id, patch);
+      await finishAfterSend(db, n.id, patch);
       break;
     } catch (err) {
       if (i === 2) console.error("could not record a sent notification", n.id, err);
@@ -366,133 +400,39 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
   const [template] = n.templateId ? await db.select().from(messageTemplates).where(eq(messageTemplates.id, n.templateId)).limit(1) : [];
   if (!template || !template.enabled) return (await finish(db, n.id, { status: "BLOCKED", reason: "TEMPLATE_UNAVAILABLE" }), "blocked");
 
-  const connector = await getConnectorByTenantAndProvider(db, tenantId, WA_PROVIDER);
-  const adapter = (deps.adapterFor ?? getMessagingAdapter)(WA_PROVIDER);
-  if (!connector || !adapter || connector.status === "DISABLED") {
-    const whatsNexus = await getWhatsNexusWebhook(db, tenantId);
-    if (!whatsNexus) return (await finish(db, n.id, { status: "BLOCKED", reason: "PROVIDER_NOT_CONFIGURED" }), "blocked");
-
-    const rendered = n.renderedText ? { text: n.renderedText, missing: [] as string[] } : renderTemplate(template.body, values);
-    if (rendered.missing.length > 0) return (await finish(db, n.id, { status: "BLOCKED", reason: "MISSING_VARIABLES" }), "blocked");
-
-    const fullUrl = buildFullWebhookUrl(whatsNexus.url, whatsNexus.endpointPath);
-    const targetCheck = validateWebhookUrl(fullUrl, { allowInsecure: allowInsecure() });
-    if (!targetCheck.ok) {
-      await finish(db, n.id, { status: "FAILED", reason: `INVALID_WEBHOOK_URL: ${targetCheck.reason}` });
-      return "failed";
-    }
-
-    const context: Record<string, unknown> = {
-      call_Id: n.journeyId ?? n.id,
-      journeyId: n.journeyId ?? n.id,
-      customerName: values.patient_name,
-      patientName: values.patient_name,
-      phoneNumber: patientPhone,
-      phone: patientPhone,
-      patientPhone: patientPhone,
-      agentName: values.staff_name ?? values.doctor_name,
-      staffName: values.staff_name ?? values.doctor_name,
-      createdAt: now.toISOString(),
-      status: "OPEN",
-      typeOfEnquiry: "Follow-up",
-      source: "PULSE_OS",
-      templateName: template.name,
-      message: rendered.text,
-      hospitalName: values.hospital_name,
-      notificationId: n.id,
-    };
-
-    let payload: Record<string, unknown>;
-    const mappings = whatsNexus.payloadMapping as Array<{ key: string; field: string; fallbackValue?: string | null }> | null;
-    if (Array.isArray(mappings) && mappings.length > 0) {
-      payload = resolveDynamicPayload(mappings, context);
-    } else {
-      payload = {
-        call_Id: n.journeyId ?? n.id,
-        customerName: values.patient_name,
-        phoneNumber: patientPhone,
-        agentName: values.staff_name ?? values.doctor_name,
-        createdAt: now.toISOString(),
-        status: "OPEN",
-        typeOfEnquiry: "Follow-up",
-        source: "PULSE_OS",
-        templateName: template.name,
-        message: rendered.text,
-      };
-    }
-
-    const customHeaders: Record<string, string> = {};
-    if (Array.isArray(whatsNexus.headers)) {
-      for (const h of whatsNexus.headers as Array<{ key: string; value: string }>) {
-        if (h.key && h.value) customHeaders[h.key] = h.value;
-      }
-    }
-
-    let providerMessageId = `whatsnexus_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      const fetchFn = deps.fetchImpl ?? (fetch as typeof fetch);
-      const res = await fetchFn(targetCheck.url, {
-        method: whatsNexus.httpMethod || "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-pulseos-notification-id": n.id,
-          ...customHeaders,
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (res.status >= 300) {
-        const errText = await res.text().catch(() => "");
-        throw new Error(`WhatsNexus returned HTTP ${res.status}: ${errText.slice(0, 200)}`);
-      }
-
-      const resJson = (await res.json().catch(() => null)) as any;
-      if (resJson && typeof resJson === "object") {
-        if (resJson.messageId || resJson.id || resJson.call_Id) {
-          providerMessageId = String(resJson.messageId || resJson.id || resJson.call_Id);
-        }
-      }
-    } catch (err) {
-      const message = redactLogText(err instanceof Error ? err.message : String(err)) ?? "send failed";
-      await finish(db, n.id, { status: "FAILED", reason: message });
-      return "failed";
-    }
-
-    await db.update(notifications).set({ status: "SENT", providerMessageId, renderedText: rendered.text, sentAt: now, reason: null }).where(eq(notifications.id, n.id));
-    emitIntegrationEvent({
-      type: "whatsapp.followup_requested",
-      tenantId,
-      eventId: `whatsapp.followup:${n.id}`,
-      occurredAt: now,
-      data: {
-        notificationId: n.id,
-        journeyId: n.journeyId,
-        patientId: n.patientId,
-        phoneNumber: patientPhone,
-        templateName: template.name,
-        provider: "whatsnexus",
-      },
-    });
-    return "sent";
-  }
+  const choice = await resolveSendProvider(db, tenantId, deps.adapterFor ?? getMessagingAdapter);
+  if (!choice.ok) return (await finish(db, n.id, { status: "BLOCKED", reason: choice.reason }), "blocked");
+  const { connector, adapter, provider } = choice;
+  // A retry stays with the provider the first attempt went to: never a silent switch after a possibly-accepted send.
+  if (n.provider && n.provider !== provider) return (await finish(db, n.id, { status: "BLOCKED", reason: "PROVIDER_CHANGED" }), "blocked");
 
   const rendered = n.renderedText ? { text: n.renderedText, missing: [] as string[] } : renderTemplate(template.body, values);
   if (rendered.missing.length > 0) return (await finish(db, n.id, { status: "BLOCKED", reason: "MISSING_VARIABLES" }), "blocked");
 
-  const config = { ...((connector.configuration as Record<string, unknown> | null) ?? {}), mode: connector.mode.toLowerCase() };
+  const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown> | null) ?? {}), mode: connector.mode.toLowerCase(), pulseosTenantId: tenantId };
   const secrets = connector.mode === "FIXTURE" ? {} : (await getConnectorSecrets(db, connector.id)) ?? {};
+  if (provider === WHATSNEXUS_PROVIDER && (!config.baseUrl || !config.tenantId || !secrets.apiKey)) {
+    return (await finish(db, n.id, { status: "BLOCKED", reason: "PROVIDER_NOT_CONFIGURED" }), "blocked");
+  }
+  // Recorded BEFORE the send so a crash, a retry or a late callback can always be attributed to this provider.
+  if (!n.provider) await db.update(notifications).set({ provider }).where(and(eq(notifications.id, n.id), isNull(notifications.provider)));
+
   let providerMessageId: string;
   try {
-    const res = await adapter.sendTemplate(config, secrets, patientPhone, { name: template.providerTemplateName, language: template.language, parameters: templateParameters(template.body, values) });
+    const res = await adapter.sendTemplate(config, secrets, patientPhone, { name: template.providerTemplateName, language: template.language, parameters: templateParameters(template.body, values), idempotencyKey: n.id });
     providerMessageId = res.providerMessageId;
   } catch (err) {
-    const message = redactLogText(err instanceof Error ? err.message : String(err)) ?? "send failed";
+    const raw = redactLogText(err instanceof Error ? err.message : String(err)) ?? "send failed";
+    // An ambiguous WhatsNexus outcome stays visibly "unknown" (the reconcile job resolves it from WhatsNexus's own record).
+    const message = provider === WHATSNEXUS_PROVIDER && err instanceof AmbiguousSendError ? `OUTCOME_UNKNOWN: ${raw}` : raw;
     await db.insert(connectorEvents).values({ tenantId, connectorId: connector.id, externalEventId: `notification:${n.id}:${n.attempts}`, direction: "outbound", status: "failed", error: message, payload: { type: "notification" } }).onConflictDoNothing();
-    await touchConnectorError(db, connector.id, message);
+    // A refused TEMPLATE (paused, wrong language, wrong parameter count …) is about that one template, not the connection:
+    // it must not flip the whole provider to ERROR. Credentials, billing and transport failures still do.
+    const templateProblem = err instanceof PermanentSendError && err.code.startsWith("TEMPLATE_");
+    if (!(err instanceof RetryableSendError) && !templateProblem) await touchConnectorError(db, connector.id, message);
     const delay = RETRY_DELAYS_MS[n.attempts - 1];
     // A message a person chose to send is never retried behind their back (they saw it fail and decide what to do).
-    if (err instanceof AmbiguousSendError || n.subjectType === "FOLLOW_UP" || n.attempts >= MAX_SEND_ATTEMPTS || delay === undefined) {
+    if (err instanceof AmbiguousSendError || err instanceof PermanentSendError || n.subjectType === "FOLLOW_UP" || n.attempts >= MAX_SEND_ATTEMPTS || delay === undefined) {
       await finish(db, n.id, { status: "FAILED", reason: message });
       return "failed";
     }
@@ -552,6 +492,83 @@ export async function applyDeliveryStatus(db: Db, tenantId: string, providerMess
 }
 
 // ---------------------------------------------------------------------------
+// WhatsNexus: authenticated delivery callbacks and reconciliation of ambiguous sends
+// ---------------------------------------------------------------------------
+
+export type WhatsNexusStatusResult = "applied" | "unknown_notification" | "provider_mismatch" | "wamid_conflict";
+
+const UNKNOWN_OUTCOME_PREFIX = "OUTCOME_UNKNOWN";
+
+/** WhatsNexus has proven the provider accepted a send whose outcome was unknown: it becomes SENT, with the real wamid. */
+async function resolveUnknownAsSent(db: Db, n: Row, wamid: string, at: Date): Promise<void> {
+  await db
+    .update(notifications)
+    .set({ status: "SENT", providerMessageId: wamid, sentAt: n.sentAt ?? at, reason: null })
+    .where(and(eq(notifications.id, n.id), eq(notifications.status, "FAILED"), like(notifications.reason, `${UNKNOWN_OUTCOME_PREFIX}%`)));
+}
+
+/**
+ * Apply an AUTHENTICATED WhatsNexus status. The notification is found by its own id (externalId — never a journey id),
+ * scoped to the tenant whose connector secret verified the signature, and must have been handed to WhatsNexus. The wamid
+ * is bound on first sight and a different wamid afterwards is refused. Status moves only forward (applyDeliveryStatus).
+ * Safe if the callback beats the send's own bookkeeping: the row exists from planning, and finishAfterSend keeps its status.
+ */
+export async function applyWhatsNexusStatus(db: Db, tenantId: string, e: { notificationId: string; wamid: string; status: "sent" | "delivered" | "read" | "failed"; at: Date }): Promise<WhatsNexusStatusResult> {
+  const [n] = await db.select().from(notifications).where(and(eq(notifications.tenantId, tenantId), eq(notifications.id, e.notificationId))).limit(1);
+  if (!n) return "unknown_notification";
+  if (n.provider !== WHATSNEXUS_PROVIDER) return "provider_mismatch";
+  if (n.providerMessageId && n.providerMessageId !== e.wamid) return "wamid_conflict";
+  if (!n.providerMessageId) {
+    await db.update(notifications).set({ providerMessageId: e.wamid }).where(and(eq(notifications.id, n.id), isNull(notifications.providerMessageId)));
+  }
+  if (n.status === "FAILED" && n.reason?.startsWith(UNKNOWN_OUTCOME_PREFIX)) {
+    if (e.status === "failed") await db.update(notifications).set({ reason: "PROVIDER_REPORTED_FAILURE" }).where(eq(notifications.id, n.id));
+    else await resolveUnknownAsSent(db, n, e.wamid, e.at);
+  }
+  await applyDeliveryStatus(db, tenantId, e.wamid, e.status, e.at);
+  return "applied";
+}
+
+/**
+ * Resolve notifications whose WhatsNexus outcome was ambiguous (timeout, unreadable reply). Read-only toward WhatsNexus:
+ * it asks what became of the idempotency key and NEVER sends. Left alone while WhatsNexus itself is unsure.
+ */
+export async function reconcileWhatsNexusOutcomes(db: Db, now: Date, deps: Pick<SendDeps, "adapterFor"> = {}, limit = 25): Promise<Record<string, number>> {
+  const tally: Record<string, number> = { checked: 0, accepted: 0, notSent: 0, pending: 0, errors: 0 };
+  const rows = await db
+    .select()
+    .from(notifications)
+    .where(and(eq(notifications.provider, WHATSNEXUS_PROVIDER), eq(notifications.status, "FAILED"), like(notifications.reason, `${UNKNOWN_OUTCOME_PREFIX}%`), gte(notifications.createdAt, new Date(now.getTime() - 48 * 3_600_000))))
+    .orderBy(asc(notifications.createdAt))
+    .limit(limit);
+  const adapter = (deps.adapterFor ?? getMessagingAdapter)(WHATSNEXUS_PROVIDER);
+  if (!adapter?.lookupSend) return tally;
+  for (const n of rows) {
+    tally.checked!++;
+    try {
+      const connector = await getConnectorByTenantAndProvider(db, n.tenantId, WHATSNEXUS_PROVIDER);
+      if (!connector || connector.status === "DISABLED") continue;
+      const secrets = (await getConnectorSecrets(db, connector.id)) ?? {};
+      const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown> | null) ?? {}), mode: connector.mode.toLowerCase(), pulseosTenantId: n.tenantId };
+      const found = await adapter.lookupSend(config, secrets, n.id);
+      if (found.state === "accepted") {
+        await resolveUnknownAsSent(db, n, found.providerMessageId, now);
+        tally.accepted!++;
+      } else if (found.state === "failed" || found.state === "not_found") {
+        const why = found.state === "failed" ? found.code : "no record at WhatsNexus";
+        await db.update(notifications).set({ reason: `NOT_SENT: ${why}` }).where(and(eq(notifications.id, n.id), eq(notifications.status, "FAILED")));
+        tally.notSent!++;
+      } else {
+        tally.pending!++;
+      }
+    } catch {
+      tally.errors!++;
+    }
+  }
+  return tally;
+}
+
+// ---------------------------------------------------------------------------
 // Staff: send a WhatsApp message from a follow-up
 // ---------------------------------------------------------------------------
 
@@ -570,7 +587,16 @@ async function manualContext(db: Db, tenantId: string, journeyId: string, actorI
 
 const maskPhone = (p: string) => (p.length > 5 ? `${p.slice(0, 3)}${"•".repeat(Math.max(0, p.length - 5))}${p.slice(-2)}` : "•••");
 
-export async function previewFollowUpMessage(db: Db, tenantId: string, actorId: string, journeyId: string): Promise<Result<{ preview: WhatsAppPreview }>> {
+export interface PreviewOptions {
+  /**
+   * Ask WhatsNexus (read-only) whether the saved template is still approved and still fits, so the sheet can say so before
+   * anyone presses Send. Off for the preview that the send itself uses: WhatsNexus decides again at the moment of sending.
+   */
+  checkProvider?: boolean;
+  catalogue?: CatalogueDeps;
+}
+
+export async function previewFollowUpMessage(db: Db, tenantId: string, actorId: string, journeyId: string, opts: PreviewOptions = {}): Promise<Result<{ preview: WhatsAppPreview }>> {
   const caps = await tenantCapabilityMap(db, tenantId);
   if (!caps.WHATSAPP_NOTIFICATIONS) return { ok: false, reason: "feature_not_available" };
   await ensureNotificationDefaults(db, tenantId);
@@ -579,18 +605,34 @@ export async function previewFollowUpMessage(db: Db, tenantId: string, actorId: 
   const [template] = await db.select().from(messageTemplates).where(and(eq(messageTemplates.tenantId, tenantId), eq(messageTemplates.purpose, "FOLLOW_UP_MESSAGE"))).limit(1);
   if (!template) return { ok: false, reason: "template_not_found" };
   const rendered = renderTemplate(template.body, ctx.values);
-  const connector = await getConnectorByTenantAndProvider(db, tenantId, WA_PROVIDER);
-  const whatsNexus = await getWhatsNexusWebhook(db, tenantId);
-  const hasProvider = (connector && connector.status !== "DISABLED") || !!whatsNexus;
-  const blockedReason = !template.enabled ? "TEMPLATE_UNAVAILABLE" : !ctx.phone ? "NO_VALID_PHONE" : !hasProvider ? "PROVIDER_NOT_CONFIGURED" : rendered.missing.length ? "MISSING_VARIABLES" : null;
-  return { ok: true, preview: { recipient: ctx.phone ? maskPhone(ctx.phone) : "No valid number", text: rendered.text, templateName: template.name, missingVariables: rendered.missing, canSend: blockedReason === null, blockedReason } };
+  const choice = await resolveSendProvider(db, tenantId);
+  let blockedReason = !template.enabled ? "TEMPLATE_UNAVAILABLE" : !ctx.phone ? "NO_VALID_PHONE" : !choice.ok ? "PROVIDER_NOT_CONFIGURED" : rendered.missing.length ? "MISSING_VARIABLES" : null;
+
+  const delivery: WhatsAppDelivery = {
+    provider: choice.ok ? (choice.provider === WHATSNEXUS_PROVIDER ? "whatsnexus" : "meta") : null,
+    templateName: template.providerTemplateName,
+    language: template.language,
+    category: null,
+    parameters: variablesUsed(template.body).map((variable, i) => ({ position: i + 1, variable, value: (ctx.values as Record<string, string>)[variable] ?? "" })),
+  };
+  // WhatsNexus is the authority on approval; its answer is read now, never remembered. If it cannot be asked, the send is
+  // not blocked here — WhatsNexus checks again when the message is actually sent.
+  if (opts.checkProvider && choice.ok && choice.provider === WHATSNEXUS_PROVIDER) {
+    const catalogue = await fetchProviderTemplateCatalogue(db, tenantId, opts.catalogue);
+    if (catalogue.state === "OK") {
+      delivery.category = catalogue.templates.find((t) => t.name === template.providerTemplateName && t.language.toLowerCase() === template.language.toLowerCase())?.category ?? null;
+      const check = checkProviderTemplate({ providerTemplateName: template.providerTemplateName, language: template.language, variableCount: delivery.parameters.length }, catalogue.templates);
+      if (!check.ok && !blockedReason) blockedReason = check.code;
+    }
+  }
+  return { ok: true, preview: { recipient: ctx.phone ? maskPhone(ctx.phone) : "No valid number", text: rendered.text, templateName: template.name, missingVariables: rendered.missing, canSend: blockedReason === null, blockedReason, delivery } };
 }
 
 /**
  * A person chose to send this message. It goes through the same durable path as every other notification (one row, the same
  * adapter, the same status tracking), is recorded on the Journey timeline, and never completes the follow-up task.
  */
-export async function sendFollowUpMessage(db: Db, tenantId: string, actorId: string, journeyId: string, idempotencyKey: string, deps: SendDeps = {}, now: Date = new Date()): Promise<Result<{ notificationId: string; status: string; duplicate: boolean }>> {
+export async function sendFollowUpMessage(db: Db, tenantId: string, actorId: string, journeyId: string, idempotencyKey: string, deps: SendDeps = {}, now: Date = new Date()): Promise<Result<{ notificationId: string; status: string; duplicate: boolean; /** Why it failed or was blocked (provider code and message), so staff see the real reason. */ reason: string | null }>> {
   const preview = await previewFollowUpMessage(db, tenantId, actorId, journeyId);
   if (!preview.ok) return preview;
   if (!preview.preview.canSend) return { ok: false, reason: preview.preview.blockedReason ?? "cannot_send" };
@@ -605,7 +647,7 @@ export async function sendFollowUpMessage(db: Db, tenantId: string, actorId: str
     .returning();
   if (!inserted) {
     const [existing] = await db.select().from(notifications).where(and(eq(notifications.tenantId, tenantId), eq(notifications.idempotencyKey, key))).limit(1);
-    return { ok: true, notificationId: existing!.id, status: existing!.status, duplicate: true };
+    return { ok: true, notificationId: existing!.id, status: existing!.status, duplicate: true, reason: existing!.reason };
   }
   const [claimed] = await db.update(notifications).set({ status: "PROCESSING", attempts: 1, processingStartedAt: now }).where(and(eq(notifications.id, inserted.id), eq(notifications.status, "PENDING"))).returning();
   const outcome = claimed ? await sendClaimed(db, claimed, now, deps) : "cancelled";
@@ -616,7 +658,7 @@ export async function sendFollowUpMessage(db: Db, tenantId: string, actorId: str
       title: "WhatsApp message sent", description: after!.renderedText, relatedEntityType: "notification", relatedEntityId: inserted.id, occurredAt: now,
     });
   }
-  return { ok: true, notificationId: inserted.id, status: after!.status, duplicate: false };
+  return { ok: true, notificationId: inserted.id, status: after!.status, duplicate: false, reason: after!.reason };
 }
 
 // ---------------------------------------------------------------------------

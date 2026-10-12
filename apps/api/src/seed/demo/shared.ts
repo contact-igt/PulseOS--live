@@ -321,7 +321,7 @@ export async function createDemoConnectors(tenantId: string, branchByKey: { a: B
   const [whatsappConnector] = await db
     .insert(connectors)
     .values({
-      tenantId, type: "MESSAGING", provider: "whatsapp_meta_cloud", status: "CONNECTED", mode: "FIXTURE",
+      tenantId, type: "MESSAGING", provider: "whatsapp_meta_cloud", status: "NOT_CONFIGURED", mode: "FIXTURE",
       displayName: "WhatsApp (Meta Cloud API)", capabilities: ["SEND_MESSAGE", "RECEIVE_MESSAGE", "RECEIVE_STATUS"],
       configuration: { phoneNumberId: refs.phoneNumberId, businessAccountId: refs.identifiers.wabaId },
     })

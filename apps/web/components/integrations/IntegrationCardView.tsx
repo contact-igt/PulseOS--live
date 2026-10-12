@@ -46,7 +46,7 @@ export function IntegrationCardView({ card, onOpen }: { card: IntegrationCard; o
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             Connected
           </span>
-        ) : card.mode === "LIVE_CONFIGURED" || card.configuration === "CONFIGURED" ? (
+        ) : card.mode === "LIVE_CAPABLE" ? (
           <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 border border-amber-200">
             <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
             Connecting
