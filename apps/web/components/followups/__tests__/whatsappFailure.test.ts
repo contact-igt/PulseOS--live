@@ -10,12 +10,12 @@ describe("describeWhatsAppFailure", () => {
   ])("explains %s in plain words and keeps WhatsNexus's own text", (reason, summary, detail) => {
     const d = describeWhatsAppFailure(reason);
     expect(d.summary).toMatch(summary);
-    expect(d.summary).toMatch(/Settings → Reminders/);
+    expect(d.summary).toMatch(/WhatsNexus WhatsApp → Reminders/);
     expect(d.detail).toBe(detail);
   });
 
   it("template problems are for an Admin to fix, other failures are not", () => {
-    expect(describeWhatsAppFailure("INSUFFICIENT_BALANCE: wallet empty").summary).not.toMatch(/Settings → Reminders/);
+    expect(describeWhatsAppFailure("INSUFFICIENT_BALANCE: wallet empty").summary).not.toMatch(/WhatsNexus WhatsApp → Reminders/);
     expect(describeWhatsAppFailure("INSUFFICIENT_BALANCE: wallet empty").summary).toMatch(/balance/i);
   });
 

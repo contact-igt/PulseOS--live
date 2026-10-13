@@ -1,4 +1,4 @@
-const FIX_IN_SETTINGS = "Ask your Admin to choose another template in Settings → Reminders.";
+const FIX_IN_SETTINGS = "Ask your Admin to choose another template in Integrations → WhatsNexus WhatsApp → Reminders.";
 
 const BY_CODE: Record<string, string> = {
   TEMPLATE_NOT_APPROVED: `WhatsNexus no longer has this message template approved (it may be paused or rejected). ${FIX_IN_SETTINGS}`,

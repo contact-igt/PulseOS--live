@@ -24,6 +24,13 @@ export function ProviderTemplateCard({ template, body, compatible, testId }: { t
           </div>
         ))}
       </dl>
+      {template.body && (
+        <div>
+          <p className="text-[11px] text-ink-3">WhatsApp template preview</p>
+          <pre className="mt-1 whitespace-pre-wrap rounded-control border border-line bg-surface px-2 py-1.5 text-xs text-ink" data-testid={`${testId}-body`}>{template.body}</pre>
+          <p className="mt-1 text-[11px] text-ink-3">This approved wording is read-only. WhatsNexus sends this text, not the PulseOS mapping above.</p>
+        </div>
+      )}
       <div>
         <p className="text-[11px] text-ink-3">What goes into each placeholder ({mapping.length} in this message, {template.bodyParameterCount} in the template)</p>
         {mapping.length === 0 ? (

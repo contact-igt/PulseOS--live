@@ -5,14 +5,15 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@pulseos/api-client";
 import { Badge, Button, ErrorState, SideSheet, Skeleton, Tabs, relativeTime } from "@pulseos/ui";
-import type { IntegrationDetail } from "@pulseos/types";
+import { hasPermission, type IntegrationDetail } from "@pulseos/types";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 import { LogsPanel } from "./LogsPanel";
 import { WhatsNexusTemplatesPanel } from "./WhatsNexusTemplatesPanel";
+import { RemindersSection } from "../settings/RemindersSection";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 
-type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "templates" | "webhooks" | "sync" | "activity" | "health";
+type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "templates" | "reminders" | "webhooks" | "sync" | "activity" | "health";
 
 function Overview({ d }: { d: IntegrationDetail }) {
   const queryClient = useQueryClient();
@@ -388,9 +389,11 @@ function Health({ d }: { d: IntegrationDetail }) {
 
 export function IntegrationDetailSheet({ integrationKey, onClose }: { integrationKey: string; onClose: () => void }) {
   const q = useQuery({ queryKey: ["integration-detail", integrationKey], queryFn: () => api.integrationDetail(integrationKey) });
+  const session = useQuery({ queryKey: ["session"], queryFn: api.session });
   const [section, setSection] = useState<SectionKey>("overview");
   const d = q.data;
   const isTelephony = d?.key === "ccs_ivr" || d?.key === "runo";
+  const canManageReminders = !!session.data && hasPermission(session.data.user.role, "MANAGE_SPECIALTIES");
   const sections: { key: SectionKey; label: string }[] = d
     ? [
         { key: "overview", label: "Overview" },
@@ -398,6 +401,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
         ...(d.secretFields.length ? [{ key: "credentials" as const, label: "Credentials" }] : []),
         ...(d.mappingNotes ? [{ key: "mappings" as const, label: "Mappings" }] : []),
         ...(d.key === "whatsnexus" ? [{ key: "templates" as const, label: "Templates" }] : []),
+        ...(d.key === "whatsnexus" && canManageReminders ? [{ key: "reminders" as const, label: "Reminders" }] : []),
         ...(d.webhookUrl ? [{ key: "webhooks" as const, label: "Webhooks" }] : []),
         ...(d.syncRuns || isTelephony ? [{ key: "sync" as const, label: "Sync" }] : []),
         ...(d.key !== "webhooks" && !d.blockedReason ? [{ key: "activity" as const, label: "Activity" }, { key: "health" as const, label: "Health" }] : []),
@@ -415,6 +419,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
           {section === "credentials" && <ConfigurationForm d={d} secrets />}
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
           {section === "templates" && <WhatsNexusTemplatesPanel />}
+          {section === "reminders" && <RemindersSection />}
           {section === "webhooks" && (
             <div className="space-y-3 text-sm">
               <p className="text-xs text-ink-2">Give the provider this address to send events to PulseOS:</p>

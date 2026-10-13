@@ -61,7 +61,7 @@ export function WhatsNexusTemplatesPanel() {
           </table>
         </div>
       )}
-      {c && <p className="text-[11px] text-ink-3" data-testid="templates-fetched">Read from WhatsNexus {relativeTime(c.fetchedAt)}.{c.active ? "" : " WhatsNexus is not the selected sender yet, so reminders still use the template name typed in Settings → Reminders."}</p>}
+      {c && <p className="text-[11px] text-ink-3" data-testid="templates-fetched">Read from WhatsNexus {relativeTime(c.fetchedAt)}.{c.active ? "" : " WhatsNexus is not the selected sender yet, so reminders still use the template name selected in this integration."}</p>}
     </div>
   );
 }

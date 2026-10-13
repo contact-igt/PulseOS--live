@@ -49,7 +49,7 @@ test.describe("M7 capabilities + Integration Hub", () => {
     for (const key of ["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "sms", "webhooks"]) await expect(page.getByTestId(`hub-card-${key}`)).toBeVisible();
     await expect(page.getByTestId("hub-blocked-ccs_ivr")).toContainText("Provider API/Webhook documentation required");
     await expect(page.getByTestId("hub-card-google_ads")).toContainText("Disabled");
-    await expect(page.getByTestId("hub-card-runo")).toContainText("Fixture");
+    await expect(page.getByTestId("hub-card-runo")).toContainText("Not configured");
     // Brand label follows the edition.
     await expect(page.getByTestId("sidebar-brand")).toContainText("Beta V1");
 

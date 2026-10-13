@@ -98,10 +98,10 @@ function TemplateEditor({ template, catalogue }: { template: MessageTemplateVm; 
         <p className="text-sm font-medium text-ink">{TEMPLATE_PURPOSE_LABEL[template.purpose]}</p>
         <Badge tone={template.enabled ? "primary" : "neutral"}>{template.enabled ? "On" : "Off"}</Badge>
       </div>
-      <label className="block text-ink-2">Message
+      <label className="block text-ink-2">PulseOS field mapping
         <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} className="mt-1 w-full rounded-control border border-line-strong bg-surface p-2 text-sm text-ink outline-none focus:border-primary-500" data-testid={`template-body-${template.purpose}`} />
       </label>
-      <p className="text-ink-3">Details you can use: {TEMPLATE_VARIABLES[template.purpose].map((v) => `{{${v}}}`).join("  ")}</p>
+      <p className="text-ink-3">Set the value for each WhatsApp placeholder. Details you can use: {TEMPLATE_VARIABLES[template.purpose].map((v) => `{{${v}}}`).join("  ")}</p>
       {fromCatalogue ? (
         <div className="space-y-2">
           <div className="text-ink-2">
@@ -143,7 +143,7 @@ function TemplateEditor({ template, catalogue }: { template: MessageTemplateVm; 
   );
 }
 
-/** Settings → Reminders. When messages go out, and what they say. Admin only; needs WhatsApp Notifications on. */
+/** WhatsNexus → Reminders. When messages go out, and what they say. Admin only; needs WhatsApp Notifications on. */
 export function RemindersSection() {
   const rules = useQuery({ queryKey: ["notification-rules"], queryFn: api.notificationRules, retry: false });
   const templates = useQuery({ queryKey: ["message-templates"], queryFn: api.messageTemplates, retry: false });
