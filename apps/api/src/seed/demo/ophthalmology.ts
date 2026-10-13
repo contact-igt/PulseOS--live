@@ -677,7 +677,6 @@ export async function seedOphthalmologyTenant(passwordHash: string, variant: Oph
 
   const { journeyIds, timelineRows } = await seedJourneys(ctx, JOURNEY_CONFIGS);
   if (timelineRows.length > 0) await db.insert(timelineEvents).values(timelineRows);
-  await seedConversations(ctx, CONVERSATION_CONFIGS);
 
   // Standalone tasks so every My Work view has today / upcoming / completed rows.
   const journeyOf = (patientIdx: number) => journeyIdForPatient(JOURNEY_CONFIGS, journeyIds, patientIdx);

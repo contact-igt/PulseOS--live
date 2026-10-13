@@ -20,6 +20,7 @@ const REASON_TEXT: Record<string, string> = {
 export function FeaturesSection() {
   const queryClient = useQueryClient();
   const q = useQuery({ queryKey: ["capabilities"], queryFn: api.capabilities });
+  const hub = useQuery({ queryKey: ["integration-hub"], queryFn: api.integrationHub });
   const [error, setError] = useState<string | null>(null);
   // What the person just chose, shown until the server answers (React state flushes inside the click; query-cache updates do not).
   const [chosen, setChosen] = useState<Record<string, boolean>>({});
@@ -52,6 +53,8 @@ export function FeaturesSection() {
   if (q.isError || !q.data) return <ErrorState message="Could not load features." />;
 
   const label = (key: string) => q.data.capabilities.find((c) => c.key === key)?.label ?? key;
+  // WhatsNexus is the selected sender when the Hub disables the direct Meta alternative.
+  const whatsNexusSelected = hub.data?.some((card) => card.key === "whatsapp_meta_cloud" && card.mode === "DISABLED") ?? false;
 
   return (
     <div className="space-y-3" data-testid="features-section">
@@ -64,8 +67,9 @@ export function FeaturesSection() {
         </p>
       )}
       <ul className="divide-y divide-line rounded-panel border border-line bg-surface">
-        {q.data.capabilities.map((c: CapabilityState) => (
-          <li key={c.key} className="flex flex-wrap items-center gap-x-4 gap-y-2 p-3" data-testid={`feature-${c.key}`}>
+        {q.data.capabilities.map((c: CapabilityState) => {
+          const setupKey = c.provider === "whatsapp_meta_cloud" && whatsNexusSelected ? "whatsnexus" : c.provider;
+          return <li key={c.key} className="flex flex-wrap items-center gap-x-4 gap-y-2 p-3" data-testid={`feature-${c.key}`}>
             <div className="min-w-0 flex-1 basis-56">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-ink">{c.label}</span>
@@ -75,9 +79,9 @@ export function FeaturesSection() {
               {c.dependsOn.length > 0 && <p className="text-[11px] text-ink-3">Needs {c.dependsOn.map(label).join(", ")}</p>}
             </div>
             <div className="flex items-center gap-3 text-xs">
-              {c.provider && (
-                <Link href={`/integrations?open=${c.provider}`} className="inline-flex items-center text-primary-700 underline-offset-2 hover:underline max-sm:min-h-11" data-testid={`feature-setup-${c.key}`}>
-                  Set up in Integration Hub
+              {setupKey && (
+                <Link href={`/integrations?open=${setupKey}`} className="inline-flex items-center text-primary-700 underline-offset-2 hover:underline max-sm:min-h-11" data-testid={`feature-setup-${c.key}`}>
+                  {setupKey === "whatsnexus" ? "Set up WhatsNexus" : "Set up in Integration Hub"}
                 </Link>
               )}
               <label className="flex min-h-11 items-center gap-2 sm:min-h-0">
@@ -94,8 +98,8 @@ export function FeaturesSection() {
                 />
               </label>
             </div>
-          </li>
-        ))}
+          </li>;
+        })}
       </ul>
     </div>
   );

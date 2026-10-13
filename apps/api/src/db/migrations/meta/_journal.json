@@ -302,6 +302,48 @@
       "when": 1791223900000,
       "tag": "0042_dynamic_webhooks_whatsnexus",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791300000000,
+      "tag": "0043_notification_provider",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791849600000,
+      "tag": "0044_message_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791936000000,
+      "tag": "0045_message_sender_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1792022400000,
+      "tag": "0046_message_attachment_video",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1792108800000,
+      "tag": "0047_message_attachment_audio",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1792195200000,
+      "tag": "0048_message_kind",
+      "breakpoints": true
     }
   ]
 }

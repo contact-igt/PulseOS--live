@@ -20,6 +20,9 @@ const REASON_STATUS: Record<string, number> = {
   credentials_in_url: 422,
   invalid_conditions: 422,
   webhook_not_found: 404,
+  invalid_tenant_id: 422,
+  invalid_value: 422,
+  provider_not_ready: 409,
 };
 
 const configureSchema = z.object({

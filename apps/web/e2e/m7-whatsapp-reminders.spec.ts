@@ -61,24 +61,24 @@ test.describe("M7 WhatsApp notifications without the Inbox", () => {
     expect(timeline.body.some((e) => e.eventType === "whatsapp_sent")).toBe(true);
   });
 
-  test("Settings → Reminders shows the default rules, and Staff do not see the tab", async ({ page }) => {
+  test("WhatsNexus owns the default reminder rules; Settings does not show a Reminders tab", async ({ page }) => {
     await login(page, "eyev1.admin@pulseos.local");
-    await page.goto("/settings?section=reminders");
-    await expect(page.getByTestId("reminders-section")).toBeVisible();
-    await expect(page.getByText("Reminder — 1 days before").first()).toBeVisible();
-    await expect(page.getByText("Reminder — 1 hours before").first()).toBeVisible();
-    await expect(page.getByText("Confirmation — sent when booked")).toBeVisible();
-    await login(page, "eyev1.frontdesk@pulseos.local");
     await page.goto("/settings");
     await expect(page.getByTestId("settings-tab-reminders")).toHaveCount(0);
+    await page.goto("/integrations?open=whatsnexus");
+    const sheet = page.getByTestId("integration-detail");
+    await expect(sheet.getByTestId("detail-tab-reminders")).toBeVisible();
+    await sheet.getByTestId("detail-tab-reminders").click();
+    await expect(sheet.getByTestId("reminders-section")).toBeVisible();
+    await expect(sheet.getByText("Reminder — 1 days before").first()).toBeVisible();
+    await expect(sheet.getByText("Reminder — 1 hours before").first()).toBeVisible();
+    await expect(sheet.getByText("Confirmation — sent when booked")).toBeVisible();
   });
 
-  test("Turning WhatsApp Notifications off hides Send WhatsApp and the Reminders tab", async ({ page }) => {
+  test("Turning WhatsApp Notifications off hides Send WhatsApp", async ({ page }) => {
     await login(page, "eyev1.superadmin@pulseos.local");
     expect((await api(page, "PUT", "/capabilities/WHATSAPP_NOTIFICATIONS", { enabled: false })).status).toBe(200);
     try {
-      await page.goto("/settings");
-      await expect(page.getByTestId("settings-tab-reminders")).toHaveCount(0);
       expect((await api(page, "GET", "/notifications/rules")).status).toBe(403);
     } finally {
       await api(page, "PUT", "/capabilities/WHATSAPP_NOTIFICATIONS", { enabled: null });

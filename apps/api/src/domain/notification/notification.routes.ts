@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { recordActivity } from "../activity/activity.service.js";
 import { requireCapability, requirePermission } from "../auth/permission.middleware.js";
+import { fetchProviderTemplateCatalogue } from "./provider-templates.js";
 import { listNotificationsFor, listRules, listTemplates, previewFollowUpMessage, sendFollowUpMessage, updateRule, updateTemplate } from "./notification.service.js";
 
 const REASON_STATUS: Record<string, number> = {
@@ -15,6 +16,9 @@ const REASON_STATUS: Record<string, number> = {
   invalid_gap: 422,
   confirmation_has_no_offset: 422,
   template_mismatch: 422,
+  template_incompatible: 422,
+  // The provider's template list could not be read, so the choice cannot be verified right now.
+  catalogue_unavailable: 409,
   // Not an error in the request: the message cannot be sent right now, and the reason says why.
   NO_VALID_PHONE: 409,
   PROVIDER_NOT_CONFIGURED: 409,
@@ -38,11 +42,18 @@ export async function notificationRoutes(app: FastifyInstance) {
   app.get("/notifications/templates", { preHandler: requirePermission("VIEW_INTEGRATIONS") }, async (request) => listTemplates(app.db, request.sessionUser!.tenantId));
   app.get("/notifications/rules", { preHandler: requirePermission("VIEW_INTEGRATIONS") }, async (request) => listRules(app.db, request.sessionUser!.tenantId));
 
+  // The hospital's approved WhatsNexus templates, read live from WhatsNexus on every call (never cached, never stored).
+  app.get("/notifications/provider-templates", { preHandler: requirePermission("VIEW_INTEGRATIONS") }, async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return fetchProviderTemplateCatalogue(app.db, request.sessionUser!.tenantId);
+  });
+
   app.patch("/notifications/templates/:id", { preHandler: requirePermission("MANAGE_INTEGRATION_CONFIG") }, async (request, reply) => {
     const parsed = templateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
     const r = await updateTemplate(app.db, request.sessionUser!.tenantId, (request.params as { id: string }).id, parsed.data);
-    if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason });
+    // An incompatible WhatsNexus template carries its code and the plain-words reason ("Template has 2 placeholders; …").
+    if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason, ...("detail" in r ? r.detail : {}) });
     // The template's identity and which fields changed; the message text itself is configuration, not logged.
     await recordActivity(app.db, { tenantId: request.sessionUser!.tenantId, actorId: request.sessionUser!.id, action: "template.updated", entityType: "message_template", entityKey: r.template.purpose, metadata: { changed: Object.keys(parsed.data), enabled: r.template.enabled } });
     return r.template;
@@ -60,7 +71,7 @@ export async function notificationRoutes(app: FastifyInstance) {
   // What the patient will receive, shown to the person before they send it.
   app.get("/journeys/:id/whatsapp/preview", { preHandler: requirePermission("MANAGE_TASKS") }, async (request, reply) => {
     const u = request.sessionUser!;
-    const r = await previewFollowUpMessage(app.db, u.tenantId, u.id, (request.params as { id: string }).id);
+    const r = await previewFollowUpMessage(app.db, u.tenantId, u.id, (request.params as { id: string }).id, { checkProvider: true });
     if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason });
     return r.preview;
   });
@@ -72,7 +83,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
     const r = await sendFollowUpMessage(app.db, u.tenantId, u.id, (request.params as { id: string }).id, parsed.data.idempotencyKey);
     if (!r.ok) return reply.status(REASON_STATUS[r.reason] ?? 400).send({ error: r.reason });
-    return reply.status(r.duplicate ? 200 : 201).send({ notificationId: r.notificationId, status: r.status, duplicate: r.duplicate });
+    return reply.status(r.duplicate ? 200 : 201).send({ notificationId: r.notificationId, status: r.status, duplicate: r.duplicate, reason: r.reason });
   });
 
   app.get("/journeys/:id/notifications", { preHandler: requirePermission("VIEW_TASKS") }, async (request) =>

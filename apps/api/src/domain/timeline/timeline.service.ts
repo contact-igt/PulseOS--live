@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { timelineEvents, calls, conversations, communicationEndpoints, conversationSummaries } from "../../db/schema.js";
+import { timelineEvents, calls, conversations, communicationEndpoints, conversationSummaries, notifications } from "../../db/schema.js";
 import type { Role, SummaryMode, TimelineEventVm } from "@pulseos/types";
 import { loadCallVms } from "../call/call.service.js";
 
@@ -53,6 +53,7 @@ export async function getPatientTimeline(db: Db, tenantId: string, patientId: st
 
   const endpointLabelByEventId = await resolveEndpointLabels(db, tenantId, rows);
   const summaryModeByEventId = await resolveSummaryModes(db, tenantId, rows);
+  const notificationStatusByEventId = await resolveNotificationStatuses(db, tenantId, rows);
   // A call line carries the call itself (IVR and manual alike), trimmed to what this viewer may see.
   const callIds = rows.filter((r) => r.eventType === "call_logged" && r.relatedEntityType === "call" && r.relatedEntityId).map((r) => r.relatedEntityId!);
   const callById = new Map((callIds.length ? await loadCallVms(db, tenantId, inArray(calls.id, callIds), viewerRole) : []).map((c) => [c.id, c]));
@@ -71,7 +72,35 @@ export async function getPatientTimeline(db: Db, tenantId: string, patientId: st
     channel: r.channel,
     call: (r.eventType === "call_logged" && r.relatedEntityId ? callById.get(r.relatedEntityId) : null) ?? null,
     summaryMode: summaryModeByEventId.get(r.id) ?? null,
+    notificationStatus: notificationStatusByEventId.get(r.id) ?? null,
   }));
+}
+
+// Outbound WhatsApp timeline rows point directly at their notification. Resolve
+// that stored delivery state so the UI reflects provider callbacks on refresh.
+async function resolveNotificationStatuses(
+  db: Db,
+  tenantId: string,
+  rows: { id: string; relatedEntityType: string | null; relatedEntityId: string | null }[],
+): Promise<Map<string, import("@pulseos/types").NotificationStatus>> {
+  const notificationIds = rows
+    .filter((r) => r.relatedEntityType === "notification" && r.relatedEntityId)
+    .map((r) => r.relatedEntityId!);
+  if (notificationIds.length === 0) return new Map();
+
+  const found = await db
+    .select({ id: notifications.id, status: notifications.status })
+    .from(notifications)
+    .where(and(eq(notifications.tenantId, tenantId), inArray(notifications.id, notificationIds)));
+  const statusByNotificationId = new Map(found.map((n) => [n.id, n.status as import("@pulseos/types").NotificationStatus]));
+  const out = new Map<string, import("@pulseos/types").NotificationStatus>();
+  for (const row of rows) {
+    if (row.relatedEntityId) {
+      const status = statusByNotificationId.get(row.relatedEntityId);
+      if (status) out.set(row.id, status);
+    }
+  }
+  return out;
 }
 
 // A conversation-session line carries its summary id in metadata once one exists; the mode comes from that

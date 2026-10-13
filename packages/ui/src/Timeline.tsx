@@ -62,6 +62,22 @@ const CATEGORY_CHIP_TONE: Record<Category, "primary" | "neutral"> = {
   other: "neutral",
 };
 
+const DELIVERY_STATUS_LABEL: Partial<Record<TimelineEventVm["notificationStatus"] & string, string>> = {
+  PENDING: "Pending",
+  PROCESSING: "Sending",
+  SENT: "Sent",
+  DELIVERED: "Delivered",
+  READ: "Read",
+  FAILED: "Failed",
+  CANCELLED: "Cancelled",
+};
+
+function deliveryStatusClass(status: NonNullable<TimelineEventVm["notificationStatus"]>): string {
+  if (status === "READ" || status === "DELIVERED") return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  if (status === "FAILED" || status === "CANCELLED") return "bg-red-50 text-red-700 ring-red-200";
+  return "bg-primary-50 text-primary-700 ring-primary-200";
+}
+
 const FILTERS: { key: "all" | Category; label: string }[] = [
   { key: "all", label: "All" },
   { key: "communication", label: "Communication" },
@@ -142,6 +158,11 @@ export function Timeline({ events, order = "asc", className = "", renderEventDet
                       {renderEventDetail?.(event)}
                       <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-ink-2">
                         <Badge tone={CATEGORY_CHIP_TONE[event.category]}>{CATEGORY_LABEL[event.category]}</Badge>
+                        {event.notificationStatus && (
+                          <span className={`rounded-full px-2 py-0.5 font-medium ring-1 ring-inset ${deliveryStatusClass(event.notificationStatus)}`} data-testid="timeline-delivery-status">
+                            {DELIVERY_STATUS_LABEL[event.notificationStatus] ?? event.notificationStatus}
+                          </span>
+                        )}
                         {/* How it happened (the channel), and which hospital line a call/WhatsApp message came in on. A lead's source is shown only where no channel is recorded. */}
                         {(event.channel || event.sourceChannel || event.endpointLabel) && (
                           <span className="min-w-0 break-words" data-testid="timeline-channel">

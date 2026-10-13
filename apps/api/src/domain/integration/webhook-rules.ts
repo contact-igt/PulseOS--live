@@ -182,3 +182,6 @@ export const WEBHOOK_MAX_ATTEMPTS = 4;
 export function nextAttemptDelayMs(attemptsSoFar: number): number | null {
   return [60_000, 300_000, 1_800_000][attemptsSoFar - 1] ?? null;
 }
+
+/** A development/test escape hatch only: never honoured in production, whatever the environment says. */
+export const webhookAllowInsecure = (): boolean => process.env.WEBHOOK_ALLOW_INSECURE === "true" && process.env.NODE_ENV !== "production";

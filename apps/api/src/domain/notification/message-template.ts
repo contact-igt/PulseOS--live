@@ -1,10 +1,9 @@
-import { TEMPLATE_VARIABLES, type TemplatePurpose } from "@pulseos/types";
+import { TEMPLATE_VARIABLES, templateVariablesUsed, type TemplatePurpose } from "@pulseos/types";
 
 const VAR = /\{\{\s*([a-z_]+)\s*\}\}/g;
 
-export function variablesUsed(body: string): string[] {
-  return [...new Set([...body.matchAll(VAR)].map((m) => m[1]!))];
-}
+/** One definition shared with the settings page, so what it counts is exactly what is sent to the provider. */
+export const variablesUsed = templateVariablesUsed;
 
 /** A body may only use the variables its purpose declares; anything else is a typo or an injection attempt. */
 export function validateTemplateBody(purpose: TemplatePurpose, body: string): { ok: true } | { ok: false; unknown: string[] } {
@@ -35,6 +34,8 @@ export function templateParameters(body: string, values: Record<string, string |
 export const DEFAULT_TEMPLATES: { purpose: TemplatePurpose; name: string; providerTemplateName: string; body: string }[] = [
   { purpose: "APPOINTMENT_CONFIRMATION", name: "Appointment confirmation", providerTemplateName: "appointment_confirmation", body: "Hello {{patient_name}}, your appointment with {{doctor_name}} at {{hospital_name}} ({{branch_name}}) is confirmed for {{date}} at {{time}}." },
   { purpose: "APPOINTMENT_REMINDER", name: "Appointment reminder", providerTemplateName: "appointment_reminder", body: "Hello {{patient_name}}, a reminder of your appointment with {{doctor_name}} at {{hospital_name}} ({{branch_name}}) on {{date}} at {{time}}." },
+  { purpose: "APPOINTMENT_RESCHEDULED", name: "Appointment rescheduled", providerTemplateName: "appointment_rescheduled", body: "Hello {{patient_name}}, your appointment with {{doctor_name}} at {{hospital_name}} ({{branch_name}}) has been rescheduled to {{date}} at {{time}}." },
+  { purpose: "APPOINTMENT_CANCELLED", name: "Appointment cancelled", providerTemplateName: "appointment_cancelled", body: "Hello {{patient_name}}, your appointment with {{doctor_name}} at {{hospital_name}} ({{branch_name}}) on {{date}} at {{time}} has been cancelled. Please contact us to reschedule." },
   { purpose: "SURGERY_REMINDER", name: "Surgery reminder", providerTemplateName: "surgery_reminder", body: "Hello {{patient_name}}, a reminder of your {{procedure}} at {{hospital_name}} ({{branch_name}}) on {{date}} at {{time}}." },
   { purpose: "FOLLOW_UP_MESSAGE", name: "Follow-up message", providerTemplateName: "follow_up_message", body: "Hello {{patient_name}}, this is {{staff_name}} from {{hospital_name}}. We are following up on your recent enquiry — please reply to this message or call us." },
 ];

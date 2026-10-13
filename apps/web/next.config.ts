@@ -24,10 +24,11 @@ const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
+  // Inbox photos are served by the PulseOS API; a template's header image lives at an https address WhatsNexus stored.
+  `img-src 'self' data: blob: ${apiOrigin} https:`,
   "font-src 'self' data:",
   `connect-src 'self' ${apiOrigin}${isDev ? " ws://localhost:* http://localhost:*" : ""}`,
-  `media-src 'self' blob: ${apiOrigin}`,
+  `media-src 'self' blob: ${apiOrigin} https:`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -39,7 +40,8 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+  // The microphone is for voice messages recorded in the Inbox, and only for this app; camera, location and payments stay off.
+  { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=(), payment=()" },
   // HTTPS-only deployments; harmless to omit on plain-http localhost.
   ...(isDev ? [] : [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]),
 ];

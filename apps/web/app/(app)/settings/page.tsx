@@ -13,14 +13,12 @@ import { ClinicHoursSection } from "@/components/settings/ClinicHoursSection";
 import { LeadSourcesSection } from "@/components/settings/LeadSourcesSection";
 import { OutcomesSection } from "@/components/outcomes/OutcomesSection";
 import { ActivitySection } from "@/components/settings/ActivitySection";
-import { RemindersSection } from "@/components/settings/RemindersSection";
 import { FeaturesSection } from "@/components/settings/FeaturesSection";
 import { AppearanceSection } from "@/components/settings/AppearanceSection";
 import { AllocationSection } from "@/components/allocation/AllocationSection";
 import { useUrlFilters } from "@/lib/useUrlFilters";
-import { useCapability } from "@/lib/useEdition";
 
-type Section = "services" | "departments" | "fields" | "sources" | "outcomes" | "followups" | "doctors" | "hours" | "allocation" | "features" | "reminders" | "appearance" | "activity";
+type Section = "services" | "departments" | "fields" | "sources" | "outcomes" | "followups" | "doctors" | "hours" | "allocation" | "features" | "appearance" | "activity";
 const SECTIONS: { key: Section; label: string; manageOnly: boolean }[] = [
   { key: "services", label: "Services", manageOnly: false },
   { key: "departments", label: "Departments", manageOnly: true },
@@ -32,7 +30,6 @@ const SECTIONS: { key: Section; label: string; manageOnly: boolean }[] = [
   { key: "hours", label: "Clinic Hours", manageOnly: true },
   { key: "allocation", label: "Allocation Rules", manageOnly: true },
   { key: "features", label: "Features", manageOnly: true },
-  { key: "reminders", label: "Reminders", manageOnly: true },
   { key: "appearance", label: "Appearance", manageOnly: true },
   { key: "activity", label: "Activity", manageOnly: true },
 ];
@@ -165,8 +162,7 @@ export default function SettingsPage() {
   const specialties = useQuery({ queryKey: ["specialties-admin"], queryFn: () => api.specialties(true) });
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const whatsappOn = useCapability("WHATSAPP_NOTIFICATIONS");
-  const visible = SECTIONS.filter((s) => (canManage || !s.manageOnly) && (s.key !== "reminders" || whatsappOn));
+  const visible = SECTIONS.filter((s) => canManage || !s.manageOnly);
   const requested = urlFilters.get("section");
   const section: Section = visible.find((s) => s.key === requested)?.key ?? "services";
 
@@ -241,12 +237,6 @@ export default function SettingsPage() {
           <AppearanceSection />
         </Panel>
       )}
-      {section === "reminders" && canManage && (
-        <Panel title="Reminders" subtitle="When appointment and surgery messages go out, and what they say">
-          <RemindersSection />
-        </Panel>
-      )}
-
       {section === "services" && (
         <Panel title="Services" subtitle="Which services Add Lead offers">
           {(specialties.isLoading || session.isLoading) && <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12" />)}</div>}

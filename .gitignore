@@ -9,6 +9,7 @@ whatnexus-frontend-pulseos-work/
 # Dependencies
 node_modules/
 **/node_modules/
+.pnpm-store/
 
 # Package manager locks (pnpm is the locked package manager for this repo)
 package-lock.json

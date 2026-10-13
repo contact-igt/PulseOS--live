@@ -10,6 +10,8 @@ import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { INTEGRATION_CATALOGUE, catalogueEntry, type CatalogueEntry } from "./hub-catalogue.js";
 import { deriveConfiguration, deriveHealth, deriveMode, type ConnectorFacts } from "./hub-state.js";
 import { recordConnectorEvent, markEventProcessed } from "../connector/connector-event.service.js";
+import { whatsNexusAdapter } from "../connector/adapters/whatsnexus.js";
+import { validateWebhookUrl, webhookAllowInsecure } from "./webhook-rules.js";
 import { persistInboundCall } from "../connector/call-webhook.service.js";
 import type { InboundCallEvent } from "../connector/types.js";
 import { recordActivity } from "../activity/activity.service.js";
@@ -73,25 +75,19 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
   const enabled = entry.capability ? caps[entry.capability] : true;
   let configuration = deriveConfiguration(entry, facts);
   if (entry.key === "webhooks") configuration = wh.total > 0 ? "CONFIGURED" : "NOT_CONFIGURED";
-  if (entry.key === "whatsnexus") configuration = wh.whatsNexusTotal > 0 ? "CONFIGURED" : "NOT_CONFIGURED";
 
   const mode =
     entry.key === "webhooks"
       ? wh.total === 0 ? "NOT_CONFIGURED" : wh.enabled === 0 ? "DISABLED" : wh.lastDelivery === "SENT" ? "LIVE_CONFIGURED" : "LIVE_CAPABLE"
-      : entry.key === "whatsnexus"
-      ? wh.whatsNexusTotal === 0 ? "NOT_CONFIGURED" : wh.whatsNexusEnabled === 0 ? "DISABLED" : "LIVE_CONFIGURED"
       : deriveMode(entry, enabled, configuration, facts);
 
   const health =
     entry.key === "webhooks"
       ? wh.lastDelivery === "SENT" ? "HEALTHY" : wh.lastDelivery === "FAILED" ? "UNHEALTHY" : wh.total > 0 ? "UNKNOWN" : "NOT_APPLICABLE"
-      : entry.key === "whatsnexus"
-      ? wh.whatsNexusEnabled > 0 ? "HEALTHY" : "NOT_APPLICABLE"
       : deriveHealth(entry, facts);
 
   const isConnected =
     found?.row.status === "CONNECTED" ||
-    (entry.key === "whatsnexus" && wh.whatsNexusEnabled > 0) ||
     (entry.key === "webhooks" && wh.enabled > 0 && wh.lastDelivery === "SENT");
 
   return {
@@ -120,7 +116,18 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
 export async function listHub(db: Db, tenantId: string, role: Role, caps: CapabilityMap): Promise<IntegrationCard[]> {
   const facts = await loadFacts(db, tenantId);
   const wh = await webhookFacts(db, tenantId);
-  return INTEGRATION_CATALOGUE.map((e) => card(e, caps, role, e.connectorProvider ? facts.get(e.connectorProvider) : undefined, wh));
+  const whatsNexusSelected = String(facts.get("whatsnexus")?.facts.configuration?.useForSending ?? "") === "true";
+  return INTEGRATION_CATALOGUE.map((e) => {
+    const result = card(e, caps, role, e.connectorProvider ? facts.get(e.connectorProvider) : undefined, wh);
+    // Seeded Runo sample calls are useful in the demo, but are not a hospital's configured Runo connection.
+    if (e.key === "runo" && result.mode === "FIXTURE") {
+      return { ...result, configuration: "NOT_CONFIGURED", health: "UNKNOWN", mode: "NOT_CONFIGURED", phoneNumbers: [], isConnected: false, lastSyncAt: null, lastEventAt: null };
+    }
+    // WhatsNexus is the sole WhatsApp sender when selected; do not show Meta's demo fixture as an active alternative.
+    return e.key === "whatsapp_meta_cloud" && whatsNexusSelected
+      ? { ...result, enabled: false, configuration: "NOT_CONFIGURED", health: "NOT_APPLICABLE", mode: "DISABLED", phoneNumbers: [], isConnected: false }
+      : result;
+  });
 }
 
 export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: CapabilityMap, key: string): Promise<IntegrationDetail | null> {
@@ -130,12 +137,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
   const found = entry.connectorProvider ? facts.get(entry.connectorProvider) : undefined;
   const base = card(entry, caps, role, found, await webhookFacts(db, tenantId));
 
-  const [wnHook] =
-    entry.key === "whatsnexus"
-      ? await db.select().from(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS"))).limit(1)
-      : [];
-
-  const config = wnHook ? { webhookUrl: wnHook.url, endpointPath: wnHook.endpointPath ?? "" } : (found?.facts.configuration ?? {});
+  const config = found?.facts.configuration ?? {};
   const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
   const webhookPath =
     found && entry.key === "whatsapp_meta_cloud"
@@ -180,9 +182,9 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
     configurationValues: Object.fromEntries(entry.configurationFields.map((f) => [f.key, (config as any)[f.key] == null ? "" : String((config as any)[f.key])])),
     secretFields: entry.secretFields.map((f) => ({
       ...f,
-      hasSecret: entry.key === "whatsnexus" ? !!(wnHook?.headers as any[])?.some((h) => h.key === "x-api-key" && h.value) : !!found?.facts.secretKeys.includes(f.key),
+      hasSecret: !!found?.facts.secretKeys.includes(f.key),
     })),
-    mappingNotes: entry.mappingNotes,
+    mappingNotes: entry.key === "whatsnexus" ? await whatsNexusNotes(db, tenantId, entry.mappingNotes) : entry.mappingNotes,
     syncRuns: (ADS_PROVIDERS as readonly string[]).includes(entry.key) ? await listSyncRuns(db, tenantId, entry.key as AdsProvider) : undefined,
     recentCalls,
     webhookUrl: webhookPath ? `${base_}${webhookPath}` : null,
@@ -220,59 +222,6 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   const entry = catalogueEntry(key);
   if (!entry) return { ok: false, reason: "unknown_integration" };
 
-  if (key === "whatsnexus") {
-    const url = input.configuration?.webhookUrl?.trim();
-    if (!url) return { ok: false, reason: "invalid_url" };
-    const endpointPath = input.configuration?.endpointPath?.trim() || null;
-    const apiKey = input.secrets?.apiKey?.trim();
-    const headers = apiKey ? [{ key: "x-api-key", value: apiKey }] : [];
-    const [existing] = await db
-      .select()
-      .from(outboundWebhooks)
-      .where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS")))
-      .limit(1);
-
-    if (existing) {
-      await db
-        .update(outboundWebhooks)
-        .set({
-          url,
-          endpointPath,
-          headers: headers.length > 0 ? headers : existing.headers,
-          enabled: true,
-          updatedAt: new Date(),
-        })
-        .where(eq(outboundWebhooks.id, existing.id));
-    } else {
-      await db.insert(outboundWebhooks).values({
-        tenantId,
-        name: "WhatsNexus WhatsApp",
-        url,
-        endpointPath,
-        httpMethod: "POST",
-        headers,
-        payloadMapping: [
-          { key: "call_Id", field: "call_Id" },
-          { key: "customerName", field: "customerName" },
-          { key: "phoneNumber", field: "phoneNumber" },
-          { key: "agentName", field: "agentName" },
-          { key: "createdAt", field: "createdAt" },
-          { key: "status", field: "status" },
-          { key: "typeOfEnquiry", field: "typeOfEnquiry" },
-          { key: "source", field: "source" },
-          { key: "templateName", field: "templateName" },
-          { key: "message", field: "message" },
-        ],
-        webhookCategory: "WHATSNEXUS",
-        events: ["whatsapp.followup_requested", "interaction.logged"],
-        conditions: [],
-        enabled: true,
-        encryptedSecret: encryptSecret({ signingSecret: "whsec_whatsnexus" }),
-      });
-    }
-    return { ok: true };
-  }
-
   if (entry.blockedReason || !entry.connectorProvider) return { ok: false, reason: "blocked" };
   const connector = await ensureConnector(db, tenantId, entry);
   if (!connector) return { ok: false, reason: "blocked" };
@@ -281,13 +230,17 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   const secretKeys = new Set(entry.secretFields.map((f) => f.key));
   for (const k of Object.keys(input.configuration ?? {})) if (!configKeys.has(k)) return { ok: false, reason: "unknown_field" };
   for (const k of Object.keys(input.secrets ?? {})) if (!secretKeys.has(k)) return { ok: false, reason: "unknown_field" };
+  if (key === "whatsnexus") {
+    const refused = await validateWhatsNexusInput(db, connector, input);
+    if (refused) return { ok: false, reason: refused };
+  }
 
   let configuration = (connector.configuration as Record<string, unknown> | null) ?? {};
   if (input.configuration) {
     configuration = { ...configuration };
     for (const [k, v] of Object.entries(input.configuration)) {
       if (v.trim() === "") delete configuration[k];
-      else configuration[k] = v.trim();
+      else configuration[k] = key === "whatsnexus" && k === "baseUrl" ? v.trim().replace(/\/+$/, "") : v.trim();
     }
   }
 
@@ -302,7 +255,11 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   }
   if (input.secrets) {
     secretsNow = { ...secretsNow };
-    for (const [k, v] of Object.entries(input.secrets)) if (v.trim() !== "") secretsNow[k] = v.trim();
+    for (const [k, v] of Object.entries(input.secrets)) {
+      // The one secret that must be removable: the previous callback secret kept only while WhatsNexus rotates over ("-" clears it).
+      if (key === "whatsnexus" && k === "previousCallbackSecret" && v.trim() === "-") delete secretsNow[k];
+      else if (v.trim() !== "") secretsNow[k] = v.trim();
+    }
     const encryptedPayload = encryptSecret(secretsNow);
     await db.insert(connectorSecrets).values({ connectorId: connector.id, encryptedPayload }).onConflictDoUpdate({ target: connectorSecrets.connectorId, set: { encryptedPayload, updatedAt: new Date() } });
   }
@@ -313,7 +270,9 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   // Configured is NOT connected: a fully configured connector waits (CONNECTING) until a real event or sync confirms it.
   // What was confirmed under the OLD mode/credentials proves nothing about the new ones: a changed mode or secret starts over
   // (a fixture's "connected" must never carry into Live). Plain setting edits keep the status.
-  const identityChanged = input.mode !== undefined && input.mode !== connector.mode || !!input.secrets && Object.values(input.secrets).some((v) => v.trim() !== "");
+  const identityChanged = input.mode !== undefined && input.mode !== connector.mode || !!input.secrets && Object.values(input.secrets).some((v) => v.trim() !== "")
+    // Pointing WhatsNexus at a different server or tenant is a different connection: it must be re-verified.
+    || (key === "whatsnexus" && (String(configuration.baseUrl ?? "") !== String((connector.configuration as Record<string, unknown> | null)?.baseUrl ?? "") || String(configuration.tenantId ?? "") !== String((connector.configuration as Record<string, unknown> | null)?.tenantId ?? "")));
   const status = !identityChanged && (connector.status === "CONNECTED" || connector.status === "ERROR" || connector.status === "DEGRADED") ? connector.status : complete ? "CONNECTING" : "NOT_CONFIGURED";
   await db.update(connectors).set({ configuration, mode, status, updatedAt: new Date() }).where(eq(connectors.id, connector.id));
   return { ok: true };
@@ -351,26 +310,7 @@ export async function checkIntegrationStatus(
     };
   }
 
-  if (entry.key === "whatsnexus") {
-    const [wh] = await db.select().from(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS"))).limit(1);
-    if (!wh || !wh.enabled) {
-      return {
-        ok: false,
-        health: "UNKNOWN",
-        status: "NOT_CONFIGURED",
-        message: "WhatsNexus webhook is not configured yet. Set up the endpoint URL and API key.",
-        checkedAt: now.toISOString(),
-      };
-    }
-    return {
-      ok: true,
-      health: "HEALTHY",
-      status: "CONNECTED",
-      message: "WhatsNexus outbound webhook is active and enabled.",
-      checkedAt: now.toISOString(),
-      details: { url: wh.url, endpointPath: wh.endpointPath },
-    };
-  }
+  if (entry.key === "whatsnexus") return checkWhatsNexusStatus(db, tenantId, now);
 
   if (!entry.connectorProvider) {
     return {
@@ -430,6 +370,90 @@ export async function checkIntegrationStatus(
       lastEventAt: lastEvent ? new Date(lastEvent).toISOString() : null,
       hasSecrets,
     },
+  };
+}
+
+/** Legacy WHATSNEXUS-category webhook rows are never converted or used for sending; they only produce a notice. */
+async function whatsNexusNotes(db: Db, tenantId: string, base: string | null): Promise<string | null> {
+  const [c] = await db.select({ n: sql<number>`count(*)::int` }).from(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, tenantId), eq(outboundWebhooks.webhookCategory, "WHATSNEXUS")));
+  if (!c?.n) return base;
+  return `${base ?? ""} Note: this hospital still has ${c.n} legacy WhatsNexus outbound webhook(s) under Outbound Webhooks. They are no longer used to send WhatsApp messages and were not converted; review or delete them there.`.trim();
+}
+
+/**
+ * Extra rules for the WhatsNexus connector (everything else follows the generic path): an HTTPS, public, path-free base URL;
+ * a plain tenant id; and WhatsNexus can be chosen for sending only when it is fully configured, in Live mode, and the
+ * last real connection check succeeded — with none of those identity settings changed in the same save.
+ */
+async function validateWhatsNexusInput(db: Db, connector: ConnectorRowT, input: ConfigureInput): Promise<string | null> {
+  const c = input.configuration ?? {};
+  if (c.baseUrl !== undefined && c.baseUrl.trim() !== "") {
+    const v = validateWebhookUrl(c.baseUrl.trim(), { allowInsecure: webhookAllowInsecure() });
+    if (!v.ok) return v.reason;
+    const u = new URL(v.url);
+    if ((u.pathname !== "/" && u.pathname !== "") || u.search || u.hash) return "invalid_url";
+  }
+  if (c.tenantId !== undefined && c.tenantId.trim() !== "" && !/^[A-Za-z0-9_-]{1,100}$/.test(c.tenantId.trim())) return "invalid_tenant_id";
+  if (c.useForSending !== undefined && !["true", "false", ""].includes(c.useForSending.trim())) return "invalid_value";
+
+  if (c.useForSending?.trim() === "true") {
+    const identityChanged =
+      input.mode !== undefined ||
+      Object.values(input.secrets ?? {}).some((v) => v.trim() !== "") ||
+      (c.baseUrl !== undefined && c.baseUrl.trim().replace(/\/+$/, "") !== String((connector.configuration as Record<string, unknown> | null)?.baseUrl ?? "")) ||
+      (c.tenantId !== undefined && c.tenantId.trim() !== String((connector.configuration as Record<string, unknown> | null)?.tenantId ?? ""));
+    const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
+    let secretKeys: string[] = [];
+    try {
+      secretKeys = secret ? Object.entries(decryptSecret(secret.encryptedPayload)).filter(([, v]) => v !== "" && v != null).map(([k]) => k) : [];
+    } catch {
+      secretKeys = [];
+    }
+    const cfg = (connector.configuration as Record<string, unknown> | null) ?? {};
+    const ready =
+      !identityChanged &&
+      connector.mode === "LIVE" &&
+      connector.status === "CONNECTED" &&
+      !!cfg.baseUrl &&
+      !!cfg.tenantId &&
+      secretKeys.includes("apiKey") &&
+      secretKeys.includes("callbackSecret");
+    if (!ready) return "provider_not_ready";
+  }
+  return null;
+}
+
+/** A real, authenticated, read-only check of the WhatsNexus integration. It never sends a WhatsApp message. */
+async function checkWhatsNexusStatus(db: Db, tenantId: string, now: Date): Promise<HealthCheckResult> {
+  const checkedAt = now.toISOString();
+  const [connector] = await db.select().from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, "whatsnexus"))).limit(1);
+  if (!connector) return { ok: false, health: "UNKNOWN", status: "NOT_CONFIGURED", message: "WhatsNexus has not been configured yet. Save the base URL, tenant id and credentials first.", checkedAt };
+  if (connector.status === "DISABLED") return { ok: false, health: "NOT_APPLICABLE", status: "DISABLED", message: "This integration is switched off.", checkedAt };
+  if (connector.mode !== "LIVE") {
+    return { ok: false, health: "UNKNOWN", status: connector.status, message: "Set the connection mode to Live (Credentials tab) to test the connection. Fixture and Sandbox never contact WhatsNexus.", checkedAt, details: { mode: connector.mode } };
+  }
+  const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
+  let secrets: Record<string, unknown> = {};
+  try {
+    secrets = secret ? decryptSecret(secret.encryptedPayload) : {};
+  } catch {
+    secrets = {};
+  }
+  const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown> | null) ?? {}), mode: "live", pulseosTenantId: tenantId };
+  const probe = await whatsNexusAdapter.probeHealth(config, secrets);
+
+  const next = probe.status === "CONNECTED" ? "CONNECTED" : probe.status === "DEGRADED" ? "DEGRADED" : probe.status === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "ERROR";
+  await db
+    .update(connectors)
+    .set({ status: next, lastSyncAt: probe.ok ? now : connector.lastSyncAt, lastError: probe.ok ? null : redactLogText(probe.message), updatedAt: now })
+    .where(eq(connectors.id, connector.id));
+  return {
+    ok: probe.ok,
+    health: probe.status === "CONNECTED" ? "HEALTHY" : probe.status === "DEGRADED" ? "DEGRADED" : probe.status === "NOT_CONFIGURED" ? "UNKNOWN" : "UNHEALTHY",
+    status: next,
+    message: probe.message,
+    checkedAt,
+    details: { mode: connector.mode, ...(probe.details ?? {}) },
   };
 }
 

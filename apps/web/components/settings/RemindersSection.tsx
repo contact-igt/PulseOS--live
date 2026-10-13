@@ -3,8 +3,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@pulseos/api-client";
-import { Badge, Button, ErrorState, Skeleton } from "@pulseos/ui";
-import { TEMPLATE_PURPOSE_LABEL, TEMPLATE_VARIABLES, type MessageTemplateVm, type NotificationRuleVm } from "@pulseos/types";
+import { Badge, Button, ErrorState, Skeleton, relativeTime } from "@pulseos/ui";
+import { TEMPLATE_PURPOSE_LABEL, TEMPLATE_VARIABLES, templateVariablesUsed, type MessageTemplateVm, type NotificationRuleVm, type ProviderTemplateCatalogue } from "@pulseos/types";
+import { catalogueNotice, optionValue, suitableFirst, templateChoice, templateOptions } from "./providerTemplateForm";
+import { ProviderTemplateCard } from "./ProviderTemplateCard";
+import { ProviderTemplatePicker } from "./ProviderTemplatePicker";
 
 const field = "h-11 rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 const ERR: Record<string, string> = {
@@ -14,6 +17,14 @@ const ERR: Record<string, string> = {
   invalid_gap: "Enter a whole number of minutes (0 or more).",
   template_mismatch: "Choose a template made for this kind of reminder.",
   feature_not_available: "WhatsApp Notifications is switched off for this hospital.",
+  template_incompatible: "That template cannot be used with this message.",
+  catalogue_unavailable: "WhatsNexus could not be checked right now, so this was not saved.",
+};
+
+/** The server's plain-words reason when it sent one (an incompatible WhatsNexus template), else our own wording. */
+const errorText = (e: unknown, fallback = "Could not save.") => {
+  const err = e as ApiError;
+  return err?.detail ?? ERR[err?.message] ?? fallback;
 };
 
 function RuleRow({ rule, templates }: { rule: NotificationRuleVm; templates: MessageTemplateVm[] }) {
@@ -58,31 +69,73 @@ function RuleRow({ rule, templates }: { rule: NotificationRuleVm; templates: Mes
   );
 }
 
-function TemplateEditor({ template }: { template: MessageTemplateVm }) {
+function TemplateEditor({ template, catalogue }: { template: MessageTemplateVm; catalogue: ProviderTemplateCatalogue | null }) {
   const queryClient = useQueryClient();
   const [body, setBody] = useState(template.body);
   const [providerName, setProviderName] = useState(template.providerTemplateName);
+  // The language belongs to the template WhatsNexus approved: choosing a template sets both.
+  const [language, setLanguage] = useState(template.language);
   const [msg, setMsg] = useState<string | null>(null);
   const save = useMutation({
     mutationFn: (b: Parameters<typeof api.updateMessageTemplate>[1]) => api.updateMessageTemplate(template.id, b),
     onSuccess: () => { setMsg("Saved."); queryClient.invalidateQueries({ queryKey: ["message-templates"] }); },
-    onError: (e) => setMsg(ERR[(e as ApiError).message] ?? "Could not save."),
+    onError: (e) => setMsg(errorText(e)),
   });
+
+  // While WhatsNexus is the sender the template must be one it has approved; otherwise the free-text name still applies.
+  const fromCatalogue = catalogue?.active === true;
+  const options = fromCatalogue ? suitableFirst(templateOptions(catalogue.templates, { body })) : [];
+  const unsuitable = options.filter((o) => !o.compatible);
+  const choice = fromCatalogue && catalogue.state === "OK" ? templateChoice({ providerTemplateName: providerName, language, body }, catalogue.templates) : null;
+  const notice = catalogue ? catalogueNotice(catalogue, { body }) : null;
+  const selected = options.find((o) => o.value === optionValue(providerName, language));
+  const variableCount = templateVariablesUsed(body).length;
+  const blocked = fromCatalogue && (notice?.blocksSave === true || !choice?.ok);
+
   return (
     <li className="space-y-2 p-3 text-xs" data-testid={`template-${template.purpose}`}>
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-sm font-medium text-ink">{TEMPLATE_PURPOSE_LABEL[template.purpose]}</p>
         <Badge tone={template.enabled ? "primary" : "neutral"}>{template.enabled ? "On" : "Off"}</Badge>
       </div>
-      <label className="block text-ink-2">Message
+      <label className="block text-ink-2">PulseOS field mapping
         <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} className="mt-1 w-full rounded-control border border-line-strong bg-surface p-2 text-sm text-ink outline-none focus:border-primary-500" data-testid={`template-body-${template.purpose}`} />
       </label>
-      <p className="text-ink-3">Details you can use: {TEMPLATE_VARIABLES[template.purpose].map((v) => `{{${v}}}`).join("  ")}</p>
-      <label className="block text-ink-2">Approved template name with WhatsApp
-        <input value={providerName} onChange={(e) => setProviderName(e.target.value)} className={`mt-1 w-full ${field}`} />
-      </label>
+      <p className="text-ink-3">Set the value for each WhatsApp placeholder. Details you can use: {TEMPLATE_VARIABLES[template.purpose].map((v) => `{{${v}}}`).join("  ")}</p>
+      {fromCatalogue ? (
+        <div className="space-y-2">
+          <div className="text-ink-2">
+            <span id={`template-label-${template.purpose}`}>Approved WhatsNexus template</span>
+            <ProviderTemplatePicker
+              options={options}
+              selectedValue={selected?.value}
+              currentLabel={providerName ? `${providerName} (${language})` : null}
+              onSelect={(o) => { setProviderName(o.template.name); setLanguage(o.template.language); setMsg(null); }}
+              variableCount={variableCount}
+              testId={`template-provider-${template.purpose}`}
+            />
+          </div>
+          <p className="text-ink-3">This message uses {variableCount} variable{variableCount === 1 ? "" : "s"}. Only templates with the same number of placeholders are suitable. The template decides the language the patient receives.</p>
+          {selected && <ProviderTemplateCard template={selected.template} body={body} compatible={selected.compatible} testId={`template-card-${template.purpose}`} />}
+          {choice?.ok && <p role="status" className="text-primary-700" data-testid={`template-compatible-${template.purpose}`}>Compatible: name, language and variables match.</p>}
+          {choice && !choice.ok && <p role="alert" className="text-danger-700" data-testid={`template-incompatible-${template.purpose}`}>{choice.message}</p>}
+          {notice && <p role="alert" className={notice.blocksSave ? "text-danger-700" : "text-warning-700"} data-testid={`template-catalogue-notice-${template.purpose}`}>{notice.text}</p>}
+          {unsuitable.length > 0 && (
+            <details className="text-ink-3" data-testid={`template-why-${template.purpose}`}>
+              <summary className="cursor-pointer text-ink-2">Why can&apos;t I pick {unsuitable.length} of the templates?</summary>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {unsuitable.map((o) => <li key={o.value}><span className="font-medium text-ink-2">{o.template.name}</span> ({o.template.language}): {o.reason}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      ) : (
+        <label className="block text-ink-2">Approved template name with WhatsApp
+          <input value={providerName} onChange={(e) => setProviderName(e.target.value)} className={`mt-1 w-full ${field}`} />
+        </label>
+      )}
       <div className="flex flex-wrap items-center gap-3">
-        <Button size="sm" variant="primary" onClick={() => save.mutate({ body, providerTemplateName: providerName })} disabled={save.isPending} data-testid={`template-save-${template.purpose}`}>Save</Button>
+        <Button size="sm" variant="primary" onClick={() => save.mutate({ body, providerTemplateName: providerName, ...(fromCatalogue ? { language } : {}) })} disabled={save.isPending || blocked} data-testid={`template-save-${template.purpose}`}>Save</Button>
         <label className="flex min-h-11 items-center gap-2 text-ink-2 sm:min-h-0"><input type="checkbox" className="max-sm:size-11" checked={template.enabled} onChange={(e) => save.mutate({ enabled: e.target.checked })} />Enabled</label>
         {msg && <span role="status" className="text-ink-2">{msg}</span>}
       </div>
@@ -90,10 +143,12 @@ function TemplateEditor({ template }: { template: MessageTemplateVm }) {
   );
 }
 
-/** Settings → Reminders. When messages go out, and what they say. Admin only; needs WhatsApp Notifications on. */
+/** WhatsNexus → Reminders. When messages go out, and what they say. Admin only; needs WhatsApp Notifications on. */
 export function RemindersSection() {
   const rules = useQuery({ queryKey: ["notification-rules"], queryFn: api.notificationRules, retry: false });
   const templates = useQuery({ queryKey: ["message-templates"], queryFn: api.messageTemplates, retry: false });
+  // Read from WhatsNexus every time this page opens (and on Refresh): Meta approval can change, so it is never kept.
+  const provider = useQuery({ queryKey: ["provider-templates"], queryFn: api.providerTemplates, retry: false, staleTime: 0, gcTime: 0, refetchOnMount: "always" });
   if (rules.isLoading || templates.isLoading) return <Skeleton className="h-32" />;
   const status = (rules.error ?? templates.error) instanceof ApiError ? ((rules.error ?? templates.error) as ApiError) : null;
   if (rules.isError || templates.isError || !rules.data || !templates.data) {
@@ -112,8 +167,17 @@ export function RemindersSection() {
         </section>
       ))}
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold text-ink">Messages</h3>
-        <ul className="divide-y divide-line rounded-card border border-line bg-surface">{templates.data.map((t) => <TemplateEditor key={t.id} template={t} />)}</ul>
+        <div className="flex flex-wrap items-center gap-3">
+          <h3 className="text-sm font-semibold text-ink">Messages</h3>
+          {provider.data?.active && (
+            <>
+              <Button size="sm" variant="secondary" onClick={() => provider.refetch()} disabled={provider.isFetching} data-testid="refresh-provider-templates">{provider.isFetching ? "Refreshing…" : "Refresh WhatsNexus templates"}</Button>
+              <span className="text-ink-3" data-testid="provider-templates-fetched">{provider.data.state === "OK" ? `${provider.data.templates.length} approved · read ${relativeTime(provider.data.fetchedAt)}` : "Could not read WhatsNexus templates"}</span>
+            </>
+          )}
+        </div>
+        {provider.isLoading && <p className="text-xs text-ink-3">Reading approved templates from WhatsNexus…</p>}
+        <ul className="divide-y divide-line rounded-card border border-line bg-surface">{templates.data.map((t) => <TemplateEditor key={t.id} template={t} catalogue={provider.data ?? null} />)}</ul>
       </section>
     </div>
   );

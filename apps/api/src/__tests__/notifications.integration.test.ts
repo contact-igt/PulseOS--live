@@ -99,7 +99,7 @@ describe.skipIf(!DEMO_PASSWORD)("notifications: reminders and staff WhatsApp (in
     expect(rules.filter((r) => r.subject === "SURGERY").map((r) => `${r.offsetValue}${r.offsetUnit}`).sort()).toEqual(["1days", "1hours", "2hours"]);
     expect(rules.every((r) => r.minGapMinutes === 60 && r.channel === "WHATSAPP" && r.templateId)).toBe(true);
     const templates = (await call(t, "HOSPITAL_ADMIN", "GET", "/notifications/templates")).json() as MessageTemplateVm[];
-    expect(templates.map((x) => x.purpose).sort()).toEqual(["APPOINTMENT_CONFIRMATION", "APPOINTMENT_REMINDER", "FOLLOW_UP_MESSAGE", "SURGERY_REMINDER"]);
+    expect(templates.map((x) => x.purpose).sort()).toEqual(["APPOINTMENT_CANCELLED", "APPOINTMENT_CONFIRMATION", "APPOINTMENT_REMINDER", "APPOINTMENT_RESCHEDULED", "FOLLOW_UP_MESSAGE", "SURGERY_REMINDER"]);
   });
 
   it("booked is not confirmed: nothing is planned until the visit is confirmed; confirming plans exactly one confirmation + the reminders; confirming again adds nothing", async () => {
@@ -163,13 +163,13 @@ describe.skipIf(!DEMO_PASSWORD)("notifications: reminders and staff WhatsApp (in
     const newAt = inHours(120);
     expect((await call(t, "FRONT_DESK", "PATCH", `/appointments/${a.id}/reschedule`, { scheduledAt: newAt.toISOString(), reasonCode: "patient_requested" })).statusCode).toBe(200);
     await new Promise((r) => setTimeout(r, 300));
-    expect(await rows(a.id)).toHaveLength(3); // moved visits are booked again, not confirmed: nothing new until re-confirmed
+    expect(await until(() => rows(a.id), (r) => r.length >= 4)).toHaveLength(4); // moved visits are booked again; the change notice is sent independently of re-confirmation
     await confirm(a.id);
-    const all = await until(() => rows(a.id), (r) => r.length >= 6);
+    const all = await until(() => rows(a.id), (r) => r.length >= 7);
     expect(all.filter((r) => r.status === "CANCELLED" && r.reason === "RESCHEDULED")).toHaveLength(2); // the old day/hour reminders
     expect(all.filter((r) => r.status === "SENT")).toHaveLength(1);
     const fresh = all.filter((r) => r.subjectAt!.getTime() === newAt.getTime() && r.status === "PENDING");
-    expect(fresh).toHaveLength(3); // a new confirmation (now) and the two reminders at the new time
+    expect(fresh).toHaveLength(4); // the change notice, a new confirmation, and the two reminders at the new time
     expect(sorted(fresh).map((r) => r.scheduledFor.getTime()).slice(1)).toEqual([newAt.getTime() - 86_400_000, newAt.getTime() - 3_600_000]);
   });
 
@@ -177,11 +177,11 @@ describe.skipIf(!DEMO_PASSWORD)("notifications: reminders and staff WhatsApp (in
     const a = await book(72);
     await planned(a.id, 3);
     expect((await call(t, "FRONT_DESK", "PATCH", `/appointments/${a.id}/action`, { action: "cancel", reasonCode: "patient_requested" })).statusCode).toBe(200);
+    await until(() => rows(a.id), (r) => r.length === 4);
+    await processDueNotifications(db, new Date(), fixtureOnly);
     const after = await until(() => rows(a.id), (r) => r.every((x) => x.status !== "PENDING"));
-    expect(after.length).toBe(3);
-    expect(after.every((r) => r.status === "CANCELLED" && r.reason === "APPOINTMENT_CANCELLED")).toBe(true);
-    await processDueNotifications(db, new Date(Date.now() + 80 * 3_600_000), fixtureOnly);
-    expect((await rows(a.id)).some((r) => r.status === "SENT")).toBe(false);
+    expect(after.filter((r) => r.status === "CANCELLED" && r.reason === "APPOINTMENT_CANCELLED")).toHaveLength(3);
+    expect(after.filter((r) => r.status === "SENT")).toHaveLength(1);
   });
 
   it("the worker re-checks the visit before sending: moved or cancelled behind the engine's back → never sent", async () => {

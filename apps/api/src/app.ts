@@ -46,6 +46,8 @@ export async function buildApp() {
   // sign-in throttle keys on it. Unset trusts no proxy: all clients then share the proxy's address.
   const options: FastifyServerOptions = {
     logger: true,
+    // Base64 media is capped again at the route boundary; allow the largest supported document plus encoding overhead.
+    bodyLimit: 35 * 1024 * 1024,
     // Fastify accepts a hop count at runtime (proxy-addr); its type declaration omits `number`.
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY) as FastifyServerOptions["trustProxy"],
   };

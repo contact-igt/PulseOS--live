@@ -1,12 +1,17 @@
-import { and, asc, desc, eq, gte, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
+import { createHmac } from "node:crypto";
+import crypto from "node:crypto";
 import { patientNameSql } from "../../lib/patient-name.js";
 import type { Db } from "../../db/client.js";
-import { appointments, communicationEndpoints, conversationAutomationPreferences, conversations, journeys, messages, patients, tasks, timelineEvents, users } from "../../db/schema.js";
+import { appointments, communicationEndpoints, conversationAutomationPreferences, conversations, journeys, messageAttachments, messages, patients, tasks, timelineEvents, users } from "../../db/schema.js";
 import { getConnectorById, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
 import { getMessagingAdapter } from "../connector/registry.js";
+import type { MessagingProviderAdapter } from "../connector/types.js";
+import { redactLogText } from "../security/redact.js";
 import { eligibleAssignee } from "../task/task.service.js";
 import { getConversationSummaryState, recordConversationActivity } from "./summary/conversation-session.service.js";
-import type { ConversationAutomationMode, ConversationAutomationPreference, ConversationChannel, ConversationDetail, ConversationRow, OwnershipState } from "@pulseos/types";
+import { checkMediaFile, type ConversationAutomationMode, type ConversationAutomationPreference, type ConversationChannel, type ConversationDetail, type ConversationRow, type MessageAttachmentKind, type MessageDeliveryStatus, type OwnershipState, type SendMessageResult } from "@pulseos/types";
+import { resolvesToPublicAddresses, validateWebhookUrl, webhookAllowInsecure } from "../integration/webhook-rules.js";
 
 export interface ConversationFilters {
   channel?: ConversationChannel;
@@ -94,11 +99,21 @@ export async function getConversationDetail(db: Db, tenantId: string, conversati
   }
 
   const messageRows = await db
-    .select({ id: messages.id, senderType: messages.senderType, senderName: users.name, body: messages.body, sentAt: messages.sentAt })
+    // A PulseOS team member's name, or the name of the WhatsNexus agent who wrote it there.
+    .select({ id: messages.id, senderType: messages.senderType, senderName: sql<string | null>`coalesce(${users.name}, ${messages.senderName})`, body: messages.body, sentAt: messages.sentAt, deliveryStatus: messages.deliveryStatus, kind: messages.kind, templateName: messages.templateName })
     .from(messages)
     .leftJoin(users, eq(messages.senderUserId, users.id))
     .where(eq(messages.conversationId, conversationId))
     .orderBy(asc(messages.sentAt));
+  const attachmentRows = messageRows.length
+    ? await db.select().from(messageAttachments).where(inArray(messageAttachments.messageId, messageRows.map((m) => m.id)))
+    : [];
+  const attachmentsByMessage = new Map<string, typeof attachmentRows>();
+  for (const attachment of attachmentRows) {
+    const list = attachmentsByMessage.get(attachment.messageId) ?? [];
+    list.push(attachment);
+    attachmentsByMessage.set(attachment.messageId, list);
+  }
 
   let journeyId = conv.journeyId;
   if (!journeyId) {
@@ -160,12 +175,109 @@ export async function getConversationDetail(db: Db, tenantId: string, conversati
       ownershipState: conv.ownershipState,
       endpointLabel: endpoint?.displayLabel ?? null,
     },
-    messages: messageRows.map((m) => ({ id: m.id, senderType: m.senderType, senderName: m.senderName, body: m.body, sentAt: m.sentAt.toISOString() })),
+    messages: messageRows.map((m) => ({
+      id: m.id, senderType: m.senderType, senderName: m.senderName, body: m.body, sentAt: m.sentAt.toISOString(), deliveryStatus: m.deliveryStatus, kind: m.kind === "template" ? "template" : "text", templateName: m.templateName,
+      attachments: (attachmentsByMessage.get(m.id) ?? []).map((a) => ({ id: a.id, kind: a.kind, fileName: a.fileName, mimeType: a.mimeType, sizeBytes: a.sizeBytes })),
+    })),
     patientContext,
     summary: await getConversationSummaryState(db, conv),
     // WhatsApp customer-service window: free-form replies are only allowed for 24h after the patient's last message.
     serviceWindowExpiresAt: conv.lastPatientInboundAt ? new Date(conv.lastPatientInboundAt.getTime() + 24 * 3600_000).toISOString() : null,
+    // The same rule sendMessage enforces, so the Inbox can say so before anyone types a reply that could not be sent.
+    replyBlockedReason: conv.connectorId && windowClosed(conv, new Date()) ? "WINDOW_CLOSED" : null,
   };
+}
+
+async function findAttachment(db: Db, tenantId: string, conversationId: string, messageId: string, attachmentId: string) {
+  const [attachment] = await db
+    .select({ providerMediaId: messageAttachments.providerMediaId, fileName: messageAttachments.fileName, mimeType: messageAttachments.mimeType, connectorId: messages.connectorId })
+    .from(messageAttachments)
+    .innerJoin(messages, eq(messageAttachments.messageId, messages.id))
+    .innerJoin(conversations, eq(messages.conversationId, conversations.id))
+    .where(and(eq(messageAttachments.id, attachmentId), eq(messages.id, messageId), eq(conversations.id, conversationId), eq(conversations.tenantId, tenantId)))
+    .limit(1);
+  return attachment ?? null;
+}
+
+/** A provider URL valid for five minutes, signed for this hospital; the media id never reaches the UI data model. Server-side only. */
+export async function getConversationAttachmentUrl(db: Db, tenantId: string, conversationId: string, messageId: string, attachmentId: string): Promise<string | null> {
+  const attachment = await findAttachment(db, tenantId, conversationId, messageId, attachmentId);
+  if (!attachment?.connectorId) return null;
+  const connector = await getConnectorById(db, attachment.connectorId);
+  if (!connector || connector.tenantId !== tenantId || connector.provider !== "whatsnexus") return null;
+  const configuration = (connector.configuration as Record<string, unknown> | null) ?? {};
+  const baseUrl = typeof configuration.baseUrl === "string" ? configuration.baseUrl : "";
+  const providerTenantId = typeof configuration.tenantId === "string" ? configuration.tenantId : "";
+  const callbackSecret = (await getConnectorSecrets(db, connector.id))?.callbackSecret;
+  if (!baseUrl || !providerTenantId || typeof callbackSecret !== "string") return null;
+  const expires = Math.floor(Date.now() / 1000) + 5 * 60;
+  const signature = `sha256=${createHmac("sha256", callbackSecret).update(`${expires}.${providerTenantId}.${attachment.providerMediaId}`).digest("hex")}`;
+  const url = new URL(`/api/integrations/pulseos/media/${encodeURIComponent(attachment.providerMediaId)}`, baseUrl);
+  url.searchParams.set("tenantId", providerTenantId);
+  url.searchParams.set("expires", String(expires));
+  url.searchParams.set("signature", signature);
+  return url.toString();
+}
+
+/** Types a browser may show inline; everything else is offered as a download so a file can never run as a page of PulseOS. */
+const INLINE_MEDIA = /^(image\/(jpeg|png|webp|gif)|audio\/[a-z0-9.+-]+|video\/mp4|application\/pdf)$/;
+
+export interface AttachmentStream {
+  status: 200 | 206;
+  headers: Record<string, string>;
+  body: ReadableStream<Uint8Array> | null;
+}
+
+/**
+ * Open an attachment for the Inbox. PulseOS fetches it from the provider itself (with the short-lived signed link) and relays
+ * it, instead of sending the browser to the provider: that keeps the signed link private, works whatever the provider's host
+ * does to browsers (a tunnel's warning page, CORS), supports audio/video seeking (Range), and enforces the hospital check
+ * here. Null when it is not this hospital's, no longer exists, or cannot be reached.
+ */
+export async function fetchConversationAttachment(
+  db: Db,
+  tenantId: string,
+  conversationId: string,
+  messageId: string,
+  attachmentId: string,
+  opts: { range?: string } = {},
+  deps: { fetchImpl?: typeof fetch; isPublicHost?: (host: string) => Promise<boolean> } = {},
+): Promise<AttachmentStream | null> {
+  const attachment = await findAttachment(db, tenantId, conversationId, messageId, attachmentId);
+  const url = attachment ? await getConversationAttachmentUrl(db, tenantId, conversationId, messageId, attachmentId) : null;
+  if (!attachment || !url) return null;
+  const target = new URL(url);
+  // The provider address was validated when it was configured; it is checked again against what it resolves to now.
+  if (!validateWebhookUrl(target.origin, { allowInsecure: webhookAllowInsecure() }).ok) return null;
+  if (!webhookAllowInsecure() && !(await (deps.isPublicHost ?? resolvesToPublicAddresses)(target.hostname))) return null;
+  let res: Response;
+  try {
+    res = await (deps.fetchImpl ?? fetch)(url, {
+      headers: { accept: "*/*", "ngrok-skip-browser-warning": "1", ...(opts.range && /^bytes=\d*-\d*$/.test(opts.range) ? { range: opts.range } : {}) },
+      redirect: "manual",
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch {
+    return null;
+  }
+  if (res.status !== 200 && res.status !== 206) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  const upstreamType = (res.headers.get("content-type") ?? attachment.mimeType ?? "").split(";")[0]!.trim().toLowerCase();
+  const inline = INLINE_MEDIA.test(upstreamType);
+  const headers: Record<string, string> = {
+    "content-type": inline ? upstreamType : "application/octet-stream",
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-store",
+    "accept-ranges": res.headers.get("accept-ranges") ?? "bytes",
+  };
+  for (const h of ["content-length", "content-range"]) {
+    const v = res.headers.get(h);
+    if (v) headers[h] = v;
+  }
+  if (!inline) headers["content-disposition"] = `attachment; filename="${(attachment.fileName ?? "file").replace(/[^A-Za-z0-9._ -]/g, "_")}"`;
+  return { status: res.status as 200 | 206, headers, body: res.body };
 }
 
 async function findConversation(db: Db, tenantId: string, conversationId: string) {
@@ -311,62 +423,61 @@ export async function setConversationAutomation(
   return { ok: true, preference: toAutomationPreference(row) };
 }
 
-export async function sendMessage(db: Db, tenantId: string, conversationId: string, actorId: string, body: string, now: Date = new Date()): Promise<{ ok: true } | { ok: false; reason: string }> {
+export interface ConversationSendDeps {
+  /** Replaceable in tests. */
+  adapterFor?: (provider: string) => MessagingProviderAdapter | null;
+}
+
+const SERVICE_WINDOW_MS = 24 * 3600_000;
+/** WhatsApp lets a business reply freely only for 24 hours after the patient's last message; after that only an approved template. */
+const windowClosed = (c: { lastPatientInboundAt: Date | null }, now: Date) => !c.lastPatientInboundAt || now.getTime() - c.lastPatientInboundAt.getTime() > SERVICE_WINDOW_MS;
+
+type Delivery = { providerMessageId: string | null; deliveryStatus: "sent" | "failed" | null; reason: string | null };
+
+/**
+ * Hand a text to the conversation's provider. A conversation with no live provider stays local (deliveryStatus null, as before).
+ * A provider that is selected but cannot send says why, in its own words, instead of a bare "failed".
+ */
+async function deliverText(db: Db, existing: typeof conversations.$inferSelect, body: string, deps: ConversationSendDeps): Promise<Delivery> {
+  if (!existing.connectorId) return { providerMessageId: null, deliveryStatus: null, reason: null };
+  const connector = await getConnectorById(db, existing.connectorId);
+  const adapter = connector ? (deps.adapterFor ?? getMessagingAdapter)(connector.provider) : null;
+  if (!connector || !adapter) return { providerMessageId: null, deliveryStatus: null, reason: null };
+  const [patient] = await db.select({ phone: patients.phone }).from(patients).where(eq(patients.id, existing.patientId)).limit(1);
+  const to = existing.externalThreadId ?? patient?.phone;
+  const secrets = to ? await getConnectorSecrets(db, connector.id) : null;
+  if (!to || !secrets) {
+    // WhatsNexus is a real sender: not being able to send must be visible. Other providers keep their earlier behaviour.
+    return connector.provider === "whatsnexus" ? { providerMessageId: null, deliveryStatus: "failed", reason: "PROVIDER_NOT_CONFIGURED: WhatsNexus credentials or the patient's number are missing" } : { providerMessageId: null, deliveryStatus: null, reason: null };
+  }
+  try {
+    // mode must be stamped onto config exactly like campaign-sync.service.ts does for its adapter calls — without it,
+    // config.mode is undefined, every adapter's fixture guard is skipped and a FIXTURE connector attempts a real call.
+    const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown>) ?? {}), mode: connector.mode.toLowerCase(), pulseosTenantId: existing.tenantId };
+    // A reply must go out from the same hospital line the thread arrived on (for WhatsApp, providerRef IS the phone_number_id).
+    if (existing.communicationEndpointId) {
+      const [endpoint] = await db.select({ providerRef: communicationEndpoints.providerRef }).from(communicationEndpoints).where(eq(communicationEndpoints.id, existing.communicationEndpointId)).limit(1);
+      if (endpoint) config.phoneNumberId = endpoint.providerRef;
+    }
+    const sent = await adapter.sendMessage(config, secrets, to, body);
+    await touchConnectorSuccess(db, connector.id);
+    return { providerMessageId: sent.providerMessageId, deliveryStatus: "sent", reason: null };
+  } catch (err) {
+    const reason = redactLogText((err as Error).message) ?? "send failed";
+    // A refused template or a closed window is about this message, not the connection.
+    const code = (err as { code?: string }).code ?? "";
+    if (!code.startsWith("TEMPLATE_") && code !== "TEMPLATE_REQUIRED") await touchConnectorError(db, connector.id, reason);
+    return { providerMessageId: null, deliveryStatus: "failed", reason };
+  }
+}
+
+export async function sendMessage(db: Db, tenantId: string, conversationId: string, actorId: string, body: string, now: Date = new Date(), deps: ConversationSendDeps = {}): Promise<SendMessageResult | { ok: false; reason: string }> {
   const existing = await findConversation(db, tenantId, conversationId);
   if (!existing) return { ok: false, reason: "conversation_not_found" };
+  // Outside the 24-hour window a free-form text cannot be delivered: say so now, before anything is stored or sent.
+  if (existing.connectorId && windowClosed(existing, now)) return { ok: false, reason: "template_required" };
 
-
-  // Route through the live provider when this conversation is connector-
-  // backed (Group T). Demo-seed conversations have no connectorId and stay
-  // purely local, as before.
-  let providerMessageId: string | null = null;
-  let deliveryStatus: "sent" | "failed" | null = null;
-  if (existing.connectorId) {
-    const connector = await getConnectorById(db, existing.connectorId);
-    const adapter = connector ? getMessagingAdapter(connector.provider) : null;
-    if (connector && adapter) {
-      const [patient] = await db.select({ phone: patients.phone }).from(patients).where(eq(patients.id, existing.patientId)).limit(1);
-      const to = existing.externalThreadId ?? patient?.phone;
-      const secrets = to ? await getConnectorSecrets(db, connector.id) : null;
-      if (to && secrets) {
-        try {
-          // mode must be stamped onto config exactly like campaign-sync.service.ts
-          // does for its adapter calls — without it, config.mode is undefined, every
-          // adapter's `if (config.mode === "fixture")` guard is skipped, and a FIXTURE
-          // connector attempts a real provider API call with fixture secrets. That
-          // always fails, which permanently flips the connector to ERROR via
-          // touchConnectorError below — the actual root cause of a previously
-          // observed flake where connector-checkpoint's own live-reply step
-          // corrupted connector status for any later run against the same DB.
-          const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown>) ?? {}), mode: connector.mode.toLowerCase() };
-          // The Inbox/Patient 360 UI shows which hospital line this thread
-          // resolved to (e.g. "Fertility Line") — a reply must actually be
-          // sent from that same line, not silently fall back to the
-          // connector's single default `phoneNumberId`, or the UI would be
-          // asserting a delivery line the send path doesn't honour. For
-          // WhatsApp, providerRef IS the real phone_number_id (see
-          // communication-endpoint.service.ts) — safe to override generic
-          // config here since every other adapter ignores an unknown key.
-          if (existing.communicationEndpointId) {
-            const [endpoint] = await db
-              .select({ providerRef: communicationEndpoints.providerRef })
-              .from(communicationEndpoints)
-              .where(eq(communicationEndpoints.id, existing.communicationEndpointId))
-              .limit(1);
-            if (endpoint) config.phoneNumberId = endpoint.providerRef;
-          }
-          const sent = await adapter.sendMessage(config, secrets, to, body);
-          providerMessageId = sent.providerMessageId;
-          deliveryStatus = "sent";
-          await touchConnectorSuccess(db, connector.id);
-        } catch (err) {
-          deliveryStatus = "failed";
-          await touchConnectorError(db, connector.id, (err as Error).message);
-        }
-      }
-    }
-  }
-
+  const out = await deliverText(db, existing, body, deps);
   await db.insert(messages).values({
     tenantId,
     conversationId,
@@ -375,8 +486,8 @@ export async function sendMessage(db: Db, tenantId: string, conversationId: stri
     body,
     sentAt: now,
     connectorId: existing.connectorId,
-    providerMessageId,
-    deliveryStatus,
+    providerMessageId: out.providerMessageId,
+    deliveryStatus: out.deliveryStatus,
   });
   await db.update(conversations).set({ lastMessageAt: now }).where(eq(conversations.id, conversationId));
 
@@ -384,5 +495,82 @@ export async function sendMessage(db: Db, tenantId: string, conversationId: stri
   // session, and the idle deadline is pushed out (even when delivery failed — the thread still moved).
   await recordConversationActivity(db, tenantId, conversationId, { at: now, sender: "staff" });
 
+  return { ok: true, deliveryStatus: out.deliveryStatus as MessageDeliveryStatus | null, reason: out.reason };
+}
+
+/**
+ * Send a failed message again, as the SAME message. Claimed first (failed → queued) so a double click can never send it twice;
+ * only a staff text that failed is eligible — a delivered message is never "retried".
+ */
+export async function retryConversationMessage(db: Db, tenantId: string, conversationId: string, messageId: string, actorId: string, deps: ConversationSendDeps = {}, now: Date = new Date()): Promise<SendMessageResult | { ok: false; reason: string }> {
+  const existing = await findConversation(db, tenantId, conversationId);
+  if (!existing) return { ok: false, reason: "conversation_not_found" };
+  const [message] = await db.select().from(messages).where(and(eq(messages.id, messageId), eq(messages.conversationId, conversationId), eq(messages.tenantId, tenantId))).limit(1);
+  if (!message) return { ok: false, reason: "message_not_found" };
+  const attachments = await db.select({ id: messageAttachments.id }).from(messageAttachments).where(eq(messageAttachments.messageId, message.id)).limit(1);
+  if (message.senderType !== "staff" || !message.senderUserId || message.deliveryStatus !== "failed" || attachments.length > 0) return { ok: false, reason: "not_retryable" };
+  if (existing.connectorId && windowClosed(existing, now)) return { ok: false, reason: "template_required" };
+
+  const claimed = await db.update(messages).set({ deliveryStatus: "queued" }).where(and(eq(messages.id, message.id), eq(messages.deliveryStatus, "failed"))).returning({ id: messages.id });
+  if (claimed.length === 0) return { ok: false, reason: "not_retryable" };
+
+  const out = await deliverText(db, existing, message.body, deps);
+  await db.update(messages).set({ deliveryStatus: out.deliveryStatus ?? "failed", providerMessageId: out.providerMessageId }).where(eq(messages.id, message.id));
+  void actorId;
+  return { ok: true, deliveryStatus: (out.deliveryStatus ?? "failed") as MessageDeliveryStatus, reason: out.reason };
+}
+
+export type SendMediaResult = { ok: true } | { ok: false; reason: string; detail?: string };
+
+/**
+ * Send a photo, video, document or voice note to the patient. Checked against the same rules the browser applies, then handed
+ * to the provider. A file the provider refuses says why and is not stored; only a credential/transport failure counts against
+ * the connection. If the provider accepted it, it is reported as sent even if recording it here hiccups.
+ */
+export async function sendMediaMessage(
+  db: Db,
+  tenantId: string,
+  conversationId: string,
+  actorId: string,
+  media: { kind: MessageAttachmentKind; fileName: string; mimeType: string; base64: string; caption: string },
+  deps: ConversationSendDeps = {},
+  now: Date = new Date(),
+): Promise<SendMediaResult> {
+  const existing = await findConversation(db, tenantId, conversationId);
+  if (!existing) return { ok: false, reason: "conversation_not_found" };
+  if (!existing.connectorId || windowClosed(existing, now)) return { ok: false, reason: "template_required" };
+  const sizeBytes = Buffer.byteLength(media.base64, "base64");
+  const check = checkMediaFile({ kind: media.kind, mimeType: media.mimeType, fileName: media.fileName, sizeBytes });
+  if (!check.ok) return { ok: false, reason: check.reason, detail: check.message };
+
+  const connector = await getConnectorById(db, existing.connectorId);
+  const adapter = connector ? (deps.adapterFor ?? getMessagingAdapter)(connector.provider) : null;
+  const [patient] = await db.select({ phone: patients.phone }).from(patients).where(eq(patients.id, existing.patientId)).limit(1);
+  const to = existing.externalThreadId ?? patient?.phone;
+  const secrets = connector && to ? await getConnectorSecrets(db, connector.id) : null;
+  if (!connector || !adapter?.sendMedia || !to || !secrets) return { ok: false, reason: "media_not_supported" };
+
+  let providerMessageId: string;
+  try {
+    const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown>) ?? {}), mode: connector.mode.toLowerCase(), pulseosTenantId: tenantId };
+    providerMessageId = (await adapter.sendMedia(config, secrets, to, { ...media, idempotencyKey: crypto.randomUUID() })).providerMessageId;
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? "";
+    if (code === "TEMPLATE_REQUIRED") return { ok: false, reason: "template_required" };
+    const detail = redactLogText((err as Error).message) ?? "send failed";
+    // A file the provider refused (INVALID_REQUEST) is about this file, not the connection.
+    if (code !== "INVALID_REQUEST" && !code.startsWith("TEMPLATE_")) await touchConnectorError(db, connector.id, detail);
+    return { ok: false, reason: "send_failed", detail };
+  }
+  try {
+    const [message] = await db.insert(messages).values({ tenantId, conversationId, senderType: "staff", senderUserId: actorId, body: media.caption, sentAt: now, connectorId: connector.id, providerMessageId, deliveryStatus: "sent" }).returning({ id: messages.id });
+    await db.insert(messageAttachments).values({ tenantId, messageId: message!.id, kind: media.kind, providerMediaId: providerMessageId, fileName: media.fileName, mimeType: media.mimeType.split(";")[0]!.trim(), sizeBytes });
+    await db.update(conversations).set({ lastMessageAt: now }).where(eq(conversations.id, conversationId));
+    await recordConversationActivity(db, tenantId, conversationId, { at: now, sender: "staff" });
+    await touchConnectorSuccess(db, connector.id);
+  } catch (err) {
+    // The patient has the file; failing the request now would invite a second send.
+    console.error("media was sent but could not be recorded", conversationId, err);
+  }
   return { ok: true };
 }

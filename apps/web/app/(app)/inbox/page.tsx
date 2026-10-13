@@ -2,14 +2,18 @@
 
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@pulseos/api-client";
+import { api, ApiError } from "@pulseos/api-client";
 import { useRouter } from "next/navigation";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, FilterBar, FilterSelect, OverflowMenu, SectionHeading, Skeleton, useDialogFocus, relativeTime, fmtDate, fmtDateTime, fmtSmartDateTime, JOURNEY_STAGE_LABEL } from "@pulseos/ui";
 import { useQuickCreate } from "../../../components/shell/QuickCreateProvider";
+import { MessageBubble } from "@/components/inbox/MessageBubble";
+import { groupMessagesByDay } from "@/components/inbox/conversationDays";
+import { Composer } from "@/components/inbox/Composer";
+import { describeMediaProblem, describeSendProblem } from "@/components/inbox/messagePresentation";
 import { withFrom } from "@/components/shell/BackLink";
 import { instantToWallTime, wallTimeToInstant } from "@/lib/hospitalTime";
 import { useHospitalTimeZone } from "@/lib/useHospitalTimeZone";
-import type { ConversationAutomationMode, ConversationAutomationPreference, ConversationChannel, ConversationDetail, OwnershipState } from "@pulseos/types";
+import type { MessageAttachmentKind, ConversationAutomationMode, ConversationAutomationPreference, ConversationChannel, ConversationDetail, OwnershipState } from "@pulseos/types";
 import { ArrowLeft, CalendarPlus, ListPlus, Mail, MessageCircle, MessageSquareText, PanelRight, Phone, Search, User, Users as UsersIcon, X } from "lucide-react";
 
 const CHANNEL_ICON: Record<ConversationChannel, typeof Mail> = {
@@ -69,18 +73,22 @@ export default function InboxPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const quickCreate = useQuickCreate();
+  const hospitalTimeZone = useHospitalTimeZone();
   const [channel, setChannel] = useState<ConversationChannel | "">("");
   const [ownershipState, setOwnershipState] = useState<OwnershipState | "">("");
   const [communicationEndpointId, setCommunicationEndpointId] = useState("");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  const [sendingMedia, setSendingMedia] = useState(false);
   const [assignTarget, setAssignTarget] = useState("");
   // "Assign to…" is a rare action tucked in the ownership More menu — this
   // reveals the picker row it needs without giving it standing header space.
   const [assigning, setAssigning] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
   const [schedulingAi, setSchedulingAi] = useState(false);
+  // Why the last send did not go through, shown above the composer (the failed message itself stays in the thread with Retry).
+  const [sendProblem, setSendProblem] = useState<{ summary: string; detail: string | null } | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   // Below `md` the list and thread are two full-width screens, not two
   // squeezed columns — this tracks which one is showing.
   const [mobileView, setMobileView] = useState<"list" | "thread">("list");
@@ -99,6 +107,9 @@ export default function InboxPage() {
         communicationEndpointId: communicationEndpointId || undefined,
         search: search || undefined,
       }),
+    // WhatsNexus inbound callbacks write straight to PulseOS; refresh the queue
+    // so staff see a new patient reply without reloading the Inbox.
+    refetchInterval: 10_000,
   });
 
   // Populates the "line" filter — which hospital phone/WhatsApp line a
@@ -112,6 +123,7 @@ export default function InboxPage() {
     queryKey: ["conversation", effectiveSelectedId],
     queryFn: () => api.conversation(effectiveSelectedId!),
     enabled: !!effectiveSelectedId,
+    refetchInterval: effectiveSelectedId ? 10_000 : false,
   });
 
   const lookups = useQuery({ queryKey: ["lookups"], queryFn: api.lookups });
@@ -120,6 +132,9 @@ export default function InboxPage() {
     () => conversations.data?.find((c) => c.id === effectiveSelectedId) ?? null,
     [conversations.data, effectiveSelectedId],
   );
+
+  const windowClosed = detail.data?.replyBlockedReason === "WINDOW_CLOSED";
+  const composerLocked = selectedConversation?.ownershipState === "CLOSED" || windowClosed;
 
   function selectConversation(id: string) {
     setSelectedId(id);
@@ -138,6 +153,7 @@ export default function InboxPage() {
     setAssignTarget("");
     setConfirmingClose(false);
     setSchedulingAi(false);
+    setSendProblem(null);
   }
 
   const automation = useQuery({
@@ -178,11 +194,59 @@ export default function InboxPage() {
     refreshAfterAction();
   }
 
-  async function handleSend() {
-    if (!effectiveSelectedId || !draft.trim()) return;
-    await api.sendConversationMessage(effectiveSelectedId, draft.trim());
-    setDraft("");
-    refreshAfterAction();
+  /** Resolves true when the text was dealt with (sent, or kept in the thread as a failed message with Retry); false keeps the draft. */
+  async function handleSendText(text: string): Promise<boolean> {
+    if (!effectiveSelectedId) return false;
+    setSendProblem(null);
+    try {
+      const result = await api.sendConversationMessage(effectiveSelectedId, text);
+      if (result.deliveryStatus === "failed") setSendProblem(describeSendProblem(result.reason));
+      return true;
+    } catch (e) {
+      // Nothing was sent or stored (e.g. the 24-hour window has closed): the draft stays so no typing is lost.
+      setSendProblem(describeSendProblem(e instanceof ApiError ? e.message : null));
+      return false;
+    } finally {
+      refreshAfterAction();
+    }
+  }
+
+  async function handleRetry(messageId: string) {
+    if (!effectiveSelectedId) return;
+    setSendProblem(null);
+    setRetryingId(messageId);
+    try {
+      const result = await api.retryConversationMessage(effectiveSelectedId, messageId);
+      if (result.deliveryStatus === "failed") setSendProblem(describeSendProblem(result.reason));
+    } catch (e) {
+      setSendProblem(describeSendProblem(e instanceof ApiError ? e.message : null));
+    } finally {
+      setRetryingId(null);
+      refreshAfterAction();
+    }
+  }
+
+  async function handleSendFile(file: File, kind: MessageAttachmentKind, caption: string): Promise<boolean> {
+    if (!effectiveSelectedId) return false;
+    setSendProblem(null);
+    setSendingMedia(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      await api.sendConversationMedia(effectiveSelectedId, { kind, fileName: file.name, mimeType: file.type || "application/octet-stream", base64, caption });
+      return true;
+    } catch (e) {
+      // The reason is shown above the message box; the file stays chosen so it can be sent again or removed.
+      setSendProblem(describeMediaProblem(e instanceof ApiError ? { message: e.message, detail: e.detail } : { message: "network", detail: null }));
+      return false;
+    } finally {
+      setSendingMedia(false);
+      refreshAfterAction();
+    }
   }
 
   function openBookAppointment() {
@@ -406,49 +470,36 @@ export default function InboxPage() {
             {/* Message list: plain scrolling surface (no blur, no gradient). Sender is named on every bubble and by alignment, never by colour alone. */}
             <div className="flex-1 space-y-3 overflow-y-auto bg-surface-muted p-4" data-testid="message-list">
               {detail.isLoading && <div className="space-y-2">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10" />)}</div>}
-              {detail.data?.messages.map((m) =>
-                m.senderType === "system" ? (
-                  <p key={m.id} className="text-center text-[11px] italic text-ink-2">{m.body}</p>
-                ) : (
-                  <div key={m.id} className={`flex ${m.senderType === "patient" ? "justify-start" : "justify-end"}`}>
-                    <div
-                      className={`max-w-[75%] rounded-card border px-3 py-2 text-xs text-ink ${
-                        m.senderType === "patient"
-                          ? "border-line bg-surface"
-                          : m.senderType === "ai"
-                            ? "border-primary-200 bg-surface-info"
-                            : "border-primary-200 bg-primary-100"
-                      }`}
-                    >
-                      <p className="whitespace-pre-wrap">{m.body}</p>
-                      <p className="mt-1 text-[10px] text-ink-2">
-                        {m.senderType === "staff" ? m.senderName ?? "Staff" : m.senderType === "ai" ? "AI Assistant" : "Patient"} · {relativeTime(m.sentAt)}
-                      </p>
-                    </div>
-                  </div>
-                ),
-              )}
+              {groupMessagesByDay(detail.data?.messages ?? [], hospitalTimeZone).map((day) => (
+                <section key={day.key} className="space-y-3" aria-label={day.label}>
+                  <div className="flex justify-center"><span className="rounded-chip bg-surface px-3 py-0.5 text-[11px] font-medium text-ink-2 shadow-xs ring-1 ring-line" data-testid="day-separator">{day.label}</span></div>
+                  {day.items.map((m) => (
+                    <MessageBubble key={m.id} message={m} conversationId={selectedConversation.id} onRetry={handleRetry} retrying={retryingId === m.id} />
+                  ))}
+                </section>
+              ))}
             </div>
 
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSend();
-              }}
-              className="flex items-center gap-2 border-t border-line px-4 py-3"
-            >
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={selectedConversation.ownershipState === "CLOSED" ? "This conversation is closed" : "Type a message…"}
-                aria-label="Message"
-                disabled={selectedConversation.ownershipState === "CLOSED"}
-                className="h-9 flex-1 rounded-control border border-line-strong bg-surface px-3 text-xs text-ink outline-none placeholder:text-neutral-500 focus:border-primary-500 disabled:bg-surface-muted"
-              />
-              <Button type="submit" variant="primary" disabled={selectedConversation.ownershipState === "CLOSED" || !draft.trim()}>
-                Send
-              </Button>
-            </form>
+            {windowClosed && (
+              <p role="status" className="border-t border-warning-100 bg-warning-100/60 px-4 py-2 text-xs text-warning-700" data-testid="window-closed">
+                The patient last wrote more than 24 hours ago, so WhatsApp allows only an approved template message now. Use Send WhatsApp on the patient&apos;s Journey, or wait for the patient to write again.
+              </p>
+            )}
+            {sendProblem && (
+              <div role="alert" className="space-y-0.5 border-t border-danger-100 bg-danger-100/50 px-4 py-2 text-xs text-danger-700" data-testid="send-problem">
+                <p>{sendProblem.summary}</p>
+                {sendProblem.detail && <p className="text-ink-2" data-testid="send-problem-detail">Reason: {sendProblem.detail}</p>}
+              </div>
+            )}
+            <Composer
+              key={selectedConversation.id}
+              locked={composerLocked}
+              busy={sendingMedia}
+              placeholder={windowClosed ? "Free-form replies are closed — an approved template is needed" : composerLocked ? "This conversation is closed" : "Type a message…"}
+              onSendText={handleSendText}
+              onSendFile={handleSendFile}
+              onProblem={(message) => setSendProblem({ summary: message, detail: null })}
+            />
           </>
         )}
       </section>

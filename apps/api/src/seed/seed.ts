@@ -132,8 +132,6 @@ async function main() {
   await seedNamokarTenant(passwordHash);
   // The clean Namokar pilot: configuration and staff only, no demo activity (see demo/namokar.ts).
   await seedNamokarV2Tenant(passwordHash);
-  // Each WhatsApp thread gets its session line on the Timeline and a (FIXTURE-labelled) summary, exactly as
-  // live traffic does once a conversation has been idle.
   await seedConversationSessions();
 
   console.log("Seed complete. Password for every demo account: value of DEMO_PASSWORD env var");
