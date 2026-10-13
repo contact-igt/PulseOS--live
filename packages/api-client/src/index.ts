@@ -9,6 +9,8 @@ import type {
   AdsSyncRunVm,
   MessageTemplateVm,
   ProviderTemplateCatalogue,
+  SendMessageResult,
+  MessageAttachmentKind,
   NotificationRuleVm,
   WhatsAppPreview,
   Capability,
@@ -373,8 +375,15 @@ export const api = {
   conversations: (filters: { channel?: ConversationChannel; ownershipState?: OwnershipState; search?: string; communicationEndpointId?: string } = {}) =>
     request<ConversationRow[]>(`/conversations${toQuery({ ...filters })}`),
   conversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
+  conversationAttachmentUrl: (conversationId: string, messageId: string, attachmentId: string) =>
+    `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
   sendConversationMessage: (id: string, body: string) =>
-    request<{ ok: true }>(`/conversations/${id}/messages`, { method: "POST", body: JSON.stringify({ body }) }),
+    request<SendMessageResult>(`/conversations/${id}/messages`, { method: "POST", body: JSON.stringify({ body }) }),
+  /** Send a message that failed again, as the same message (never a second bubble). */
+  retryConversationMessage: (id: string, messageId: string) =>
+    request<SendMessageResult>(`/conversations/${id}/messages/${messageId}/retry`, { method: "POST", body: JSON.stringify({}) }),
+  sendConversationMedia: (id: string, input: { kind: MessageAttachmentKind; fileName: string; mimeType: string; base64: string; caption: string }) =>
+    request<{ ok: true }>(`/conversations/${id}/media`, { method: "POST", body: JSON.stringify(input) }),
   claimConversation: (id: string) => request<{ ok: true }>(`/conversations/${id}/claim`, { method: "PATCH", body: JSON.stringify({}) }),
   assignConversation: (id: string, assignedTo: string) =>
     request<{ ok: true }>(`/conversations/${id}/assign`, { method: "PATCH", body: JSON.stringify({ assignedTo }) }),

@@ -1401,12 +1401,91 @@ export interface ConversationRow {
   endpointLabel: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Files sent in a conversation. The same rules run in the browser (before anything is uploaded) and on the server, and they
+// match what WhatsNexus enforces and what WhatsApp accepts, so a refusal is explained up front instead of failing after upload.
+// ---------------------------------------------------------------------------
+
+export const MESSAGE_ATTACHMENT_KINDS = ["image", "video", "audio", "document"] as const;
+export type MessageAttachmentKind = (typeof MESSAGE_ATTACHMENT_KINDS)[number];
+
+const MB = 1024 * 1024;
+export const MEDIA_LIMIT_BYTES: Record<MessageAttachmentKind, number> = { image: 5 * MB, video: 16 * MB, audio: 16 * MB, document: 25 * MB };
+
+const MEDIA_MIME: Record<string, MessageAttachmentKind> = {
+  "image/jpeg": "image", "image/png": "image", "image/webp": "image", "image/gif": "image",
+  // WhatsApp takes mp4 video only.
+  "video/mp4": "video",
+  "audio/mpeg": "audio", "audio/mp3": "audio", "audio/wav": "audio", "audio/x-wav": "audio", "audio/webm": "audio", "audio/ogg": "audio", "audio/mp4": "audio", "audio/x-m4a": "audio", "audio/aac": "audio",
+  "application/pdf": "document", "application/msword": "document",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
+  "application/vnd.ms-excel": "document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
+  "text/plain": "document",
+};
+const MEDIA_EXT: Record<string, MessageAttachmentKind> = {
+  jpg: "image", jpeg: "image", png: "image", webp: "image", gif: "image",
+  mp4: "video",
+  mp3: "audio", wav: "audio", webm: "audio", ogg: "audio", m4a: "audio", aac: "audio",
+  pdf: "document", doc: "document", docx: "document", xls: "document", xlsx: "document", txt: "document",
+};
+const KIND_WORDS: Record<MessageAttachmentKind, { one: string; many: string }> = {
+  image: { one: "image", many: "Images" },
+  video: { one: "video", many: "Videos" },
+  audio: { one: "audio file", many: "Audio files" },
+  document: { one: "document", many: "Documents" },
+};
+
+/** Which kind of attachment a chosen file is: by its MIME type (codec parameters ignored), else by extension when the browser gave no useful type. */
+export function mediaKindForFile(f: { mimeType: string; fileName: string }): MessageAttachmentKind | null {
+  const mime = f.mimeType.split(";")[0]!.trim().toLowerCase();
+  if (mime && MEDIA_MIME[mime]) return MEDIA_MIME[mime]!;
+  // Only a missing or generic type falls back to the extension: a known media family with an unsupported type (video/webm) is refused.
+  if (mime && mime !== "application/octet-stream") return null;
+  const ext = f.fileName.includes(".") ? f.fileName.split(".").pop()!.toLowerCase() : "";
+  return MEDIA_EXT[ext] ?? null;
+}
+
+export type MediaCheck = { ok: true } | { ok: false; reason: "empty_file" | "file_too_large" | "unsupported_type"; message: string };
+
+export function checkMediaFile(f: { kind: MessageAttachmentKind; mimeType: string; fileName: string; sizeBytes: number }): MediaCheck {
+  const words = KIND_WORDS[f.kind];
+  if (f.sizeBytes <= 0) return { ok: false, reason: "empty_file", message: "This file is empty." };
+  if (mediaKindForFile(f) !== f.kind) return { ok: false, reason: "unsupported_type", message: `This file type cannot be sent as a ${words.one}.` };
+  if (f.sizeBytes > MEDIA_LIMIT_BYTES[f.kind]) return { ok: false, reason: "file_too_large", message: `This ${words.one} is too large. ${words.many} can be up to ${MEDIA_LIMIT_BYTES[f.kind] / MB} MB.` };
+  return { ok: true };
+}
+
+export type MessageDeliveryStatus = "queued" | "sent" | "delivered" | "read" | "failed";
+
+/** What happened when a person sent a message from the Inbox. A failed send is kept (and can be retried), never dropped. */
+export interface SendMessageResult {
+  ok: true;
+  deliveryStatus: MessageDeliveryStatus | null;
+  /** Why it failed, in the provider's own words (code: text); null when it was sent. */
+  reason: string | null;
+}
+
 export interface MessageRow {
   id: string;
   senderType: "patient" | "staff" | "ai" | "system";
+  /** A PulseOS team member, or the WhatsNexus agent's name for a message sent from WhatsNexus. */
   senderName: string | null;
   body: string;
   sentAt: string;
+  /** Null for a patient's own messages and for notes that never touched a provider. */
+  deliveryStatus: MessageDeliveryStatus | null;
+  /** A template message is laid out like WhatsApp shows one: header media, formatted body, buttons. */
+  kind: "text" | "template";
+  /** The provider template it was sent with, for a template message. */
+  templateName: string | null;
+  attachments: Array<{
+    id: string;
+    kind: MessageAttachmentKind;
+    fileName: string | null;
+    mimeType: string | null;
+    sizeBytes: number | null;
+  }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1544,8 @@ export interface ConversationDetail {
   summary: ConversationSummaryState;
   /** Last patient message + 24h: free-form replies are only allowed inside this window. Null if the patient has not written yet. */
   serviceWindowExpiresAt: string | null;
+  /** Why a free-text reply cannot be sent right now. WINDOW_CLOSED: WhatsApp allows only an approved template after 24 hours. */
+  replyBlockedReason: "WINDOW_CLOSED" | null;
   patientContext: {
     patientId: string;
     journeyType: string | null;
@@ -2936,17 +3017,21 @@ export interface NotificationRuleVm {
 }
 
 /** Template purposes and the ONLY variables each may use. A body referencing anything else is refused. */
-export const TEMPLATE_PURPOSES = ["APPOINTMENT_CONFIRMATION", "APPOINTMENT_REMINDER", "SURGERY_REMINDER", "FOLLOW_UP_MESSAGE"] as const;
+export const TEMPLATE_PURPOSES = ["APPOINTMENT_CONFIRMATION", "APPOINTMENT_REMINDER", "APPOINTMENT_RESCHEDULED", "APPOINTMENT_CANCELLED", "SURGERY_REMINDER", "FOLLOW_UP_MESSAGE"] as const;
 export type TemplatePurpose = (typeof TEMPLATE_PURPOSES)[number];
 export const TEMPLATE_PURPOSE_LABEL: Record<TemplatePurpose, string> = {
   APPOINTMENT_CONFIRMATION: "Appointment confirmation",
   APPOINTMENT_REMINDER: "Appointment reminder",
+  APPOINTMENT_RESCHEDULED: "Appointment rescheduled",
+  APPOINTMENT_CANCELLED: "Appointment cancelled",
   SURGERY_REMINDER: "Surgery reminder",
   FOLLOW_UP_MESSAGE: "Follow-up message (staff)",
 };
 export const TEMPLATE_VARIABLES: Record<TemplatePurpose, string[]> = {
   APPOINTMENT_CONFIRMATION: ["patient_name", "doctor_name", "date", "time", "branch_name", "hospital_name"],
   APPOINTMENT_REMINDER: ["patient_name", "doctor_name", "date", "time", "branch_name", "hospital_name"],
+  APPOINTMENT_RESCHEDULED: ["patient_name", "doctor_name", "date", "time", "branch_name", "hospital_name"],
+  APPOINTMENT_CANCELLED: ["patient_name", "doctor_name", "date", "time", "branch_name", "hospital_name"],
   SURGERY_REMINDER: ["patient_name", "procedure", "date", "time", "branch_name", "hospital_name"],
   FOLLOW_UP_MESSAGE: ["patient_name", "staff_name", "hospital_name"],
 };
@@ -3013,6 +3098,8 @@ export interface ProviderTemplate {
   templateType?: string | null;
   /** How many positional body parameters the provider expects ({{1}}, {{2}} …). */
   bodyParameterCount: number;
+  /** The approved WhatsApp body, when WhatsNexus provides it. This is read-only in PulseOS. */
+  body?: string | null;
   hasHeader: boolean;
   hasButtons: boolean;
 }

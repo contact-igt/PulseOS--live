@@ -10,6 +10,18 @@
       ],
       "port": 3310,
       "autoPort": false
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "-C",
+        "apps/web",
+        "run",
+        "dev"
+      ],
+      "port": 3310,
+      "autoPort": false
     }
   ]
 }
