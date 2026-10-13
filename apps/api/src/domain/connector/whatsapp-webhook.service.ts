@@ -1,10 +1,11 @@
-import { and, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { conversations, journeys, messages } from "../../db/schema.js";
+import { conversations, journeys, messageAttachments, messages } from "../../db/schema.js";
 import { findOrCreatePatientByPhone } from "../patient/identity.service.js";
 import { resolveEndpointByProviderRef } from "./communication-endpoint.service.js";
 import { recordConversationActivity } from "../conversation/summary/conversation-session.service.js";
 import type { InboundMessageEvent, MessageStatusEvent } from "./types.js";
+import type { WhatsNexusOutboundEvent } from "./whatsnexus-callback.js";
 
 // Journey resolution for a WhatsApp conversation is deliberately more
 // conservative than the calls precedent (call-webhook.service.ts's
@@ -117,7 +118,7 @@ export async function processInboundWhatsAppMessage(db: Db, tenantId: string, co
   const endpoint = event.phoneNumberId ? await resolveEndpointByProviderRef(db, tenantId, connectorId, event.phoneNumberId) : null;
   const conversation = await findOrCreateConversation(db, tenantId, connectorId, patient.id, event.externalThreadId, event.occurredAt, endpoint?.id ?? null);
 
-  await db.insert(messages).values({
+  const [message] = await db.insert(messages).values({
     tenantId,
     conversationId: conversation.id,
     senderType: "patient",
@@ -125,11 +126,20 @@ export async function processInboundWhatsAppMessage(db: Db, tenantId: string, co
     sentAt: event.occurredAt,
     connectorId,
     providerMessageId: event.externalEventId,
-  });
+  }).returning({ id: messages.id });
+
+  if (event.attachments?.length) {
+    await db.insert(messageAttachments).values(event.attachments.map((attachment) => ({
+      tenantId,
+      messageId: message.id,
+      ...attachment,
+    }))).onConflictDoNothing();
+  }
 
   await db
     .update(conversations)
-    .set({ lastMessageAt: event.occurredAt })
+    // lastPatientInboundAt is the WhatsApp 24-hour window: kept here, so it never depends on an optional feature being on.
+    .set({ lastMessageAt: event.occurredAt, lastPatientInboundAt: sql`greatest(coalesce(${conversations.lastPatientInboundAt}, ${event.occurredAt.toISOString()}::timestamptz), ${event.occurredAt.toISOString()}::timestamptz)` })
     .where(eq(conversations.id, conversation.id));
 
   // The Timeline gets one concise line per conversation session (kept up to date here), not one per message;
@@ -137,6 +147,49 @@ export async function processInboundWhatsAppMessage(db: Db, tenantId: string, co
   await recordConversationActivity(db, tenantId, conversation.id, { at: event.occurredAt, sender: "patient" });
 
   return { conversationId: conversation.id, patientId: patient.id };
+}
+
+/**
+ * A message WhatsNexus itself sent to a patient (its AI assistant, one of its agents) is shown on the patient's existing thread.
+ * It never creates a patient or a conversation: a WhatsNexus broadcast to someone who has not written to this hospital is not
+ * PulseOS's conversation. The provider message id makes a repeat harmless (nothing is stored twice).
+ */
+export async function processOutboundWhatsAppMessage(db: Db, tenantId: string, connectorId: string, event: WhatsNexusOutboundEvent): Promise<"applied" | "duplicate" | "unknown_thread"> {
+  const [conversation] = await db
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.tenantId, tenantId), eq(conversations.connectorId, connectorId), eq(conversations.externalThreadId, event.externalThreadId)))
+    .orderBy(desc(conversations.lastMessageAt))
+    .limit(1);
+  if (!conversation) return "unknown_thread";
+
+  const [message] = await db
+    .insert(messages)
+    .values({
+      tenantId,
+      conversationId: conversation.id,
+      senderType: event.sender === "ai" ? "ai" : "staff",
+      senderUserId: null,
+      senderName: event.sender === "agent" ? event.senderName : null,
+      kind: event.messageType,
+      templateName: event.templateName,
+      body: event.body,
+      sentAt: event.occurredAt,
+      connectorId,
+      providerMessageId: event.wamid,
+      deliveryStatus: event.status,
+    })
+    .onConflictDoNothing()
+    .returning({ id: messages.id });
+  if (!message) return "duplicate";
+
+  if (event.attachments.length) {
+    await db.insert(messageAttachments).values(event.attachments.map((attachment) => ({ tenantId, messageId: message.id, ...attachment }))).onConflictDoNothing();
+  }
+  // The thread moved, but never backwards: a late-arriving older message must not push it down the queue.
+  await db.update(conversations).set({ lastMessageAt: sql`greatest(${conversations.lastMessageAt}, ${event.occurredAt.toISOString()}::timestamptz)` }).where(eq(conversations.id, conversation.id));
+  await recordConversationActivity(db, tenantId, conversation.id, { at: event.occurredAt, sender: "staff" });
+  return "applied";
 }
 
 export async function processWhatsAppStatusUpdate(db: Db, connectorId: string, event: MessageStatusEvent): Promise<{ matched: boolean }> {

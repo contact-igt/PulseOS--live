@@ -1,12 +1,13 @@
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { appointments, branches, connectorEvents, messageTemplates, notificationRules, notifications, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
+import { appointments, branches, connectorEvents, conversations, messages, messageTemplates, notificationRules, notifications, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
 import { TEMPLATE_VARIABLES, checkProviderTemplate, type WhatsAppDelivery, type MessageTemplateVm, type NotificationOffsetUnit, type NotificationRuleVm, type NotificationSubject, type NotificationVm, type TemplatePurpose, type WhatsAppPreview } from "@pulseos/types";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
 import { getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
 import { getMessagingAdapter } from "../connector/registry.js";
 import { AmbiguousSendError, PermanentSendError, RetryableSendError, type MessagingProviderAdapter } from "../connector/types.js";
 import { redactLogText } from "../security/redact.js";
+import { recordConversationActivity } from "../conversation/summary/conversation-session.service.js";
 import { DEFAULT_RULES, notificationKey, planNotifications, type PlanRule } from "./notification-plan.js";
 import { fetchProviderTemplateCatalogue, validateAgainstProvider, type CatalogueDeps } from "./provider-templates.js";
 import { DEFAULT_TEMPLATES, renderTemplate, templateParameters, validateTemplateBody, variablesUsed } from "./message-template.js";
@@ -286,6 +287,20 @@ export async function planForSubject(db: Db, tenantId: string, type: "APPOINTMEN
   return { planned, suppressed: plan.suppressed.map((s) => `${s.ruleId}:${s.reason}`) };
 }
 
+/** Queue one immediate appointment-change message. Its event key makes repeated delivery of the same domain event harmless. */
+export async function queueAppointmentChange(db: Db, tenantId: string, appointmentId: string, purpose: "APPOINTMENT_RESCHEDULED" | "APPOINTMENT_CANCELLED", now: Date = new Date()): Promise<number> {
+  const caps = await tenantCapabilityMap(db, tenantId);
+  if (!caps.WHATSAPP_NOTIFICATIONS) return 0;
+  await ensureNotificationDefaults(db, tenantId);
+  const ctx = await loadSubjectContext(db, tenantId, "APPOINTMENT", appointmentId);
+  if (!ctx || !ctx.start) return 0;
+  const [template] = await db.select({ id: messageTemplates.id }).from(messageTemplates).where(and(eq(messageTemplates.tenantId, tenantId), eq(messageTemplates.purpose, purpose))).limit(1);
+  if (!template) return 0;
+  const key = `appointment-change:${purpose}:${appointmentId}:${ctx.start.getTime()}`;
+  const inserted = await db.insert(notifications).values({ tenantId, templateId: template.id, subjectType: "APPOINTMENT", subjectId: appointmentId, patientId: ctx.patientId, journeyId: ctx.journeyId, subjectAt: ctx.start, scheduledFor: now, idempotencyKey: key }).onConflictDoNothing().returning({ id: notifications.id });
+  return inserted.length;
+}
+
 // ---------------------------------------------------------------------------
 // Sending
 // ---------------------------------------------------------------------------
@@ -344,8 +359,92 @@ async function finishAfterSend(db: Db, id: string, patch: Partial<typeof notific
     .where(and(eq(notifications.id, id), inArray(notifications.status, ["SENT", "DELIVERED", "READ"])));
 }
 
+// ---------------------------------------------------------------------------
+// The Inbox is the whole conversation: a template PulseOS sends (a follow-up a person chose, a reminder the engine sent) is
+// written into the patient's existing WhatsApp thread, and the provider's delivered/read callbacks keep it up to date.
+// ---------------------------------------------------------------------------
+
+const MESSAGE_RANK: Record<string, number> = { queued: 0, sent: 1, delivered: 2, read: 3 };
+
+export const AUTOMATED_SENDER_NAME = "Automated reminder";
+
+/**
+ * Show a message PulseOS sent through a provider on the patient's thread. Never creates a conversation or a patient (a patient
+ * who has not written in has no thread, and an outbound-only message is not a conversation needing attention); does nothing
+ * when the hospital has no Inbox. The provider message id makes a repeat harmless. Returns whether a message was added.
+ */
+export async function mirrorNotificationToConversation(
+  db: Db,
+  a: { tenantId: string; patientId: string; connectorId: string; providerMessageId: string; body: string; actorId: string | null; at: Date; deliveryStatus?: "sent" | "delivered" | "read"; templateName?: string | null },
+): Promise<boolean> {
+  if (!(await tenantCapabilityMap(db, a.tenantId)).WHATSAPP_INBOX) return false;
+  const [conversation] = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(and(eq(conversations.tenantId, a.tenantId), eq(conversations.connectorId, a.connectorId), eq(conversations.patientId, a.patientId)))
+    .orderBy(desc(conversations.lastMessageAt))
+    .limit(1);
+  if (!conversation) return false;
+  const [inserted] = await db
+    .insert(messages)
+    .values({
+      tenantId: a.tenantId,
+      conversationId: conversation.id,
+      senderType: "staff",
+      senderUserId: a.actorId,
+      senderName: a.actorId ? null : AUTOMATED_SENDER_NAME,
+      // Everything PulseOS sends through here is an approved template.
+      kind: "template",
+      templateName: a.templateName ?? null,
+      body: a.body,
+      sentAt: a.at,
+      connectorId: a.connectorId,
+      providerMessageId: a.providerMessageId,
+      deliveryStatus: a.deliveryStatus ?? "sent",
+    })
+    .onConflictDoNothing()
+    .returning({ id: messages.id });
+  if (!inserted) return false;
+  await db.update(conversations).set({ lastMessageAt: sql`greatest(${conversations.lastMessageAt}, ${a.at.toISOString()}::timestamptz)` }).where(eq(conversations.id, conversation.id));
+  await recordConversationActivity(db, a.tenantId, conversation.id, { at: a.at, sender: "staff" });
+  return true;
+}
+
+/** Carry a provider delivery status onto the conversation message with that provider id: forward only, never back from read. */
+async function syncMessageDelivery(db: Db, tenantId: string, providerMessageId: string, status: "sent" | "delivered" | "read" | "failed"): Promise<void> {
+  const rows = await db.select({ id: messages.id, deliveryStatus: messages.deliveryStatus }).from(messages).where(and(eq(messages.tenantId, tenantId), eq(messages.providerMessageId, providerMessageId)));
+  for (const m of rows) {
+    const current = m.deliveryStatus ?? "queued";
+    if (status === "failed") {
+      if (current === "queued" || current === "sent") await db.update(messages).set({ deliveryStatus: "failed" }).where(eq(messages.id, m.id));
+    } else if ((MESSAGE_RANK[status] ?? 0) > (MESSAGE_RANK[current] ?? 0)) {
+      await db.update(messages).set({ deliveryStatus: status }).where(eq(messages.id, m.id));
+    }
+  }
+}
+
+/**
+ * One-off catch-up for messages sent before the Inbox mirrored them: every accepted notification of a hospital that has no
+ * conversation message yet is written onto its patient's existing thread. Safe to run repeatedly.
+ */
+export async function backfillNotificationMessages(db: Db, tenantId: string): Promise<{ checked: number; added: number }> {
+  const rows = await db
+    .select()
+    .from(notifications)
+    .where(and(eq(notifications.tenantId, tenantId), inArray(notifications.status, ["SENT", "DELIVERED", "READ"]), sql`${notifications.providerMessageId} is not null`, sql`${notifications.renderedText} is not null`))
+    .orderBy(asc(notifications.sentAt));
+  let added = 0;
+  for (const n of rows) {
+    const connector = n.provider ? await getConnectorByTenantAndProvider(db, tenantId, n.provider) : null;
+    if (!connector) continue;
+    const status = n.status === "READ" ? "read" : n.status === "DELIVERED" ? "delivered" : "sent";
+    if (await mirrorNotificationToConversation(db, { tenantId, patientId: n.patientId, connectorId: connector.id, providerMessageId: n.providerMessageId!, body: n.renderedText!, actorId: n.createdBy ?? null, at: n.sentAt ?? n.createdAt, deliveryStatus: status, templateName: n.templateId ? ((await db.select({ p: messageTemplates.providerTemplateName }).from(messageTemplates).where(eq(messageTemplates.id, n.templateId)).limit(1))[0]?.p ?? null) : null })) added++;
+  }
+  return { checked: rows.length, added };
+}
+
 /** Bookkeeping after the provider ACCEPTED a message: retried, and never allowed to turn a delivered message into a resend. */
-async function recordAfterSend(db: Db, n: Row, connectorId: string, tenantId: string, now: Date, patch: Partial<typeof notifications.$inferInsert>): Promise<void> {
+async function recordAfterSend(db: Db, n: Row, connectorId: string, tenantId: string, now: Date, patch: Partial<typeof notifications.$inferInsert>, templateName: string | null = null): Promise<void> {
   for (let i = 0; i < 3; i++) {
     try {
       await finishAfterSend(db, n.id, patch);
@@ -359,6 +458,14 @@ async function recordAfterSend(db: Db, n: Row, connectorId: string, tenantId: st
     await touchConnectorSuccess(db, connectorId);
   } catch (err) {
     console.error("could not log a sent notification", n.id, err);
+  }
+  // The thread is a convenience view: it must never turn an accepted send into a failure.
+  try {
+    if (patch.providerMessageId && patch.renderedText) {
+      await mirrorNotificationToConversation(db, { tenantId, patientId: n.patientId, connectorId, providerMessageId: patch.providerMessageId, body: patch.renderedText, actorId: n.subjectType === "FOLLOW_UP" ? (n.createdBy ?? null) : null, at: now, templateName });
+    }
+  } catch (err) {
+    console.error("could not show a sent notification in the conversation", n.id, err);
   }
 }
 
@@ -375,6 +482,10 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
     if (!rule?.enabled) return (await finish(db, n.id, { status: "CANCELLED", reason: "RULE_DISABLED" }), "cancelled");
   }
 
+  const [template] = n.templateId ? await db.select().from(messageTemplates).where(eq(messageTemplates.id, n.templateId)).limit(1) : [];
+  if (!template || !template.enabled) return (await finish(db, n.id, { status: "BLOCKED", reason: "TEMPLATE_UNAVAILABLE" }), "blocked");
+  const appointmentChange = template.purpose === "APPOINTMENT_RESCHEDULED" || template.purpose === "APPOINTMENT_CANCELLED";
+
   // Re-check the world as it is now: a visit that moved, was cancelled or has already happened is never reminded about.
   let patientPhone: string | null;
   let values: Record<string, string>;
@@ -385,20 +496,17 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
   } else {
     const ctx = await loadSubjectContext(db, tenantId, n.subjectType as "APPOINTMENT" | "SURGERY", n.subjectId);
     if (!ctx) return (await finish(db, n.id, { status: "CANCELLED", reason: "SUBJECT_GONE" }), "cancelled");
-    if (ctx.inactiveReason) return (await finish(db, n.id, { status: "CANCELLED", reason: ctx.inactiveReason }), "cancelled");
+    if (!appointmentChange && ctx.inactiveReason) return (await finish(db, n.id, { status: "CANCELLED", reason: ctx.inactiveReason }), "cancelled");
     // Messages follow CONFIRMED: a visit that is not (or is no longer) confirmed never gets one, whatever was planned earlier.
-    if (n.subjectType === "APPOINTMENT" && ctx.status !== "confirmed") return (await finish(db, n.id, { status: "CANCELLED", reason: "NOT_CONFIRMED" }), "cancelled");
-    if (n.subjectAt && ctx.start && ctx.start.getTime() !== n.subjectAt.getTime()) return (await finish(db, n.id, { status: "CANCELLED", reason: "RESCHEDULED" }), "cancelled");
-    if (ctx.start && ctx.start.getTime() <= now.getTime()) return (await finish(db, n.id, { status: "CANCELLED", reason: "TRIGGER_ALREADY_PASSED" }), "cancelled");
+    if (!appointmentChange && n.subjectType === "APPOINTMENT" && ctx.status !== "confirmed") return (await finish(db, n.id, { status: "CANCELLED", reason: "NOT_CONFIRMED" }), "cancelled");
+    if (!appointmentChange && n.subjectAt && ctx.start && ctx.start.getTime() !== n.subjectAt.getTime()) return (await finish(db, n.id, { status: "CANCELLED", reason: "RESCHEDULED" }), "cancelled");
+    if (!appointmentChange && ctx.start && ctx.start.getTime() <= now.getTime()) return (await finish(db, n.id, { status: "CANCELLED", reason: "TRIGGER_ALREADY_PASSED" }), "cancelled");
     // A reminder is never sent late: after downtime or a backlog its moment has gone (retries of one already tried are exempt).
     if (n.attempts <= 1 && now.getTime() - n.scheduledFor.getTime() > LATE_GRACE_MS) return (await finish(db, n.id, { status: "CANCELLED", reason: "TRIGGER_ALREADY_PASSED" }), "cancelled");
     patientPhone = ctx.phone;
     values = ctx.values;
   }
   if (!patientPhone) return (await finish(db, n.id, { status: "BLOCKED", reason: "NO_VALID_PHONE" }), "blocked");
-
-  const [template] = n.templateId ? await db.select().from(messageTemplates).where(eq(messageTemplates.id, n.templateId)).limit(1) : [];
-  if (!template || !template.enabled) return (await finish(db, n.id, { status: "BLOCKED", reason: "TEMPLATE_UNAVAILABLE" }), "blocked");
 
   const choice = await resolveSendProvider(db, tenantId, deps.adapterFor ?? getMessagingAdapter);
   if (!choice.ok) return (await finish(db, n.id, { status: "BLOCKED", reason: choice.reason }), "blocked");
@@ -440,7 +548,7 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
     return "retry";
   }
   // The provider has the message. Nothing below may route into the retry path.
-  await recordAfterSend(db, n, connector.id, tenantId, now, { status: "SENT", providerMessageId, renderedText: rendered.text, sentAt: now, reason: null });
+  await recordAfterSend(db, n, connector.id, tenantId, now, { status: "SENT", providerMessageId, renderedText: rendered.text, sentAt: now, reason: null }, template.providerTemplateName);
   return "sent";
 }
 
@@ -479,6 +587,7 @@ const RANK: Record<string, number> = { PENDING: 0, PROCESSING: 1, SENT: 2, DELIV
 export async function applyDeliveryStatus(db: Db, tenantId: string, providerMessageId: string, status: "sent" | "delivered" | "read" | "failed", at: Date): Promise<boolean> {
   const [n] = await db.select().from(notifications).where(and(eq(notifications.tenantId, tenantId), eq(notifications.providerMessageId, providerMessageId))).limit(1);
   if (!n) return false;
+  await syncMessageDelivery(db, tenantId, providerMessageId, status);
   // Provider status updates are not part of a send: they apply to a row in whatever state it has reached.
   const update = (patch: Partial<typeof notifications.$inferInsert>) => db.update(notifications).set(patch).where(eq(notifications.id, n.id));
   if (status === "failed") {

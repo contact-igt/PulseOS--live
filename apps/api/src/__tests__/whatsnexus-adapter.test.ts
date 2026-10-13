@@ -209,15 +209,15 @@ describe("WhatsNexus adapter — approved-template catalogue (read-only, never s
     const { category, templateType, ...old } = entry;
     void category; void templateType;
     const a = await build(async () => json(200, { templates: [old] })).adapter.listTemplates(config, secrets);
-    expect(a).toEqual({ ok: true, templates: [{ ...old, category: null, templateType: null }] });
+    expect(a).toEqual({ ok: true, templates: [{ ...old, category: null, templateType: null, body: null }] });
     const b = await build(async () => json(200, { templates: [{ ...entry, category: "service", templateType: "Hologram!" }] })).adapter.listTemplates(config, secrets);
-    expect(b).toEqual({ ok: true, templates: [{ ...entry, category: null, templateType: null }] });
+    expect(b).toEqual({ ok: true, templates: [{ ...entry, category: null, templateType: null, body: null }] });
   });
 
   it("GETs /templates with the same machine headers as a send and returns the approved templates", async () => {
     const { adapter, fetchImpl } = build(async () => json(200, { templates: [entry] }));
     const res = await adapter.listTemplates(config, secrets);
-    expect(res).toEqual({ ok: true, templates: [entry] });
+    expect(res).toEqual({ ok: true, templates: [{ ...entry, body: null }] });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0]! as [string, RequestInit];
     expect(url).toBe("https://wn.example.com/api/integrations/pulseos/templates");
@@ -246,7 +246,7 @@ describe("WhatsNexus adapter — approved-template catalogue (read-only, never s
       }),
     );
     const res = await adapter.listTemplates(config, secrets);
-    expect(res).toEqual({ ok: true, templates: [entry] });
+    expect(res).toEqual({ ok: true, templates: [{ ...entry, body: null }] });
   });
 
   it("an unreadable or wrongly shaped reply is an error, never an empty catalogue", async () => {
@@ -306,11 +306,73 @@ describe("WhatsNexus callback authentication", () => {
   });
   it("parses only the strict contract: a journey id is not a notification id", () => {
     const good = parseWhatsNexusCallback(JSON.parse(body));
-    expect(good.ok && good.event.externalId).toBe(NOTIFICATION_ID);
+    expect(good.ok && "externalId" in good.event && good.event.externalId).toBe(NOTIFICATION_ID);
     expect(parseWhatsNexusCallback({ ...JSON.parse(body), externalId: "journey-123" })).toMatchObject({ ok: false, reason: "invalid_external_id" });
     expect(parseWhatsNexusCallback({ ...JSON.parse(body), status: "deleted" })).toMatchObject({ ok: false, reason: "invalid_status" });
     expect(parseWhatsNexusCallback({ ...JSON.parse(body), wamid: "" })).toMatchObject({ ok: false });
     expect(parseWhatsNexusCallback({ ...JSON.parse(body), occurredAt: "nope" })).toMatchObject({ ok: false });
     expect(parseWhatsNexusCallback(null)).toMatchObject({ ok: false });
+  });
+  it("parses a signed ping (the WhatsNexus setup test) and nothing else shaped like one", () => {
+    expect(parseWhatsNexusCallback({ type: "ping", eventId: "ping-abc", sentAt: "2026-10-13T10:00:00.000Z" })).toMatchObject({ ok: true, event: { kind: "ping", eventId: "ping-abc" } });
+    expect(parseWhatsNexusCallback({ type: "ping", sentAt: "2026-10-13T10:00:00.000Z" })).toMatchObject({ ok: false, reason: "invalid_event_id" });
+  });
+  it("parses a signed inbound image without accepting an arbitrary attachment shape", () => {
+    const inbound = parseWhatsNexusCallback({
+      type: "inbound_message", eventId: "wamid.inbound.1", externalThreadId: "+919999999999", fromPhone: "+919999999999",
+      body: "Please call me", occurredAt: "2026-10-13T10:00:00.000Z", phoneNumberId: "123",
+      attachments: [{ kind: "image", providerMediaId: "media_123", fileName: null, mimeType: "image/jpeg", sizeBytes: 42 }],
+    });
+    expect(inbound).toMatchObject({ ok: true, event: { externalEventId: "wamid.inbound.1", attachments: [{ kind: "image", providerMediaId: "media_123" }] } });
+    expect(parseWhatsNexusCallback({ type: "inbound_message", eventId: "x", externalThreadId: "x", fromPhone: "x", body: "", occurredAt: "2026-10-13T10:00:00.000Z", attachments: [{ kind: "image" }] })).toMatchObject({ ok: false, reason: "invalid_attachment" });
+  });
+
+  it("accepts an attachment whose size WhatsNexus does not know (it sends null): an image or a voice note must not be refused", () => {
+    const base = { type: "inbound_message", eventId: "wamid.in.9", externalThreadId: "919999999999", fromPhone: "919999999999", body: "", occurredAt: "2026-10-13T10:00:00.000Z" };
+    for (const kind of ["image", "document", "audio"]) {
+      const r = parseWhatsNexusCallback({ ...base, attachments: [{ kind, providerMediaId: "wamid.in.9", fileName: null, mimeType: null, sizeBytes: null }] });
+      expect(r).toMatchObject({ ok: true, event: { attachments: [{ kind, providerMediaId: "wamid.in.9", sizeBytes: null }] } });
+    }
+    // a size that is present but nonsense is still refused
+    expect(parseWhatsNexusCallback({ ...base, attachments: [{ kind: "image", providerMediaId: "x", sizeBytes: -5 }] })).toMatchObject({ ok: false, reason: "invalid_attachment" });
+    expect(parseWhatsNexusCallback({ ...base, attachments: [{ kind: "image", providerMediaId: "x", sizeBytes: "big" }] })).toMatchObject({ ok: false, reason: "invalid_attachment" });
+  });
+
+  describe("outbound_message: what WhatsNexus itself sent (AI assistant, its agents)", () => {
+    const out = (over: Record<string, unknown> = {}) => ({
+      type: "outbound_message", eventId: "out:wamid.AI1", wamid: "wamid.AI1", externalThreadId: "916369441531", toPhone: "916369441531",
+      sender: "ai", senderName: null, body: "Sure, I can help.", messageType: "text", templateName: null, status: "sent",
+      occurredAt: "2026-10-13T08:06:00.000Z", phoneNumberId: "pn-1", attachments: [], ...over,
+    });
+
+    it("parses an AI reply and an agent message with their sender, name, status and attachments", () => {
+      expect(parseWhatsNexusCallback(out())).toMatchObject({ ok: true, event: { kind: "outbound", eventId: "out:wamid.AI1", wamid: "wamid.AI1", externalThreadId: "916369441531", sender: "ai", senderName: null, body: "Sure, I can help.", status: "sent" } });
+      const agent = parseWhatsNexusCallback(out({ sender: "agent", senderName: "Priya Nair", attachments: [{ kind: "document", providerMediaId: "wamid.AI1", fileName: "report.pdf", mimeType: "application/pdf", sizeBytes: null }] }));
+      expect(agent).toMatchObject({ ok: true, event: { sender: "agent", senderName: "Priya Nair", attachments: [{ kind: "document", providerMediaId: "wamid.AI1", fileName: "report.pdf" }] } });
+    });
+
+    it("refuses anything unexpected: unknown sender, missing wamid/thread, bad time, bad attachment, oversized body", () => {
+      expect(parseWhatsNexusCallback(out({ sender: "patient" }))).toMatchObject({ ok: false, reason: "invalid_outbound_message" });
+      expect(parseWhatsNexusCallback(out({ sender: "pulseos" }))).toMatchObject({ ok: false });
+      expect(parseWhatsNexusCallback(out({ wamid: "" }))).toMatchObject({ ok: false, reason: "invalid_outbound_message" });
+      expect(parseWhatsNexusCallback(out({ externalThreadId: "" }))).toMatchObject({ ok: false });
+      expect(parseWhatsNexusCallback(out({ occurredAt: "nope" }))).toMatchObject({ ok: false });
+      expect(parseWhatsNexusCallback(out({ eventId: "" }))).toMatchObject({ ok: false, reason: "invalid_event_id" });
+      expect(parseWhatsNexusCallback(out({ attachments: [{ kind: "sticker", providerMediaId: "x" }] }))).toMatchObject({ ok: false, reason: "invalid_attachment" });
+      expect(parseWhatsNexusCallback(out({ attachments: [{ kind: "video", providerMediaId: "x" }] }))).toMatchObject({ ok: true });
+      expect(parseWhatsNexusCallback(out({ body: "x".repeat(4097) }))).toMatchObject({ ok: false });
+    });
+
+    it("keeps what kind of message it was and which template, and treats anything unknown as plain text", () => {
+      expect(parseWhatsNexusCallback(out({ messageType: "template", templateName: "diwali_offer" }))).toMatchObject({ ok: true, event: { messageType: "template", templateName: "diwali_offer" } });
+      expect(parseWhatsNexusCallback(out())).toMatchObject({ ok: true, event: { messageType: "text", templateName: null } });
+      expect(parseWhatsNexusCallback(out({ messageType: "hologram", templateName: 42 }))).toMatchObject({ ok: true, event: { messageType: "text", templateName: null } });
+      expect(parseWhatsNexusCallback(out({ messageType: "image" }))).toMatchObject({ ok: true, event: { messageType: "text" } });
+    });
+
+    it("an unknown delivery status is read as 'sent' rather than refused, so a new provider status never drops the message", () => {
+      expect(parseWhatsNexusCallback(out({ status: "weird" }))).toMatchObject({ ok: true, event: { status: "sent" } });
+      expect(parseWhatsNexusCallback(out({ status: "failed" }))).toMatchObject({ ok: true, event: { status: "failed" } });
+    });
   });
 });

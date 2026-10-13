@@ -1,4 +1,4 @@
-import type { ConnectorCapability } from "@pulseos/types";
+import type { ConnectorCapability, MessageAttachmentKind } from "@pulseos/types";
 
 export interface InboundMessageEvent {
   externalEventId: string;
@@ -12,6 +12,13 @@ export interface InboundMessageEvent {
   // WhatsApp number received this message. Null only for a payload shape
   // that omits it (never expected from a real Meta delivery).
   phoneNumberId: string | null;
+  attachments?: Array<{
+    kind: MessageAttachmentKind;
+    providerMediaId: string;
+    fileName: string | null;
+    mimeType: string | null;
+    sizeBytes: number | null;
+  }>;
 }
 
 export interface MessageStatusEvent {
@@ -41,6 +48,7 @@ export interface MessagingProviderAdapter {
     to: string,
     body: string,
   ): Promise<{ providerMessageId: string }>;
+  sendMedia?(config: Record<string, unknown>, secrets: Record<string, unknown>, to: string, media: { kind: MessageAttachmentKind; fileName: string; mimeType: string; base64: string; caption: string; idempotencyKey: string }): Promise<{ providerMessageId: string }>;
   /** Send a provider-approved template (the only kind of message allowed outside the 24-hour window). */
   sendTemplate(
     config: Record<string, unknown>,

@@ -1,7 +1,7 @@
 import type { Db } from "../../db/client.js";
 import { onAppointmentEvent } from "../appointment/appointment-events.js";
 import { onIntegrationEvent } from "../integration/domain-events.js";
-import { cancelPendingForSubject, planForSubject } from "./notification.service.js";
+import { cancelPendingForSubject, planForSubject, queueAppointmentChange } from "./notification.service.js";
 
 const registered = new WeakSet<Db>();
 
@@ -23,10 +23,12 @@ export function registerNotificationConsumers(db: Db): void {
         return;
       case "appointment.rescheduled":
         await cancelPendingForSubject(db, e.tenantId, "APPOINTMENT", e.appointmentId, "RESCHEDULED");
+        await queueAppointmentChange(db, e.tenantId, e.appointmentId, "APPOINTMENT_RESCHEDULED");
         await planForSubject(db, e.tenantId, "APPOINTMENT", e.appointmentId);
         return;
       case "appointment.cancelled":
         await cancelPendingForSubject(db, e.tenantId, "APPOINTMENT", e.appointmentId, "APPOINTMENT_CANCELLED");
+        await queueAppointmentChange(db, e.tenantId, e.appointmentId, "APPOINTMENT_CANCELLED");
         return;
       case "appointment.no_show":
         await cancelPendingForSubject(db, e.tenantId, "APPOINTMENT", e.appointmentId, "NO_SHOW");

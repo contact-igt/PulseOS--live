@@ -119,6 +119,10 @@ export async function listHub(db: Db, tenantId: string, role: Role, caps: Capabi
   const whatsNexusSelected = String(facts.get("whatsnexus")?.facts.configuration?.useForSending ?? "") === "true";
   return INTEGRATION_CATALOGUE.map((e) => {
     const result = card(e, caps, role, e.connectorProvider ? facts.get(e.connectorProvider) : undefined, wh);
+    // Seeded Runo sample calls are useful in the demo, but are not a hospital's configured Runo connection.
+    if (e.key === "runo" && result.mode === "FIXTURE") {
+      return { ...result, configuration: "NOT_CONFIGURED", health: "UNKNOWN", mode: "NOT_CONFIGURED", phoneNumbers: [], isConnected: false, lastSyncAt: null, lastEventAt: null };
+    }
     // WhatsNexus is the sole WhatsApp sender when selected; do not show Meta's demo fixture as an active alternative.
     return e.key === "whatsapp_meta_cloud" && whatsNexusSelected
       ? { ...result, enabled: false, configuration: "NOT_CONFIGURED", health: "NOT_APPLICABLE", mode: "DISABLED", phoneNumbers: [], isConnected: false }

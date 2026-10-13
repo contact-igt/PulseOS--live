@@ -163,9 +163,32 @@ export function createWhatsNexusAdapter(deps: WhatsNexusDeps = {}): MessagingPro
     verifyWebhookSignature: () => false,
     parseWebhookPayload: (): ParsedWhatsAppWebhook => ({ messages: [], statuses: [] }),
 
-    async sendMessage() {
-      // Free-form text is only legal inside the 24-hour window, which WhatsNexus does not expose for PulseOS patients.
-      throw new PermanentSendError("Free-form messages are not supported through WhatsNexus; use an approved template", "free_form_not_supported");
+    async sendMessage(config, secrets, to, body) {
+      if (config.mode !== "live") throw new PermanentSendError("WhatsNexus sends only in LIVE mode", "not_live");
+      const phone = to.startsWith("+") ? to : `+${to.replace(/\D/g, "")}`;
+      if (!E164.test(phone)) throw new PermanentSendError("Patient phone is not a valid E.164 number", "invalid_phone");
+      let res: WhatsNexusEnvelope;
+      try {
+        res = await call(config, secrets, "POST", "/text", { timeoutMs: SEND_TIMEOUT_MS, body: { phoneE164: phone, body } });
+      } catch (err) {
+        throw transportError(err, secrets);
+      }
+      if (res.status === 200 && res.json?.success === true && typeof res.json.wamid === "string" && res.json.wamid) return { providerMessageId: res.json.wamid };
+      throw classifyHttpFailure(res, secrets);
+    },
+
+    async sendMedia(config, secrets, to, media) {
+      if (config.mode !== "live") throw new PermanentSendError("WhatsNexus sends only in LIVE mode", "not_live");
+      const phone = to.startsWith("+") ? to : `+${to.replace(/\D/g, "")}`;
+      if (!E164.test(phone)) throw new PermanentSendError("Patient phone is not a valid E.164 number", "invalid_phone");
+      let res: WhatsNexusEnvelope;
+      try {
+        res = await call(config, secrets, "POST", "/media", { idempotencyKey: media.idempotencyKey, timeoutMs: 60_000, body: { phoneE164: phone, ...media } });
+      } catch (err) {
+        throw transportError(err, secrets);
+      }
+      if (res.status === 200 && res.json?.success === true && typeof res.json.wamid === "string" && res.json.wamid) return { providerMessageId: res.json.wamid };
+      throw classifyHttpFailure(res, secrets);
     },
 
     async sendTemplate(config, secrets, to, template) {
@@ -243,7 +266,8 @@ export function createWhatsNexusAdapter(deps: WhatsNexusDeps = {}): MessagingPro
     if (typeof t.bodyParameterCount !== "number" || !Number.isInteger(t.bodyParameterCount) || t.bodyParameterCount < 0 || t.bodyParameterCount > 30) return null;
     const category = typeof t.category === "string" && ["utility", "marketing", "authentication"].includes(t.category) ? (t.category as ProviderTemplate["category"]) : null;
     const templateType = typeof t.templateType === "string" && /^[a-z_]{1,20}$/.test(t.templateType) ? t.templateType : null;
-    return { name: t.name, language: t.language, status: "APPROVED", category, templateType, bodyParameterCount: t.bodyParameterCount, hasHeader: t.hasHeader === true, hasButtons: t.hasButtons === true };
+    const body = typeof t.body === "string" && t.body.length <= 4096 ? t.body : null;
+    return { name: t.name, language: t.language, status: "APPROVED", category, templateType, bodyParameterCount: t.bodyParameterCount, body, hasHeader: t.hasHeader === true, hasButtons: t.hasButtons === true };
   }
 
   /** The tenant's approved templates, read-only. Never cached here: callers ask again whenever the answer matters. */

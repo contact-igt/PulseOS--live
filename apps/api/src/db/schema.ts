@@ -715,6 +715,7 @@ export const tenantSettings = pgTable("tenant_settings", {
 
 export const messageSenderEnum = pgEnum("message_sender", ["patient", "staff", "ai", "system"]);
 export const messageDeliveryStatusEnum = pgEnum("message_delivery_status", ["queued", "sent", "delivered", "read", "failed"]);
+export const messageAttachmentKindEnum = pgEnum("message_attachment_kind", ["image", "document", "audio", "video"]);
 
 export const messages = pgTable("messages", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -722,6 +723,11 @@ export const messages = pgTable("messages", {
   conversationId: uuid("conversation_id").notNull().references(() => conversations.id),
   senderType: messageSenderEnum("sender_type").notNull(),
   senderUserId: uuid("sender_user_id").references(() => users.id),
+  // The name of a WhatsNexus agent who wrote this message there (they are not a PulseOS user). Null otherwise.
+  senderName: text("sender_name"),
+  // "text" or "template": a template message is laid out differently (header media, formatted body, buttons).
+  kind: text("kind").notNull().default("text"),
+  templateName: text("template_name"),
   body: text("body").notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
   readAt: timestamp("read_at", { withTimezone: true }),
@@ -733,6 +739,22 @@ export const messages = pgTable("messages", {
 }, (t) => ({
   conversationIdx: index("messages_conversation_idx").on(t.conversationId),
   providerMessageUnique: uniqueIndex("messages_connector_provider_message_unique").on(t.connectorId, t.providerMessageId),
+}));
+
+// File bytes remain with the messaging provider. PulseOS stores only metadata
+// and the provider media id used to mint a short-lived secure link.
+export const messageAttachments = pgTable("message_attachments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  messageId: uuid("message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  kind: messageAttachmentKindEnum("kind").notNull(),
+  providerMediaId: text("provider_media_id").notNull(),
+  fileName: text("file_name"),
+  mimeType: text("mime_type"),
+  sizeBytes: integer("size_bytes"),
+}, (t) => ({
+  messageIdx: index("message_attachments_message_idx").on(t.messageId),
+  providerMediaUnique: uniqueIndex("message_attachments_tenant_provider_media_unique").on(t.tenantId, t.providerMediaId),
 }));
 
 // A derived summary of one conversation session (messages between two idle gaps). Raw messages stay

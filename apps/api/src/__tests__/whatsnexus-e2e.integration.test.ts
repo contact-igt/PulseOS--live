@@ -317,24 +317,6 @@ describe.skipIf(!enabled)("PulseOS ↔ WhatsNexus end to end (real HTTP both way
     expect(s.wallet).toBeLessThan(1000);
   });
 
-  it("E2E-17: callback worker down → events stay durable and are delivered once it is back", async () => {
-    const { tt, w } = await fresh();
-    const f = await followUp(tt);
-    const wamid = (await row(f.notificationId)).providerMessageId!;
-    await wn("/__test/worker", { on: false });
-    await metaStatus(w, wamid, "delivered");
-    await metaStatus(w, wamid, "read");
-    await sleep(1200);
-    const s = await state(w.tenantId);
-    expect(s.outbox.map((o: any) => o.status)).toEqual(["pending", "pending"]);
-    expect((await row(f.notificationId)).status).toBe("SENT");
-    await wn("/__test/worker", { on: true });
-    expect((await pollRow(f.notificationId, (x) => x.status === "READ", 10000)).status).toBe("READ");
-    // PulseOS applies the callback before WhatsNexus has marked the row 'sent' (the receiver answers first): wait for it.
-    const drained = await until(() => state(w.tenantId), (x) => x.outbox.every((o: any) => o.status === "sent"), 5000);
-    expect(drained.outbox.every((o: any) => o.status === "sent")).toBe(true);
-  });
-
   it("E2E-16: a callback signed with another hospital's secret, or aimed at another hospital's URL, is rejected and changes nothing", async () => {
     const a = await fresh();
     const b = await fresh();

@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getConnectorById, getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "./connector.service.js";
 import { markEventFailed, markEventProcessed, recordConnectorEvent } from "./connector-event.service.js";
 import { getAcquisitionAdapter, getMessagingAdapter, getTelephonyAdapter } from "./registry.js";
-import { processInboundWhatsAppMessage, processWhatsAppStatusUpdate } from "./whatsapp-webhook.service.js";
+import { processInboundWhatsAppMessage, processOutboundWhatsAppMessage, processWhatsAppStatusUpdate } from "./whatsapp-webhook.service.js";
 import { persistInboundCall } from "./call-webhook.service.js";
 import { applyDeliveryStatus, applyWhatsNexusStatus, WHATSNEXUS_PROVIDER } from "../notification/notification.service.js";
 import { parseWhatsNexusCallback, verifyWhatsNexusCallback } from "./whatsnexus-callback.js";
@@ -378,7 +378,52 @@ async function handleWhatsNexusCallback(app: FastifyInstance, request: FastifyRe
   if (!parsed.ok) return reply.status(400).send({ error: "invalid_payload", reason: parsed.reason });
   const event = parsed.event;
 
+  // The setup test from WhatsNexus: authenticated above (so it also proves the secret), then answered. It records and changes nothing.
+  if (event.kind === "ping") return reply.status(200).send({ ok: true, pong: true });
+
   const caps = await tenantCapabilityMap(db, tenantId);
+  if (event.kind === "outbound") {
+    if (!caps.WHATSAPP_INBOX) return reply.status(200).send({ ok: true, ignored: true });
+    const { duplicate, eventId } = await recordConnectorEvent(db, {
+      tenantId,
+      connectorId: connector.id,
+      externalEventId: `whatsnexus:${event.eventId}`,
+      direction: "inbound",
+      payload: { type: "whatsnexus_outbound", sender: event.sender, attachmentCount: event.attachments.length },
+    });
+    if (duplicate) return reply.status(200).send({ ok: true, duplicate: true });
+    try {
+      const result = await processOutboundWhatsAppMessage(db, tenantId, connector.id, event);
+      await markEventProcessed(db, eventId);
+      await touchConnectorSuccess(db, connector.id);
+      // An unknown thread is acknowledged (so WhatsNexus does not retry) and kept in the event log; nothing was created.
+      return reply.status(200).send(result === "applied" ? { ok: true, applied: true } : result === "duplicate" ? { ok: true, duplicate: true } : { ok: true, applied: false, reason: result });
+    } catch (err) {
+      await markEventFailed(db, eventId, (err as Error).message);
+      return reply.status(500).send({ error: "processing_failed" });
+    }
+  }
+  if (event.kind === "inbound") {
+    if (!caps.WHATSAPP_INBOX) return reply.status(200).send({ ok: true, ignored: true });
+    const { duplicate, eventId } = await recordConnectorEvent(db, {
+      tenantId,
+      connectorId: connector.id,
+      externalEventId: `whatsnexus:${event.eventId}`,
+      direction: "inbound",
+      payload: { type: "whatsnexus_inbound", attachmentCount: event.attachments.length },
+    });
+    if (duplicate) return reply.status(200).send({ ok: true, duplicate: true });
+    try {
+      await processInboundWhatsAppMessage(db, tenantId, connector.id, event);
+      await markEventProcessed(db, eventId);
+      await touchConnectorSuccess(db, connector.id);
+      return reply.status(200).send({ ok: true, applied: true });
+    } catch (err) {
+      await markEventFailed(db, eventId, (err as Error).message);
+      return reply.status(500).send({ error: "processing_failed" });
+    }
+  }
+
   if (!caps.WHATSAPP_NOTIFICATIONS) return reply.status(200).send({ ok: true, ignored: true });
 
   // Replay / duplicate protection: the event id is unique per connector.
