@@ -5,7 +5,7 @@ import { recordActivity } from "../activity/activity.service.js";
 import { requirePermission } from "../auth/permission.middleware.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { syncAds } from "../ads/ads-sync.service.js";
-import { configureIntegration, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
+import { configureIntegration, pairWhatsNexus, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
@@ -14,6 +14,16 @@ const REASON_STATUS: Record<string, number> = {
   unknown_integration: 404,
   blocked: 409,
   unknown_field: 422,
+  public_url_not_configured: 409,
+  pair_invalid_code: 422,
+  pair_code_expired: 422,
+  pair_binding_mismatch: 409,
+  pair_tenant_inactive: 409,
+  pair_integration_off: 409,
+  pair_callback_rejected: 422,
+  pair_rate_limited: 429,
+  pair_unreachable: 502,
+  pair_unexpected_response: 502,
   invalid_url: 422,
   https_required: 422,
   private_address: 422,
@@ -70,6 +80,20 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     // Which kinds of setting changed and which secret NAMES were touched — never a value.
     await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: parsed.data.secrets ? "integration.secret_changed" : "integration.configured", entityType: "integration", entityKey: key, metadata: { settings: Object.keys(parsed.data.configuration ?? {}), protectedFieldNames: Object.keys(parsed.data.secrets ?? {}), mode: parsed.data.mode ?? null } });
     return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key);
+  });
+
+  // "Connect with code" (WhatsNexus only): Super Admin. The code is spent on WhatsNexus's side; what comes back is saved like typed credentials.
+  app.post("/integrations/hub/:key/pair", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    const key = (request.params as { key: string }).key;
+    if (key !== "whatsnexus") return reply.status(404).send({ error: "unknown_integration" });
+    const parsed = z.object({ baseUrl: z.string().min(1).max(300), code: z.string().min(1).max(300) }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
+    const result = await pairWhatsNexus(app.db, u.tenantId, parsed.data);
+    if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });
+    // The fact it happened, never the code or anything it returned.
+    await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "integration.paired", entityType: "integration", entityKey: key, metadata: {} });
+    return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, key);
   });
 
   // "Sync now": a read-only pull of reporting numbers. Never contacts the provider unless it is configured and switched on;

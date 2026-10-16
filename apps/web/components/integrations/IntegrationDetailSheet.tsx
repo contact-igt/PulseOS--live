@@ -9,6 +9,7 @@ import { hasPermission, type IntegrationDetail } from "@pulseos/types";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 import { LogsPanel } from "./LogsPanel";
 import { WhatsNexusTemplatesPanel } from "./WhatsNexusTemplatesPanel";
+import { WhatsNexusConnectWithCode } from "./WhatsNexusConnectWithCode";
 import { RemindersSection } from "../settings/RemindersSection";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
@@ -416,7 +417,12 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
           <Tabs variant="underline" ariaLabel="Integration sections" value={section} onChange={(k) => setSection(k as SectionKey)} items={sections.map((s) => ({ ...s, testId: `detail-tab-${s.key}` }))} />
           {section === "overview" && <Overview d={d} />}
           {section === "configuration" && <ConfigurationForm d={d} secrets={false} />}
-          {section === "credentials" && <ConfigurationForm d={d} secrets />}
+          {section === "credentials" && (
+            <>
+              {d.key === "whatsnexus" && <WhatsNexusConnectWithCode d={d} />}
+              <ConfigurationForm d={d} secrets />
+            </>
+          )}
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
           {section === "templates" && <WhatsNexusTemplatesPanel />}
           {section === "reminders" && <RemindersSection />}
