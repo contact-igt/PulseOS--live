@@ -25,3 +25,50 @@ describe("CORS preflight (integration)", () => {
     expect(String(res.headers["access-control-allow-headers"]).toLowerCase()).toContain("content-type");
   });
 });
+
+// WEB_ORIGIN can list several web addresses (the Railway address and the custom domain). Each listed origin works for
+// CORS and for the cross-origin state-change check; any other origin is refused, and the header only ever names the caller.
+describe("several web origins (integration)", () => {
+  const A = "https://pulseosweb-production.up.railway.app";
+  const B = "https://pulseos.invictusglobaltech.com";
+  let app: FastifyInstance;
+  let previous: string | undefined;
+  beforeAll(async () => {
+    previous = process.env.WEB_ORIGIN;
+    process.env.WEB_ORIGIN = ` ${A}/ , ${B} `;
+    app = await buildApp();
+    await app.ready();
+  });
+  afterAll(async () => {
+    if (previous === undefined) delete process.env.WEB_ORIGIN;
+    else process.env.WEB_ORIGIN = previous;
+    await app.close();
+    await queryClient.end();
+  });
+
+  const preflight = (origin: string) => app.inject({ method: "OPTIONS", url: "/auth/login", headers: { origin, "access-control-request-method": "POST" } });
+  const post = (headers: Record<string, string>) => app.inject({ method: "POST", url: "/auth/logout", headers });
+
+  it("answers each listed origin with that origin, credentials allowed, and varies on Origin", async () => {
+    for (const o of [A, B]) {
+      const res = await preflight(o);
+      expect(res.statusCode, o).toBe(204);
+      expect(res.headers["access-control-allow-origin"], o).toBe(o);
+      expect(res.headers["access-control-allow-credentials"]).toBe("true");
+      expect(String(res.headers.vary).toLowerCase()).toContain("origin");
+    }
+  });
+
+  it("gives an unlisted origin no CORS permission", async () => {
+    const res = await preflight("https://evil.example");
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("lets a state-changing request from either listed origin through, and blocks the rest", async () => {
+    for (const o of [A, B]) expect((await post({ origin: o, "sec-fetch-site": "same-site" })).statusCode, o).not.toBe(403);
+    const blocked = await post({ origin: "https://evil.example" });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error).toBe("cross_origin_request_blocked");
+    expect((await post({ origin: `${B}.evil.com` })).statusCode).toBe(403);
+  });
+});

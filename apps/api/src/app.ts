@@ -8,6 +8,7 @@ import Fastify, { type FastifyError, type FastifyServerOptions } from "fastify";
 import cookie from "@fastify/cookie";
 import { db } from "./db/client.js";
 import { parseTrustProxy } from "./lib/trust-proxy.js";
+import { matchWebOrigin, parseWebOrigins } from "./lib/web-origins.js";
 import { resolveSession } from "./domain/auth/auth.service.js";
 import { authRoutes, SESSION_COOKIE } from "./domain/auth/auth.routes.js";
 import { dashboardRoutes } from "./domain/dashboard/dashboard.routes.js";
@@ -82,7 +83,8 @@ export async function buildApp() {
   // port. So a state-changing request must also come from the app's own origin. A request carrying neither Origin nor
   // Sec-Fetch-Site is not a browser (server-to-server, scripts, tests) and is not a CSRF vector. Provider webhooks and
   // the public website form are cross-origin by design and authenticate themselves.
-  const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:3000";
+  // WEB_ORIGIN may list several comma-separated web addresses; a request's Origin must equal one of them exactly.
+  const webOrigins = parseWebOrigins(process.env.WEB_ORIGIN);
   const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
   app.addHook("onRequest", async (request, reply) => {
     if (!UNSAFE_METHODS.has(request.method)) return;
@@ -90,7 +92,7 @@ export async function buildApp() {
     if (path.startsWith("/webhooks/") || path.startsWith("/forms/website/")) return;
     const origin = request.headers.origin;
     const fetchSite = request.headers["sec-fetch-site"];
-    const foreign = origin !== undefined ? origin !== webOrigin : fetchSite === "cross-site" || fetchSite === "same-site";
+    const foreign = origin !== undefined ? matchWebOrigin(webOrigins, origin) === null : fetchSite === "cross-site" || fetchSite === "same-site";
     if (foreign) return reply.status(403).send({ error: "cross_origin_request_blocked" });
   });
 
@@ -107,7 +109,10 @@ export async function buildApp() {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    reply.header("Access-Control-Allow-Origin", webOrigin);
+    // CORS allows one origin per response, so name the caller when it is a listed web origin and nobody otherwise.
+    reply.header("Vary", "Origin");
+    const allowedOrigin = matchWebOrigin(webOrigins, request.headers.origin);
+    if (allowedOrigin) reply.header("Access-Control-Allow-Origin", allowedOrigin);
     reply.header("Access-Control-Allow-Credentials", "true");
     reply.header("Access-Control-Allow-Headers", "content-type");
     reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
