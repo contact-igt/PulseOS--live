@@ -10,6 +10,7 @@ import { TopBar } from "../../components/shell/TopBar";
 import { QuickCreateProvider } from "../../components/shell/QuickCreateProvider";
 import { ListContextRecorder } from "../../components/shell/Breadcrumb";
 import { rememberLoginPage, rememberedLoginPath } from "../../lib/loginPage";
+import { loginHrefWithReturn } from "../../lib/authRedirect";
 import { pathAllowedForRole, ROLE_HOME } from "../../components/shell/nav";
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -50,7 +51,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [lastPathname, setLastPathname] = useState(pathname);
 
   useEffect(() => {
-    if (isError) router.replace(rememberedLoginPath());
+    // Back to sign-in, carrying the page they were on so signing in returns them to it.
+    if (isError) router.replace(loginHrefWithReturn(rememberedLoginPath(), `${window.location.pathname}${window.location.search}`));
   }, [isError, router]);
   // Remember the hospital's own sign-in page, so an expired session returns there and not to the general page.
   const loginSlug = data?.user.loginSlug;

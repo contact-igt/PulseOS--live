@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@pulseos/api-client";
 import { Eye, EyeOff } from "lucide-react";
-import { ROLE_HOME } from "../shell/nav";
+import { destinationFor, useRedirectIfSignedIn } from "../../lib/useAuthReturn";
 
 /**
  * The interactive part of the tenant sign-in: email, password, Remember me, Sign in. The hospital is fixed by the page's address on
@@ -13,6 +13,7 @@ import { ROLE_HOME } from "../shell/nav";
  */
 export function TenantLoginForm({ slug }: { slug: string }) {
   const router = useRouter();
+  useRedirectIfSignedIn();
   const ids = { email: useId(), password: useId(), error: useId(), remember: useId() };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,7 +28,7 @@ export function TenantLoginForm({ slug }: { slug: string }) {
     setLoading(true);
     try {
       const { user } = await api.tenantLogin(slug, email, password, remember);
-      router.push(ROLE_HOME[user.role] ?? "/command-centre");
+      router.push(destinationFor(user));
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setError("Incorrect email or password.");
