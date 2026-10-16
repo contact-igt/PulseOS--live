@@ -73,6 +73,8 @@ describe("ccsTelephonyAdapter", () => {
       direction: "inbound",
       recordingUrl: "https://ccs.ivrsms.com/recordings/express-ivr-call-123.mp3",
     });
+    expect(events[0]!.startedAt?.toISOString()).toBe("2026-10-16T06:00:29.000Z");
+    expect(events[0]!.endedAt?.toISOString()).toBe("2026-10-16T06:01:20.000Z");
   });
 
   it("parses missed call reports from CCS Express IVR", () => {

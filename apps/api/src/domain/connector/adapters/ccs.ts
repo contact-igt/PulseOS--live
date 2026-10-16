@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { InboundCallEvent, TelephonyProviderAdapter } from "../types.js";
+import { parseInstant } from "../../../lib/hospital-time.js";
 
 function timingSafeCompare(actual: string | undefined, expected: string): boolean {
   if (!actual) return false;
@@ -157,10 +158,11 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
 
       // Timestamps
       const rawStarted = data.start_time || data.StartTime || data.startTime || data.call_time || data.datetime || data.created_at || data.start_date || data.time;
-      const startedAt = rawStarted ? new Date(rawStarted) : new Date();
+      // Express IVR sends its Call Report timestamps without an offset; they are India wall time, not UTC.
+      const startedAt = parseInstant(rawStarted, "Asia/Kolkata") ?? new Date();
 
       const rawEnded = data.end_time || data.EndTime || data.endTime || data.end_date;
-      const endedAt = rawEnded ? new Date(rawEnded) : null;
+      const endedAt = parseInstant(rawEnded, "Asia/Kolkata");
 
       // Disposition / call notes
       const disposition = (data.disposition || data.Status || data.status || data.call_status || data.reason || statusRaw || null) as string | null;
@@ -175,8 +177,8 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         recordingUrl,
         disposition,
         agentName,
-        startedAt: isNaN(startedAt.getTime()) ? new Date() : startedAt,
-        endedAt: endedAt && !isNaN(endedAt.getTime()) ? endedAt : null,
+        startedAt,
+        endedAt,
         metadata: {
           ...data,
           provider: "ccs_ivr",
