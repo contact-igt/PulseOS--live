@@ -49,6 +49,32 @@ describe("ccsTelephonyAdapter", () => {
     expect(event.recordingUrl).toBe("https://ccs.ivrsms.com/recordings/rec_12345.mp3");
   });
 
+  it("parses the Express IVR Call Report field names", () => {
+    const events = ccsTelephonyAdapter.parseWebhookPayload({
+      SourceNumber: "6369441531",
+      DestinationNumber: "08065118566",
+      DialWhomNumber: "07827455040",
+      CallDuration: "51",
+      Status: "ANSWER",
+      StartTime: "2026-10-16 11:30:29",
+      EndTime: "2026-10-16 11:31:20",
+      CallSid: "express-ivr-call-123",
+      CallRecordingUrl: "https://ccs.ivrsms.com/recordings/express-ivr-call-123.mp3",
+      Direction: "IVR",
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      externalCallId: "express-ivr-call-123",
+      phone: "6369441531",
+      agentName: "07827455040",
+      status: "completed",
+      durationSeconds: 51,
+      direction: "inbound",
+      recordingUrl: "https://ccs.ivrsms.com/recordings/express-ivr-call-123.mp3",
+    });
+  });
+
   it("parses missed call reports from CCS Express IVR", () => {
     const payload = {
       uniqueid: "uniq_missed_999",

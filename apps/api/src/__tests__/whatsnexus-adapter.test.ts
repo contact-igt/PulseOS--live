@@ -19,6 +19,63 @@ const build = (impl: (url: string, init: RequestInit) => Promise<Response>) => {
   return { adapter: createWhatsNexusAdapter({ fetchImpl: fetchImpl as unknown as typeof fetch, isPublicHost: async () => true }), fetchImpl };
 };
 
+describe("WhatsNexus adapter — pairing with a code", () => {
+  const CODE = "wnpair_VFQwMDE.abcdefghijklmnopqrstuvwxyz0123456789";
+  const PULSEOS = "11111111-1111-4111-8111-111111111111";
+  const CALLBACK = "https://pulse.example.org/webhooks/whatsnexus/" + PULSEOS;
+  const input = { baseUrl: "https://wn.example.com", code: CODE, pulseosTenantId: PULSEOS, callbackUrl: CALLBACK };
+  const paired = () => json(200, { success: true, data: { whatsnexusTenantId: "TT001", apiKey: "wnpk_ab12cd34_" + "k".repeat(43), keyId: "ab12cd34", callbackSecret: "whcs_" + "s".repeat(43) } });
+
+  it("posts only the code, this PulseOS tenant and its callback address to the unauthenticated pair endpoint, and returns what WhatsNexus issued", async () => {
+    const { adapter, fetchImpl } = build(async () => paired());
+    const r = await adapter.pair(input);
+    expect(r).toEqual({ ok: true, whatsnexusTenantId: "TT001", apiKey: "wnpk_ab12cd34_" + "k".repeat(43), keyId: "ab12cd34", callbackSecret: "whcs_" + "s".repeat(43) });
+    const [url, init] = fetchImpl.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe("https://wn.example.com/api/integrations/pulseos/pair");
+    expect(init.method).toBe("POST");
+    expect(init.redirect).toBe("manual");
+    expect(JSON.parse(init.body as string)).toEqual({ code: CODE, pulseosTenantId: PULSEOS, callbackUrl: CALLBACK });
+    expect(Object.keys(init.headers as object).map((h) => h.toLowerCase())).not.toContain("x-api-key");
+  });
+
+  it.each([
+    ["INVALID_PAIRING_CODE", 401, "invalid_code"],
+    ["PAIRING_CODE_EXPIRED", 410, "code_expired"],
+    ["TENANT_BINDING_MISMATCH", 403, "binding_mismatch"],
+    ["TENANT_INACTIVE", 403, "tenant_inactive"],
+    ["INTEGRATION_FLAG_OFF", 403, "integration_off"],
+    ["INVALID_REQUEST", 422, "callback_rejected"],
+    ["RATE_LIMITED", 429, "rate_limited"],
+  ])("maps WhatsNexus's %s to a plain reason", async (code, status, reason) => {
+    const { adapter } = build(async () => json(status, { success: false, error: { code, message: "x" } }));
+    expect(await adapter.pair(input)).toEqual({ ok: false, reason });
+  });
+
+  it("refuses a bad base URL before any request, and a host that resolves to a private address", async () => {
+    const { adapter, fetchImpl } = build(async () => paired());
+    expect(await adapter.pair({ ...input, baseUrl: "http://wn.example.com" })).toMatchObject({ ok: false });
+    expect(await adapter.pair({ ...input, baseUrl: "not a url" })).toMatchObject({ ok: false, reason: "invalid_url" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const priv = createWhatsNexusAdapter({ fetchImpl: fetchImpl as unknown as typeof fetch, isPublicHost: async () => false });
+    expect(await priv.pair(input)).toEqual({ ok: false, reason: "private_address" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a network failure or an unreadable answer never throws and never leaks the code", async () => {
+    const down = build(async () => { throw Object.assign(new Error("fetch failed " + CODE), { cause: { code: "ECONNREFUSED" } }); });
+    expect(await down.adapter.pair(input)).toEqual({ ok: false, reason: "unreachable" });
+    expect(await build(async () => json(500, { nope: true })).adapter.pair(input)).toEqual({ ok: false, reason: "unexpected_response" });
+    expect(await build(async () => new Response("<html>", { status: 200 })).adapter.pair(input)).toEqual({ ok: false, reason: "unexpected_response" });
+  });
+
+  it("a success that does not look like credentials is not accepted", async () => {
+    const odd = build(async () => json(200, { success: true, data: { whatsnexusTenantId: "TT001", apiKey: "short", keyId: "x", callbackSecret: "whcs_" + "s".repeat(43) } }));
+    expect(await odd.adapter.pair(input)).toEqual({ ok: false, reason: "unexpected_response" });
+    const noTenant = build(async () => json(200, { success: true, data: { apiKey: "wnpk_ab12cd34_" + "k".repeat(43), keyId: "k", callbackSecret: "whcs_" + "s".repeat(43) } }));
+    expect(await noTenant.adapter.pair(input)).toEqual({ ok: false, reason: "unexpected_response" });
+  });
+});
+
 describe("WhatsNexus adapter — send contract", () => {
   it("posts the approved-template contract with tenant, key and idempotency headers, and returns the REAL wamid", async () => {
     const { adapter, fetchImpl } = build(async () => accepted());

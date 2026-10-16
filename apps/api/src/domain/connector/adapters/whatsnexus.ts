@@ -62,7 +62,40 @@ function readConfig(config: Record<string, unknown>, secrets: Record<string, unk
   return { baseUrl, tenantId, apiKey, pulseosTenantId };
 }
 
+export type WhatsNexusPairReason =
+  | "invalid_url"
+  | "private_address"
+  | "invalid_code"
+  | "code_expired"
+  | "binding_mismatch"
+  | "tenant_inactive"
+  | "integration_off"
+  | "callback_rejected"
+  | "rate_limited"
+  | "unreachable"
+  | "unexpected_response";
+
+export type WhatsNexusPairResult =
+  | { ok: true; whatsnexusTenantId: string; apiKey: string; keyId: string; callbackSecret: string }
+  | { ok: false; reason: WhatsNexusPairReason };
+
+/** WhatsNexus's own error codes for a pairing attempt, in this product's words. */
+const PAIR_REASONS: Record<string, WhatsNexusPairReason> = {
+  INVALID_PAIRING_CODE: "invalid_code",
+  PAIRING_CODE_EXPIRED: "code_expired",
+  TENANT_BINDING_MISMATCH: "binding_mismatch",
+  TENANT_INACTIVE: "tenant_inactive",
+  INTEGRATION_FLAG_OFF: "integration_off",
+  INVALID_REQUEST: "callback_rejected",
+  RATE_LIMITED: "rate_limited",
+};
+
 export function createWhatsNexusAdapter(deps: WhatsNexusDeps = {}): MessagingProviderAdapter & {
+  /**
+   * Redeem a pairing code: WhatsNexus answers with the API key and callback secret for this hospital, in this one reply. The
+   * only WhatsNexus call that needs no credentials (the code is the credential). Never throws; the code is never echoed.
+   */
+  pair(input: { baseUrl: string; code: string; pulseosTenantId: string; callbackUrl: string }): Promise<WhatsNexusPairResult>;
   probeHealth(config: Record<string, unknown>, secrets: Record<string, unknown>): Promise<WhatsNexusHealth>;
   listTemplates(config: Record<string, unknown>, secrets: Record<string, unknown>): Promise<WhatsNexusTemplatesResult>;
 } {
@@ -233,6 +266,44 @@ export function createWhatsNexusAdapter(deps: WhatsNexusDeps = {}): MessagingPro
     lookupSend,
 
     listTemplates,
+
+    async pair({ baseUrl, code, pulseosTenantId, callbackUrl }): Promise<WhatsNexusPairResult> {
+      const target = validateWebhookUrl(buildFullWebhookUrl(baseUrl.trim(), `${BASE}/pair`), { allowInsecure: webhookAllowInsecure() });
+      if (!target.ok) return { ok: false, reason: "invalid_url" };
+      if (!webhookAllowInsecure() && !(await isPublicHost(new URL(target.url).hostname))) return { ok: false, reason: "private_address" };
+      let res: Response;
+      try {
+        res = await doFetch(target.url, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ code, pulseosTenantId, callbackUrl }),
+          redirect: "manual", // a redirect could carry the code somewhere else
+          signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+        });
+      } catch {
+        return { ok: false, reason: "unreachable" };
+      }
+      let json: (WhatsNexusJson & { data?: Record<string, unknown> }) | null = null;
+      try {
+        const text = await res.text();
+        json = text ? (JSON.parse(text) as WhatsNexusJson & { data?: Record<string, unknown> }) : null;
+      } catch {
+        json = null;
+      }
+      if (res.status === 200 && json?.success === true) {
+        const d = json.data ?? {};
+        const apiKey = typeof d.apiKey === "string" ? d.apiKey : "";
+        const callbackSecret = typeof d.callbackSecret === "string" ? d.callbackSecret : "";
+        const whatsnexusTenantId = typeof d.whatsnexusTenantId === "string" ? d.whatsnexusTenantId : "";
+        const keyId = typeof d.keyId === "string" ? d.keyId : "";
+        if (!/^wnpk_[A-Za-z0-9_-]{16,}$/.test(apiKey) || !/^whcs_[A-Za-z0-9_-]{16,}$/.test(callbackSecret) || !/^[A-Za-z0-9_-]{1,100}$/.test(whatsnexusTenantId)) {
+          return { ok: false, reason: "unexpected_response" };
+        }
+        return { ok: true, whatsnexusTenantId, apiKey, keyId, callbackSecret };
+      }
+      const reason = PAIR_REASONS[String(json?.error?.code ?? "")];
+      return { ok: false, reason: reason ?? "unexpected_response" };
+    },
 
     async probeHealth(config, secrets): Promise<WhatsNexusHealth> {
       const { baseUrl, tenantId, apiKey } = readConfig(config, secrets);

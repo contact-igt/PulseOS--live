@@ -9,10 +9,11 @@ import type { FastifyInstance } from "fastify";
 import type { Role } from "@pulseos/types";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { connectorEvents, connectors, notifications } from "../db/schema.js";
+import { connectorEvents, connectorSecrets, connectors, notifications } from "../db/schema.js";
 import { reconcileWhatsNexusOutcomes } from "../domain/notification/notification.service.js";
 import { whatsNexusAdapter } from "../domain/connector/adapters/whatsnexus.js";
 import { signWebhookBody } from "../domain/integration/webhook-rules.js";
+import { decryptSecret } from "../domain/security/encryption.js";
 import { createTestTenant, destroyTestTenant, type TestTenant } from "./helpers/edition-tenant.js";
 
 /**
@@ -99,6 +100,7 @@ describe.skipIf(!enabled)("PulseOS ↔ WhatsNexus end to end (real HTTP both way
     await app.ready();
     await app.listen({ host: "127.0.0.1", port: 0 });
     pulseosPort = (app.server.address() as AddressInfo).port;
+    process.env.PUBLIC_API_BASE_URL = `http://127.0.0.1:${pulseosPort}`; // what PulseOS tells WhatsNexus to call back (loopback in this test only)
     harness = spawn(process.execPath, [path.join(WN_ROOT!, "tests", "helpers", "e2eHarness.mjs")], {
       cwd: WN_ROOT,
       env: { ...process.env, INVICTUS_SERVER_LINE: "local", DATABASE_HOST: "127.0.0.1", DATABASE_PORT: MYSQL_PORT, DATABASE_USER: "root", DATABASE_PASSWORD: "", DATABASE_DB: "wn_it", ENCRYPTION_MASTER_KEY: randomBytes(32).toString("hex"), JWT_SECRET_KEY: "e2e" },
@@ -315,6 +317,90 @@ describe.skipIf(!enabled)("PulseOS ↔ WhatsNexus end to end (real HTTP both way
     expect(s.holds).toHaveLength(1);
     expect(s.holds[0].status).not.toBe("active"); // billed before the wamid was stored: the reservation must still be settled
     expect(s.wallet).toBeLessThan(1000);
+  });
+
+  it("E2E-17: onboarding with a pairing code, start to finish — pair, signed test, readiness, enable, real send, real status callback", async () => {
+    const tt = await createTestTenant(db, app, "BETA_V1_CORE", DEMO_PASSWORD!);
+    created.push(tt);
+    await call(tt, "HOSPITAL_ADMIN", "POST", "/departments/install", { templateKey: "ophthalmology" });
+    const { tenantId: wnTenant } = await wn("/__test/provision", { bare: true }); // WhatsNexus tenant: account, wallet, approved templates — and NO PulseOS credentials
+    const base = `http://127.0.0.1:${wnPort}`;
+    const pair = (code: string) => call(tt, "SUPER_ADMIN", "POST", "/integrations/hub/whatsnexus/pair", { baseUrl: base, code });
+    const detail = async () => (await call(tt, "SUPER_ADMIN", "GET", "/integrations/hub/whatsnexus")).json() as { connectorMode: string; configurationValues: Record<string, string>; secretFields: { key: string; hasSecret: boolean }[] };
+
+    // Before anything: the readiness checklist blocks enabling, and says exactly what is missing.
+    const r0 = (await wn("/__test/readiness", { tenantId: wnTenant })).readiness;
+    expect(r0.ready).toBe(false);
+    expect(r0.blocking).toEqual(expect.arrayContaining(["binding", "apiKey", "callbackSecret", "callbackUrl", "ping"]));
+    expect(r0.checks.filter((c: { id: string; status: string }) => ["platform", "tenant", "billing", "whatsapp", "templates"].includes(c.id)).every((c: { status: string }) => c.status === "pass")).toBe(true);
+
+    // A made-up code, and a real code locked to a different hospital, are refused and save nothing.
+    expect((await pair("wnpair_" + Buffer.from(wnTenant).toString("base64url") + "." + "a".repeat(32))).json()).toMatchObject({ error: "pair_invalid_code" });
+    const wrongHospital = (await wn("/__test/pairing-code", { tenantId: wnTenant, expectedPulseosTenantId: "6c2f1d2f-0000-4000-8000-000000000002" })).code as string;
+    const mismatch = await pair(wrongHospital);
+    expect(mismatch.statusCode).toBe(409);
+    expect(mismatch.json()).toMatchObject({ error: "pair_binding_mismatch" });
+    expect((await detail()).secretFields.every((x) => !x.hasSecret)).toBe(true);
+
+    // The real code, locked to THIS hospital.
+    const code = (await wn("/__test/pairing-code", { tenantId: wnTenant, expectedPulseosTenantId: tt.tenantId })).code as string;
+    const paired = await pair(code);
+    expect(paired.statusCode).toBe(200);
+    expect(paired.body).not.toContain(code);
+    const d = await detail();
+    expect(d.connectorMode).toBe("LIVE");
+    expect(d.configurationValues).toMatchObject({ baseUrl: base, tenantId: wnTenant });
+    expect(d.secretFields.filter((x) => x.hasSecret).map((x) => x.key).sort()).toEqual(["apiKey", "callbackSecret"]);
+    // A code works once.
+    expect((await pair(code)).json()).toMatchObject({ error: "pair_invalid_code" });
+
+    // Paired but not tested: still not ready, and only the test is missing. Nothing secret is in the checklist.
+    const stored = await (async () => {
+      const [c] = await db.select().from(connectors).where(and(eq(connectors.tenantId, tt.tenantId), eq(connectors.provider, "whatsnexus")));
+      const [sec] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, c!.id));
+      return decryptSecret(sec!.encryptedPayload) as { apiKey: string; callbackSecret: string };
+    })();
+    const r1 = await wn("/__test/readiness", { tenantId: wnTenant });
+    expect(r1.readiness.blocking).toEqual(["ping"]);
+    expect(JSON.stringify(r1)).not.toContain(stored.apiKey);
+    expect(JSON.stringify(r1)).not.toContain(stored.callbackSecret);
+    expect(r1.view.pulseosTenantId).toBe(tt.tenantId);
+    expect(r1.view.callbackUrl).toBe(`http://127.0.0.1:${pulseosPort}/webhooks/whatsnexus/${tt.tenantId}`);
+
+    // The signed test: WhatsNexus -> the real PulseOS callback handler, verified with the secret that pairing delivered.
+    const ping = await wn("/__test/test-callback", { tenantId: wnTenant });
+    expect(ping.result).toMatchObject({ ok: true, status: 200 });
+    const r2 = await wn("/__test/readiness", { tenantId: wnTenant });
+    expect(r2.readiness.ready).toBe(true);
+    expect(r2.view.lastPing).toMatchObject({ ok: true, status: 200 });
+    expect(r2.view.audit.map((a: { action: string }) => a.action)).toEqual(expect.arrayContaining(["paired", "test_callback_ok", "pairing_code_created"]));
+    expect(JSON.stringify(r2.view.audit)).not.toContain(code);
+
+    // Enable, then the real health check and a real send prove the paired credentials work in both directions.
+    await wn("/__test/integration", { tenantId: wnTenant, enabled: true });
+    const probe = await call(tt, "SUPER_ADMIN", "POST", "/integrations/hub/whatsnexus/status");
+    expect(probe.json()).toMatchObject({ ok: true, status: "CONNECTED", health: "HEALTHY" });
+    expect((await call(tt, "SUPER_ADMIN", "PUT", "/integrations/hub/whatsnexus/configuration", { configuration: { useForSending: "true" } })).statusCode).toBe(200);
+    await wn("/__test/meta", { mode: "accept" });
+    const sent = await followUp(tt);
+    expect(sent.status).toBe("SENT");
+    const r = await row(sent.notificationId);
+    expect(r.provider).toBe("whatsnexus");
+    await metaStatus({ tenantId: wnTenant, apiKey: stored.apiKey, callbackSecret: stored.callbackSecret }, r.providerMessageId!, "delivered");
+    expect((await pollRow(sent.notificationId, (x) => x.status === "DELIVERED")).deliveredAt).not.toBeNull(); // callback signed with the paired secret was accepted
+
+    // Re-pairing replaces the credentials: the old callback secret stops working, the new one works.
+    const again = (await wn("/__test/pairing-code", { tenantId: wnTenant, expectedPulseosTenantId: tt.tenantId })).code as string;
+    expect((await pair(again)).statusCode).toBe(200);
+    const after = await (async () => {
+      const [c] = await db.select().from(connectors).where(and(eq(connectors.tenantId, tt.tenantId), eq(connectors.provider, "whatsnexus")));
+      const [sec] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, c!.id));
+      return decryptSecret(sec!.encryptedPayload) as { apiKey: string; callbackSecret: string };
+    })();
+    expect(after.callbackSecret).not.toBe(stored.callbackSecret);
+    expect(after.apiKey).not.toBe(stored.apiKey);
+    expect((await wn("/__test/readiness", { tenantId: wnTenant })).readiness.blocking).toEqual(["ping"]); // new credentials are untested
+    expect((await wn("/__test/test-callback", { tenantId: wnTenant })).result).toMatchObject({ ok: true, status: 200 });
   });
 
   it("E2E-16: a callback signed with another hospital's secret, or aimed at another hospital's URL, is rejected and changes nothing", async () => {

@@ -69,6 +69,9 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         data.cli ||
         data.CallingNumber ||
         data.calling_number ||
+        data.SourceNumber ||
+        data.sourceNumber ||
+        data.source_number ||
         ""
       ).trim();
 
@@ -84,6 +87,8 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         data.session_id ||
         data.call_uuid ||
         data.sid ||
+        data.CallSid ||
+        data.callSid ||
         `ccs-${rawPhone}-${Date.now()}`
       );
 
@@ -101,15 +106,17 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         data.to ||
         data.CalledNumber ||
         data.extension ||
+        data.DialWhomNumber ||
+        data.dialWhomNumber ||
         ""
       ).trim() || null;
 
       // Determine call direction
-      const dirStr = String(data.direction || data.call_type || data.type || "inbound").toLowerCase();
+      const dirStr = String(data.direction || data.Direction || data.call_type || data.type || "inbound").toLowerCase();
       const direction: "inbound" | "outbound" = dirStr.includes("out") ? "outbound" : "inbound";
 
       // Normalize status
-      const statusRaw = String(data.status || data.call_status || data.dialstatus || data.call_state || data.disposition || "").toLowerCase();
+      const statusRaw = String(data.status || data.Status || data.call_status || data.dialstatus || data.call_state || data.disposition || "").toLowerCase();
       let status: "completed" | "missed" | "no_answer" | "busy" | "failed" = "completed";
 
       if (
@@ -138,25 +145,25 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         status = "completed";
       } else {
         // Fallback: if duration > 0, it was answered/completed; otherwise missed
-        const dur = Number(data.duration || data.call_duration || data.talk_duration || data.duration_seconds || data.billsec || 0);
+        const dur = Number(data.duration || data.Duration || data.CallDuration || data.TalkDuration || data.call_duration || data.talk_duration || data.duration_seconds || data.billsec || 0);
         status = dur > 0 ? "completed" : "missed";
       }
 
       // Duration in seconds
-      const durationSeconds = Number(data.duration || data.call_duration || data.talk_duration || data.duration_seconds || data.billsec || 0) || null;
+      const durationSeconds = Number(data.duration || data.Duration || data.CallDuration || data.TalkDuration || data.call_duration || data.talk_duration || data.duration_seconds || data.billsec || 0) || null;
 
       // Audio recording URL
-      const recordingUrl = (data.recording_url || data.recording || data.record_url || data.audio_url || data.file_url || data.call_recording || data.record_file || data.voice_record || null) as string | null;
+      const recordingUrl = (data.recording_url || data.CallRecordingUrl || data.callRecordingUrl || data.recording || data.record_url || data.audio_url || data.file_url || data.call_recording || data.record_file || data.voice_record || null) as string | null;
 
       // Timestamps
-      const rawStarted = data.start_time || data.call_time || data.datetime || data.created_at || data.start_date || data.time;
+      const rawStarted = data.start_time || data.StartTime || data.startTime || data.call_time || data.datetime || data.created_at || data.start_date || data.time;
       const startedAt = rawStarted ? new Date(rawStarted) : new Date();
 
-      const rawEnded = data.end_time || data.end_date;
+      const rawEnded = data.end_time || data.EndTime || data.endTime || data.end_date;
       const endedAt = rawEnded ? new Date(rawEnded) : null;
 
       // Disposition / call notes
-      const disposition = (data.disposition || data.call_status || data.reason || statusRaw || null) as string | null;
+      const disposition = (data.disposition || data.Status || data.status || data.call_status || data.reason || statusRaw || null) as string | null;
 
       results.push({
         externalEventId: `ccs:event:${externalCallId}`,
@@ -173,7 +180,7 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         metadata: {
           ...data,
           provider: "ccs_ivr",
-          customerName: data.customer_name || data.name || data.caller_name || null,
+          customerName: data.customer_name || data.CustomerName || data.name || data.caller_name || null,
         },
       });
     }

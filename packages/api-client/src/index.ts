@@ -408,6 +408,9 @@ export const api = {
   callRecordingUrl: (callId: string, opts: { download?: boolean } = {}) => `${API_BASE}/calls/${callId}/recording${opts.download ? "?download=1" : ""}`,
   integrationHub: () => request<IntegrationCard[]>("/integrations/hub"),
   integrationDetail: (key: string) => request<IntegrationDetail>(`/integrations/hub/${key}`),
+  /** "Connect with code": redeem a WhatsNexus pairing code; the server stores the credentials it returns. Nothing secret comes back. */
+  pairIntegration: (key: string, body: { baseUrl: string; code: string }) =>
+    request<IntegrationDetail>(`/integrations/hub/${key}/pair`, { method: "POST", body: JSON.stringify(body) }),
   configureIntegration: (key: string, body: { configuration?: Record<string, string>; secrets?: Record<string, string>; mode?: "FIXTURE" | "SANDBOX" | "LIVE" }) =>
     request<IntegrationDetail>(`/integrations/hub/${key}/configuration`, { method: "PUT", body: JSON.stringify(body) }),
   integrationLogs: (filters: { provider?: string; status?: string; from?: string; to?: string }) => {

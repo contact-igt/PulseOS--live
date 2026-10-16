@@ -278,6 +278,28 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   return { ok: true };
 }
 
+/**
+ * "Connect with code": redeem a WhatsNexus pairing code server-to-server and store what comes back (API key, callback secret,
+ * tenant id) exactly as if a Super Admin had typed them, through the same save path — so Live mode, re-verification and the
+ * "sending only after Connected" rule all still apply. This hospital is identified by the session, never by the request, and the
+ * callback address handed to WhatsNexus is this server's own public address. Nothing secret is returned or logged.
+ */
+export async function pairWhatsNexus(db: Db, tenantId: string, input: { baseUrl: string; code: string }, adapter: Pick<typeof whatsNexusAdapter, "pair"> = whatsNexusAdapter): Promise<Result<object>> {
+  const baseProblem = whatsNexusBaseUrlProblem(input.baseUrl);
+  if (baseProblem) return { ok: false, reason: baseProblem };
+  const publicBase = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
+  if (!publicBase) return { ok: false, reason: "public_url_not_configured" };
+  const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
+  const paired = await adapter.pair({ baseUrl, code: input.code.trim(), pulseosTenantId: tenantId, callbackUrl: `${publicBase}/webhooks/whatsnexus/${tenantId}` });
+  if (!paired.ok) return { ok: false, reason: paired.reason === "invalid_url" || paired.reason === "private_address" ? paired.reason : `pair_${paired.reason}` };
+  return configureIntegration(db, tenantId, "whatsnexus", {
+    configuration: { baseUrl, tenantId: paired.whatsnexusTenantId },
+    // The old callback secret is not kept: WhatsNexus replaced it in the same step.
+    secrets: { apiKey: paired.apiKey, callbackSecret: paired.callbackSecret, previousCallbackSecret: "-" },
+    mode: "LIVE",
+  });
+}
+
 export interface HealthCheckResult {
   ok: boolean;
   health: "HEALTHY" | "DEGRADED" | "UNHEALTHY" | "UNKNOWN" | "NOT_APPLICABLE";
@@ -385,13 +407,19 @@ async function whatsNexusNotes(db: Db, tenantId: string, base: string | null): P
  * a plain tenant id; and WhatsNexus can be chosen for sending only when it is fully configured, in Live mode, and the
  * last real connection check succeeded — with none of those identity settings changed in the same save.
  */
+/** The refusal reason for a WhatsNexus base URL (HTTPS, public, no path), or null when it is acceptable. */
+function whatsNexusBaseUrlProblem(raw: string): string | null {
+  const v = validateWebhookUrl(raw.trim(), { allowInsecure: webhookAllowInsecure() });
+  if (!v.ok) return v.reason;
+  const u = new URL(v.url);
+  return (u.pathname !== "/" && u.pathname !== "") || u.search || u.hash ? "invalid_url" : null;
+}
+
 async function validateWhatsNexusInput(db: Db, connector: ConnectorRowT, input: ConfigureInput): Promise<string | null> {
   const c = input.configuration ?? {};
   if (c.baseUrl !== undefined && c.baseUrl.trim() !== "") {
-    const v = validateWebhookUrl(c.baseUrl.trim(), { allowInsecure: webhookAllowInsecure() });
-    if (!v.ok) return v.reason;
-    const u = new URL(v.url);
-    if ((u.pathname !== "/" && u.pathname !== "") || u.search || u.hash) return "invalid_url";
+    const problem = whatsNexusBaseUrlProblem(c.baseUrl);
+    if (problem) return problem;
   }
   if (c.tenantId !== undefined && c.tenantId.trim() !== "" && !/^[A-Za-z0-9_-]{1,100}$/.test(c.tenantId.trim())) return "invalid_tenant_id";
   if (c.useForSending !== undefined && !["true", "false", ""].includes(c.useForSending.trim())) return "invalid_value";
