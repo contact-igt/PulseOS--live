@@ -443,3 +443,103 @@ body {
 [data-text-size] [class*="text-[13px]"] {
   font-size: max(12.5px, calc(13px * var(--text-scale)));
 }
+
+/* ---- Public marketing site (app/(marketing)) ------------------------------------------------------------------
+   Motion is CSS-only and short: a 450ms rise with a per-element delay (--mk-d) so the hero settles within ~800ms.
+   prefers-reduced-motion is already neutralised globally above (durations collapse to ~0), so elements land instantly. */
+@keyframes mk-rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.mk-rise {
+  animation: mk-rise 450ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: var(--mk-d, 0ms);
+}
+.mk-anchor {
+  scroll-margin-top: 80px;
+}
+html:has(.mk-site) {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html:has(.mk-site) {
+    scroll-behavior: auto;
+  }
+}
+.mk-section-ice {
+  background-color: var(--color-canvas-base);
+  background-image: linear-gradient(180deg, var(--color-canvas-bright) 0%, var(--color-canvas-base) 100%);
+}
+.mk-scroll-x {
+  scrollbar-width: none;
+}
+.mk-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hero environment: a faint icy light behind the product canvas. One radial, no gradient text, no orbs. */
+.mk-hero-bg {
+  background-color: #f4faff;
+  background-image:
+    radial-gradient(70% 55% at 50% 0%, rgb(120 190 255 / 0.32), transparent 72%),
+    radial-gradient(40% 35% at 85% 55%, rgb(70 200 230 / 0.14), transparent 70%),
+    linear-gradient(180deg, #eaf5ff 0%, #f8fcff 62%, #ffffff 100%);
+}
+/* Product canvas cropped on purpose: the top of the real screen, faded into the page. */
+.mk-crop {
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+}
+/* Role / chapter content swap: short crossfade with a small slide. */
+@keyframes mk-swap {
+  from {
+    opacity: 0;
+    transform: translate3d(10px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.mk-swap {
+  animation: mk-swap 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+/* The hook staircase: numbers and bars arrive in sequence once the chapter is in view. */
+.mk-hook[data-phase="hidden"] .mk-hook-item {
+  opacity: 0;
+  transform: translate3d(0, 16px, 0);
+}
+.mk-hook[data-phase="hidden"] .mk-hook-bar {
+  transform: scaleY(0);
+}
+.mk-hook[data-phase="hidden"] .mk-hook-barx {
+  transform: scaleX(0);
+}
+.mk-hook-item {
+  transition: opacity 520ms cubic-bezier(0.2, 0.7, 0.2, 1), transform 520ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: calc(var(--i, 0) * 110ms);
+}
+.mk-hook-bar,
+.mk-hook-barx {
+  transition: transform 700ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: calc(var(--i, 0) * 110ms + 150ms);
+}
+.mk-hook-bar {
+  transform-origin: bottom;
+}
+.mk-hook-barx {
+  transform-origin: left;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mk-hook-item,
+  .mk-hook-bar,
+  .mk-hook-barx {
+    transition: none !important;
+  }
+}

@@ -7,7 +7,7 @@ import { api, ApiError } from "@pulseos/api-client";
 import type { DevEnvironment, Role } from "@pulseos/types";
 import { ChevronDown, Eye, EyeOff } from "lucide-react";
 import { PulseLockup } from "@pulseos/ui";
-import { ROLE_HOME } from "../../components/shell/nav";
+import { destinationFor, useRedirectIfSignedIn } from "../../lib/useAuthReturn";
 
 // The operational loop PulseOS connects — descriptive only. No invented
 // numbers or customer claims on this screen.
@@ -43,7 +43,7 @@ function DevLoginBlock() {
     setLoggingInAs(role);
     try {
       const { user } = await api.devLogin(role, current.key);
-      router.push(ROLE_HOME[user.role]);
+      router.push(destinationFor(user));
     } catch {
       setLoggingInAs(null);
     }
@@ -110,6 +110,7 @@ function DevLoginBlock() {
 
 export default function LoginPage() {
   const router = useRouter();
+  useRedirectIfSignedIn();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // Off by default: a shared front-desk computer must not stay signed in unless the person chooses it.
@@ -124,7 +125,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const { user } = await api.login(email, password, remember);
-      router.push(ROLE_HOME[user.role] ?? "/command-centre");
+      router.push(destinationFor(user));
     } catch (err) {
       // The email stays as typed; focus goes where the user needs to act.
       if (err instanceof ApiError && err.status === 401) {
