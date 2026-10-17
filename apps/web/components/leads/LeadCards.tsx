@@ -8,7 +8,7 @@ import { telHref } from "./LeadsTable";
 const STATUS_LABEL: Record<LeadStatus, string> = { new: "New", uncontacted: "Uncontacted", follow_up_due: "Follow-up due", appointment_booked: "Appointment booked", no_response: "No response", converted: "Converted", lost: "Lost" };
 
 /** Phone layout: one compact card per lead (patient, enquiry · status, source, next action, owner) and two actions. */
-export function LeadCards({ rows, onOpen }: { rows: LeadRow[]; onOpen: (lead: LeadRow) => void }) {
+export function LeadCards({ rows, onOpen, onEdit }: { rows: LeadRow[]; onOpen: (lead: LeadRow) => void; onEdit?: (lead: LeadRow) => void }) {
   return (
     <ul className="divide-y divide-line" data-testid="lead-cards">
       {rows.map((lead) => {
@@ -39,6 +39,11 @@ export function LeadCards({ rows, onOpen }: { rows: LeadRow[]; onOpen: (lead: Le
               <a href={telHref(lead.phone)} className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-control border border-line-strong bg-surface text-sm font-medium text-primary-700" data-testid={`lead-card-call-${lead.id}`}>
                 <Phone size={15} aria-hidden="true" /> Call
               </a>
+              {onEdit && (
+                <button type="button" onClick={() => onEdit(lead)} className="inline-flex min-h-11 flex-1 items-center justify-center rounded-control border border-line-strong bg-surface text-sm font-medium text-primary-700" data-testid={`lead-card-edit-${lead.id}`}>
+                  Edit
+                </button>
+              )}
               <button type="button" onClick={() => onOpen(lead)} className="inline-flex min-h-11 flex-1 items-center justify-center rounded-control bg-primary-600 text-sm font-semibold text-white" data-testid={`lead-card-open-${lead.id}`}>
                 Open
               </button>
