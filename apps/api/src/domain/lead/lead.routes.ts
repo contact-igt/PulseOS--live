@@ -3,7 +3,8 @@ import { z } from "zod";
 import { requirePermission } from "../auth/permission.middleware.js";
 import { parseOwnerFilter } from "../journey/journey.service.js";
 import { createLead, getLeadsSummary, getLeadsWorkspace, LeadRangeError, listLeads, lookupPatientByPhone } from "./lead.service.js";
-import { LEAD_VIEWS, type LeadStatus } from "@pulseos/types";
+import { getLeadEditModel, updateLead } from "./lead-edit.service.js";
+import { LEAD_VIEWS, type LeadStatus, type UpdateLeadInput } from "@pulseos/types";
 
 const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
 const opt = <T extends z.ZodTypeAny>(schema: T) => z.preprocess(emptyToUndefined, schema.optional());
@@ -80,6 +81,36 @@ const createLeadBody = z.object({
     .optional(),
 });
 
+// Only changed fields are sent; `null` clears an optional value. Unknown keys are stripped (tenantId included).
+const nullableText = (max: number) => z.string().max(max).nullable().optional();
+const updateLeadBody = z.object({
+  versions: z.object({ patient: z.string().min(1).max(40), journey: z.string().min(1).max(40) }),
+  patient: z
+    .object({
+      name: nullableText(120),
+      dateOfBirth: nullableText(10),
+      age: z.number().int().nullable().optional(),
+      phone: z.string().min(6).max(40).optional(),
+      email: nullableText(254),
+      preferredLanguage: z.string().max(60).optional(),
+      branchId: z.string().uuid().nullable().optional(),
+      marketingConsent: z.boolean().optional(),
+    })
+    .optional(),
+  journey: z
+    .object({
+      journeyType: z.string().max(120).optional(),
+      specialtyKey: z.string().min(1).max(60).optional(),
+      sourceKey: z.string().min(1).max(60).optional(),
+      sourceReason: z.string().max(500).optional(),
+      priority: z.enum(["normal", "high"]).optional(),
+      notes: nullableText(4000),
+      ownerId: z.string().uuid().nullable().optional(),
+    })
+    .optional(),
+  customFieldValues: z.record(z.string(), z.unknown()).optional(),
+});
+
 export async function leadRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requirePermission("MANAGE_LEADS"));
 
@@ -137,5 +168,39 @@ export async function leadRoutes(app: FastifyInstance) {
       return reply.status(422).send({ error: "invalid_field_values", fields: result.invalidFields });
     }
     return reply.status(201).send(result);
+  });
+
+  // Edit Lead: what the form opens with (current values + what this role may change), then one atomic save.
+  app.get("/leads/:journeyId/edit", async (request, reply) => {
+    const { tenantId, role } = request.sessionUser!;
+    const id = z.string().uuid().safeParse((request.params as { journeyId: string }).journeyId);
+    if (!id.success) return reply.status(404).send({ error: "lead_not_found" });
+    const model = await getLeadEditModel(app.db, tenantId, id.data, role);
+    if (!model) return reply.status(404).send({ error: "lead_not_found" });
+    return model;
+  });
+
+  app.patch("/leads/:journeyId", async (request, reply) => {
+    const { tenantId, id: actorId, role, timezone } = request.sessionUser!;
+    const id = z.string().uuid().safeParse((request.params as { journeyId: string }).journeyId);
+    if (!id.success) return reply.status(404).send({ error: "lead_not_found" });
+    const parsed = updateLeadBody.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_request", details: parsed.error.flatten() });
+
+    const result = await updateLead(app.db, tenantId, { id: actorId, role }, id.data, parsed.data as UpdateLeadInput, timezone);
+    if (result.ok) return result.result;
+    switch (result.reason) {
+      case "not_found":
+        return reply.status(404).send({ error: "lead_not_found" });
+      case "stale_version":
+        return reply.status(409).send({ error: "stale_version" });
+      case "forbidden":
+        return reply.status(403).send({ error: "forbidden_field_group", groups: result.groups });
+      case "phone_in_use":
+        return reply.status(409).send({ error: "phone_in_use", patient: result.patient });
+      case "invalid":
+        if (result.missingRequiredFields.length > 0) return reply.status(422).send({ error: "missing_required_fields", fields: result.missingRequiredFields });
+        return reply.status(422).send({ error: "invalid_field_values", fields: [...result.invalidFields, ...result.readOnlyFields], readOnly: result.readOnlyFields });
+    }
   });
 }

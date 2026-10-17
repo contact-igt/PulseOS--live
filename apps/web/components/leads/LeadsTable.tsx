@@ -26,6 +26,8 @@ const STATUS_TONE: Record<LeadStatus, "neutral" | "warning" | "danger" | "primar
  */
 /** Row actions beyond opening the journey: one quick Call, the rest in the overflow menu. */
 export interface LeadRowActions {
+  /** Edit the lead's patient and journey details. Absent for roles that may not manage leads. */
+  onEdit?: (lead: LeadRow) => void;
   onAddFollowUp: (lead: LeadRow) => void;
   onBookAppointment: (lead: LeadRow) => void;
 }
@@ -176,6 +178,7 @@ export function LeadsTable({
                     testId={`lead-menu-${lead.id}`}
                     items={[
                       { key: "open", label: "Open journey", onClick: () => onOpen(lead) },
+                      ...(actions.onEdit ? [{ key: "edit", label: "Edit lead", onClick: () => actions.onEdit!(lead) }] : []),
                       { key: "followup", label: "Add follow-up", onClick: () => actions.onAddFollowUp(lead) },
                       { key: "appt", label: "Book appointment", onClick: () => actions.onBookAppointment(lead) },
                     ]}

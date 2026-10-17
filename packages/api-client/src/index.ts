@@ -115,6 +115,7 @@ import type {
   JourneyHealth,
   JourneyListRow,
   JourneysSummary,
+  LeadEditModel,
   LeadPhoneLookupResult,
   LeadRow,
   LeadStatus,
@@ -150,6 +151,8 @@ import type {
   TreatmentStatus,
   UpdateCommunicationEndpointInput,
   UpdateCustomFieldInput,
+  UpdateLeadInput,
+  UpdateLeadResult,
   UpdateSpecialtyInput,
 } from "@pulseos/types";
 
@@ -169,12 +172,15 @@ class ApiError extends Error {
   /** A machine code and a plain-words explanation, when the API sent one (e.g. an incompatible WhatsNexus template). */
   code: string | null;
   detail: string | null;
-  constructor(status: number, message: string, issues: { path: string; message: string }[] = [], extra: { code?: string; detail?: string } = {}) {
+  /** The parsed error response, for callers that need more than the code (e.g. which fields were refused). */
+  body: Record<string, unknown> | null;
+  constructor(status: number, message: string, issues: { path: string; message: string }[] = [], extra: { code?: string; detail?: string; body?: Record<string, unknown> | null } = {}) {
     super(message);
     this.status = status;
     this.issues = issues;
     this.code = extra.code ?? null;
     this.detail = extra.detail ?? null;
+    this.body = extra.body ?? null;
   }
 }
 
@@ -202,7 +208,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include", headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string; code?: string; message?: string; issues?: { path: string; message: string }[] } | null;
-    throw new ApiError(res.status, body?.error ?? res.statusText, Array.isArray(body?.issues) ? body.issues : [], { code: typeof body?.code === "string" ? body.code : undefined, detail: typeof body?.message === "string" ? body.message : undefined });
+    throw new ApiError(res.status, body?.error ?? res.statusText, Array.isArray(body?.issues) ? body.issues : [], { code: typeof body?.code === "string" ? body.code : undefined, detail: typeof body?.message === "string" ? body.message : undefined, body: body as Record<string, unknown> | null });
   }
   // 204, or a 200 with no body (e.g. a bare acknowledgement): nothing to parse.
   const text = res.status === 204 ? "" : await res.text();
@@ -493,6 +499,10 @@ export const api = {
   leadsWorkspace: (q: LeadsWorkspaceQuery = {}) => request<LeadsWorkspace>(`/leads/workspace${toQuery({ ...q })}`),
   leadPhoneLookup: (phone: string) => request<LeadPhoneLookupResult>("/leads/lookup", { method: "POST", body: JSON.stringify({ phone }) }),
   createLead: (input: CreateLeadInput) => request<CreateLeadResult>("/leads", { method: "POST", body: JSON.stringify(input) }),
+  /** What Edit Lead opens with. 403 without MANAGE_LEADS; 404 unknown / other-hospital lead. */
+  leadEditModel: (journeyId: string) => request<LeadEditModel>(`/leads/${journeyId}/edit`),
+  /** Only changed fields. 409 stale_version | phone_in_use; 403 forbidden_field_group; 422 missing_required_fields | invalid_field_values. */
+  updateLead: (journeyId: string, input: UpdateLeadInput) => request<UpdateLeadResult>(`/leads/${journeyId}`, { method: "PATCH", body: JSON.stringify(input) }),
 
   // Specialties & custom fields (CRM-7/8)
   specialties: (includeDisabled = false) => request<SpecialtyTemplateVm[]>(`/specialties${toQuery({ includeDisabled: includeDisabled ? "true" : undefined })}`),

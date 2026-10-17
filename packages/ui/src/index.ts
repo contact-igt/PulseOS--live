@@ -14,6 +14,7 @@ export * from "./AttentionQueue";
 export * from "./AppointmentList";
 export * from "./AppointmentDrawer";
 export * from "./AddLeadDrawer";
+export * from "./EditLeadDrawer";
 export * from "./AddPatientDrawer";
 export * from "./NewAppointmentDrawer";
 export * from "./AddTaskDrawer";

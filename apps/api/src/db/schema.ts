@@ -153,6 +153,8 @@ export const patients = pgTable("patients", {
   // See acquisition/conversion-feedback.service.ts.
   marketingConsent: boolean("marketing_consent").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Bumped by every update: Edit Lead refuses a save made on a stale copy.
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => ({
   tenantIdx: index("patients_tenant_idx").on(t.tenantId),
   phoneE164Idx: index("patients_phone_e164_idx").on(t.phoneE164),
@@ -267,6 +269,8 @@ export const journeys = pgTable("journeys", {
   lastOutcomeId: uuid("last_outcome_id").references(() => crmOutcomes.id),
   lastOutcomeAt: timestamp("last_outcome_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Bumped by every update: Edit Lead refuses a save made on a stale copy.
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => ({
   tenantIdx: index("journeys_tenant_idx").on(t.tenantId),
   patientIdx: index("journeys_patient_idx").on(t.patientId),
