@@ -2139,6 +2139,107 @@ export interface CreateLeadResult {
 export type LeadSaveStep = "outcome" | "follow_up" | "appointment" | "call";
 
 // ---------------------------------------------------------------------------
+// Edit Lead: change what the hospital holds about an existing lead (its Patient and its Journey).
+// ---------------------------------------------------------------------------
+
+/** Which parts of the edit form this person may change. Enforced again by the server on every save. */
+export interface LeadEditPermissions {
+  editPatient: boolean;
+  editJourney: boolean;
+  changeOwner: boolean;
+  /** Source is attribution (it moves ROAS and Spend At Risk): admins only, with a reason. */
+  changeSource: boolean;
+}
+
+/** Source correction is an admin action. */
+export const canCorrectLeadSource = (role: Role): boolean => role === "SUPER_ADMIN" || role === "HOSPITAL_ADMIN";
+
+export function leadEditPermissions(role: Role): LeadEditPermissions {
+  return {
+    editPatient: hasPermission(role, "EDIT_PATIENTS"),
+    editJourney: hasPermission(role, "MANAGE_LEADS"),
+    changeOwner: hasPermission(role, "MANAGE_JOURNEYS"),
+    changeSource: canCorrectLeadSource(role) && hasPermission(role, "MANAGE_LEADS"),
+  };
+}
+
+/** Versions of the two rows a save touches: a save made on stale data is refused (409). */
+export interface LeadEditVersions {
+  patient: string;
+  journey: string;
+}
+
+export interface LeadEditModel {
+  journeyId: string;
+  patientId: string;
+  versions: LeadEditVersions;
+  patient: {
+    name: string | null;
+    dateOfBirth: string | null;
+    /** The age the patient reported (used when there is no date of birth). */
+    age: number | null;
+    phone: string;
+    email: string | null;
+    preferredLanguage: string;
+    branchId: string | null;
+    marketingConsent: boolean;
+  };
+  journey: {
+    journeyType: string;
+    specialtyKey: string | null;
+    sourceKey: string | null;
+    sourceLabel: string;
+    priority: TaskPriority;
+    notes: string | null;
+    ownerId: string | null;
+    stage: JourneyStage;
+    campaign: { id: string; name: string } | null;
+  };
+  /** The CRM fields placed on the journey, for this person's role. */
+  fields: CrmFieldVm[];
+  fieldValues: Record<string, unknown>;
+  can: LeadEditPermissions;
+}
+
+/** Only changed fields are sent. `null` clears an optional value. */
+export interface UpdateLeadInput {
+  versions: LeadEditVersions;
+  patient?: {
+    name?: string | null;
+    dateOfBirth?: string | null;
+    age?: number | null;
+    phone?: string;
+    email?: string | null;
+    preferredLanguage?: string;
+    branchId?: string | null;
+    marketingConsent?: boolean;
+  };
+  journey?: {
+    journeyType?: string;
+    specialtyKey?: string;
+    sourceKey?: string;
+    /** Required with a changed `sourceKey`: why the original source was wrong. */
+    sourceReason?: string;
+    priority?: TaskPriority;
+    notes?: string | null;
+    ownerId?: string | null;
+  };
+  customFieldValues?: Record<string, unknown>;
+}
+
+export interface LeadChange {
+  field: string;
+  label: string;
+  from: string | null;
+  to: string | null;
+}
+
+export interface UpdateLeadResult {
+  changes: LeadChange[];
+  versions: LeadEditVersions;
+}
+
+// ---------------------------------------------------------------------------
 // Source vs Channel, lead sources, departments
 // ---------------------------------------------------------------------------
 

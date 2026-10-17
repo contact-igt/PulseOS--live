@@ -12,7 +12,7 @@ import {
   fmtDate, fmtDateTime, formatInr, relativeTime, urgencyLabel,
 } from "@pulseos/ui";
 import { hasPermission, type JourneyDetailVm, type RevenueEventVm } from "@pulseos/types";
-import { CalendarPlus, ChevronRight, ListPlus, Phone, UserRoundCog } from "lucide-react";
+import { CalendarPlus, ChevronRight, ListPlus, Pencil, Phone, UserRoundCog } from "lucide-react";
 import { BackLink, carryFrom } from "@/components/shell/BackLink";
 import { JourneyBreadcrumb } from "@/components/shell/Breadcrumb";
 import { AssignOwnerDialog } from "@/components/journey/AssignOwnerDialog";
@@ -118,6 +118,7 @@ export default function JourneyDetailPage() {
   const canAddFollowUp = role ? hasPermission(role, "MANAGE_TASKS") : false;
   const canBook = role ? hasPermission(role, "MANAGE_APPOINTMENTS") : false;
   const canManageTreatment = role ? hasPermission(role, "MANAGE_TREATMENT") : false;
+  const canEditLead = role ? hasPermission(role, "MANAGE_LEADS") : false;
   // Hooks must run on every render, before the loading/error early returns below.
   const callDetail = useCallDetail(detail.data?.patient.name ?? "");
 
@@ -152,6 +153,11 @@ export default function JourneyDetailPage() {
             {canLogCall && (
               <Button variant="primary" className="min-h-11 lg:min-h-0" onClick={() => setLoggingCall(true)} data-testid="journey-log-call">
                 <Phone size={14} aria-hidden="true" /> Log call
+              </Button>
+            )}
+            {canEditLead && (
+              <Button variant="secondary" className="min-h-11 lg:min-h-0" onClick={() => quickCreate.openEditLead(journey.id)} data-testid="journey-edit-lead">
+                <Pencil size={14} aria-hidden="true" /> Edit lead
               </Button>
             )}
             {canAddFollowUp && (

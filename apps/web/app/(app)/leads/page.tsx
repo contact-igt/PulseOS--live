@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@pulseos/api-client";
@@ -54,6 +54,14 @@ export default function LeadsPage() {
   const workspace = leads.data;
 
   const canAssign = session.data ? hasPermission(session.data.user.role, "MANAGE_JOURNEYS") : false;
+  const canEdit = session.data ? hasPermission(session.data.user.role, "MANAGE_LEADS") : false;
+  // A shared link (?edit=<lead id>) opens that lead's edit drawer once, then clears itself from the address.
+  const editParam = searchParams.get("edit");
+  useEffect(() => {
+    if (!editParam || !canEdit) return;
+    quickCreate.openEditLead(editParam);
+    void replaceUrlParams({ edit: undefined });
+  }, [editParam, canEdit, quickCreate]);
   const owners = lookups.data?.owners ?? [];
   // Search narrows the loaded list; paging only shapes how it is shown (counts above come from the server's filters).
   const found = useMemo(() => searchLeads(workspace?.rows ?? [], filters.q), [workspace, filters.q]);
@@ -193,12 +201,13 @@ export default function LeadsPage() {
             </div>
           </div>
         )}
-        {rows.length > 0 && view === "table" && narrow && <LeadCards rows={rows} onOpen={(lead) => router.push(withFrom(`/journeys/${lead.id}`, "leads"))} />}
+        {rows.length > 0 && view === "table" && narrow && <LeadCards rows={rows} onOpen={(lead) => router.push(withFrom(`/journeys/${lead.id}`, "leads"))} onEdit={canEdit ? (lead) => quickCreate.openEditLead(lead.id) : undefined} />}
         {rows.length > 0 && view === "table" && !narrow && (
           <LeadsTable
             rows={rows}
             columns={columns}
             actions={{
+              onEdit: canEdit ? (lead) => quickCreate.openEditLead(lead.id) : undefined,
               onAddFollowUp: (lead) => quickCreate.openAddTask({ patient: { id: lead.patientId, name: lead.patientName, phone: lead.phone }, journeyId: lead.id }),
               onBookAppointment: (lead) => quickCreate.openNewAppointment({ patient: { id: lead.patientId, name: lead.patientName, phone: lead.phone }, journeyId: lead.id }),
             }}

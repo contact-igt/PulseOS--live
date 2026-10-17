@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@pulseos/api-client";
 import { AddLeadDrawer, AddPatientDrawer, AddTaskDrawer, NewAppointmentDrawer } from "@pulseos/ui";
 import type { Role, SourceChannel } from "@pulseos/types";
+import { EditLeadHost } from "@/components/leads/EditLeadHost";
 import { wallTimeToInstant } from "@/lib/hospitalTime";
 import { useHospitalTimeZone } from "@/lib/useHospitalTimeZone";
 
@@ -17,6 +18,8 @@ interface PatientRef {
 interface QuickCreateContextValue {
   openAddLead: (opts?: { source?: SourceChannel }) => void;
   openAddPatient: () => void;
+  /** Edit an existing lead (its patient and journey) in a drawer. Only offered to roles that can manage leads. */
+  openEditLead: (journeyId: string) => void;
   openNewAppointment: (opts?: { patient?: PatientRef; journeyId?: string }) => void;
   openAddTask: (opts?: { patient?: PatientRef; journeyId?: string }) => void;
 }
@@ -32,6 +35,7 @@ export function useQuickCreate(): QuickCreateContextValue {
 type DrawerState =
   | { kind: "none" }
   | { kind: "lead"; source?: SourceChannel }
+  | { kind: "editLead"; journeyId: string }
   | { kind: "patient" }
   | { kind: "appointment"; patient?: PatientRef; journeyId?: string }
   | { kind: "task"; patient?: PatientRef; journeyId?: string };
@@ -65,6 +69,7 @@ export function QuickCreateProvider({ role, children }: { role: Role; children: 
   const value: QuickCreateContextValue = {
     openAddLead: (opts) => setDrawer({ kind: "lead", source: opts?.source }),
     openAddPatient: () => setDrawer({ kind: "patient" }),
+    openEditLead: (journeyId) => setDrawer({ kind: "editLead", journeyId }),
     openNewAppointment: (opts) => setDrawer({ kind: "appointment", patient: opts?.patient, journeyId: opts?.journeyId }),
     openAddTask: (opts) => setDrawer({ kind: "task", patient: opts?.patient, journeyId: opts?.journeyId }),
   };
@@ -96,6 +101,10 @@ export function QuickCreateProvider({ role, children }: { role: Role; children: 
               onSubmit={api.createLead}
               onCreated={invalidateAfterCreate}
             />
+          )}
+
+          {canManageLeads && drawer.kind === "editLead" && (
+            <EditLeadHost journeyId={drawer.journeyId} lookups={lookups.data} specialties={specialties.data} leadSources={leadSources.data} onClose={() => setDrawer({ kind: "none" })} />
           )}
 
           {canEditPatients && drawer.kind === "patient" && (
