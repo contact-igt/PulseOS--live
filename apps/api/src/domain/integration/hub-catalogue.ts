@@ -69,6 +69,26 @@ export const INTEGRATION_CATALOGUE: CatalogueEntry[] = [
     requiredSecrets: ["accessToken"],
   },
   {
+    // Inbound: a hospital website posts enquiries TO PulseOS (never an outbound webhook). Backed by the existing website-intake
+    // endpoint; its structured settings (a boolean, a list of origins) and its token have their own typed endpoints, so there
+    // are no generic string fields here.
+    key: "website_leads",
+    category: "ADS",
+    name: "Website Leads",
+    provider: "PulseOS Website Intake",
+    purpose: "Receive enquiries from hospital websites and landing pages directly into PulseOS. Automatically create or update patients, lead journeys, attribution, and follow-up tasks.",
+    capability: null,
+    connectorProvider: "website_form",
+    connectorType: "ACQUISITION",
+    connectorCapabilities: ["RECEIVE_FORM"],
+    blockedReason: null,
+    configurationFields: [],
+    secretFields: [],
+    mappingNotes: "Your website's own server posts each enquiry to the address shown under API details, with the intake token in the X-PulseOS-Intake-Token header. The token must never be placed in page JavaScript.",
+    requiredConfig: [],
+    requiredSecrets: [],
+  },
+  {
     key: "runo",
     category: "CALLING",
     name: "Runo",

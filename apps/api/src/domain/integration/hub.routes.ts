@@ -5,6 +5,8 @@ import { recordActivity } from "../activity/activity.service.js";
 import { requirePermission } from "../auth/permission.middleware.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { syncAds } from "../ads/ads-sync.service.js";
+import { websiteFormInputSchema } from "./website-leads-rules.js";
+import { rotateWebsiteIntakeToken, saveWebsiteForm } from "./website-leads.service.js";
 import { configureIntegration, pairWhatsNexus, getHubDetail, listHub, listIntegrationLogs, checkIntegrationStatus, simulateTelephonyTestCall } from "./hub.service.js";
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
@@ -14,6 +16,7 @@ const REASON_STATUS: Record<string, number> = {
   unknown_integration: 404,
   blocked: 409,
   unknown_field: 422,
+  use_website_form_endpoint: 409,
   public_url_not_configured: 409,
   pair_invalid_code: 422,
   pair_code_expired: 422,
@@ -80,6 +83,30 @@ export async function integrationHubRoutes(app: FastifyInstance) {
     // Which kinds of setting changed and which secret NAMES were touched — never a value.
     await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: parsed.data.secrets ? "integration.secret_changed" : "integration.configured", entityType: "integration", entityKey: key, metadata: { settings: Object.keys(parsed.data.configuration ?? {}), protectedFieldNames: Object.keys(parsed.data.secrets ?? {}), mode: parsed.data.mode ?? null } });
     return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, (request.params as { key: string }).key);
+  });
+
+  // Website Leads: the form's typed settings (Admin and Super Admin, like other operational settings). The tenant is the session's,
+  // never the request's; the body is strict, so nothing else can be written.
+  app.put("/integrations/hub/website_leads/form", { preHandler: requirePermission("MANAGE_INTEGRATION_CONFIG") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    const parsed = websiteFormInputSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_request", fields: [...new Set(parsed.error.issues.map((i) => i.path.join(".")))] });
+    const result = await saveWebsiteForm(app.db, u.tenantId, parsed.data);
+    if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });
+    // Which settings changed, never values that could identify a website visitor.
+    await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "integration.configured", entityType: "integration", entityKey: "website_leads", metadata: { settings: Object.keys(parsed.data), enabled: parsed.data.enabled } });
+    return getHubDetail(app.db, u.tenantId, u.role, u.capabilities, "website_leads");
+  });
+
+  // Website Leads intake token: Super Admin only. Creating one replaces the previous (which stops working at once). The value is in
+  // this response only; it is never stored in plain text, never readable again, and never written to the activity log.
+  app.post("/integrations/hub/website_leads/token", { preHandler: requirePermission("MANAGE_INTEGRATION_SECRETS") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    const result = await rotateWebsiteIntakeToken(app.db, u.tenantId);
+    if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });
+    await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "integration.secret_changed", entityType: "integration", entityKey: "website_leads", metadata: { settings: [], protectedFieldNames: ["intakeToken"], mode: null } });
+    reply.header("Cache-Control", "no-store");
+    return { token: result.token, detail: await getHubDetail(app.db, u.tenantId, u.role, u.capabilities, "website_leads") };
   });
 
   // "Connect with code" (WhatsNexus only): Super Admin. The code is spent on WhatsNexus's side; what comes back is saved like typed credentials.

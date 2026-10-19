@@ -127,6 +127,7 @@ export async function touchConnectorSuccess(db: Db, connectorId: string): Promis
 export async function touchConnectorError(db: Db, connectorId: string, error: string): Promise<void> {
   await db
     .update(connectors)
-    .set({ lastError: error, status: "ERROR", updatedAt: new Date() })
+    // A switched-off connector stays off: a late failure (a request already in flight when it was disabled) must not turn it back on.
+    .set({ lastError: error, status: sql`case when ${connectors.status} = 'DISABLED' then ${connectors.status} else 'ERROR'::connector_status end`, updatedAt: new Date() })
     .where(eq(connectors.id, connectorId));
 }

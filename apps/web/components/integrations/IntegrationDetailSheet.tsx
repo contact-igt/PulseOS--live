@@ -10,11 +10,12 @@ import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_
 import { LogsPanel } from "./LogsPanel";
 import { WhatsNexusTemplatesPanel } from "./WhatsNexusTemplatesPanel";
 import { WhatsNexusConnectWithCode } from "./WhatsNexusConnectWithCode";
+import { WebsiteLeadsPanel } from "./WebsiteLeadsPanel";
 import { RemindersSection } from "../settings/RemindersSection";
 
 const field = "h-11 w-full rounded-control border border-line-strong bg-surface px-2 text-sm text-ink outline-none focus:border-primary-500 sm:h-9";
 
-type SectionKey = "overview" | "configuration" | "credentials" | "mappings" | "templates" | "reminders" | "webhooks" | "sync" | "activity" | "health";
+type SectionKey = "overview" | "form" | "configuration" | "credentials" | "mappings" | "templates" | "reminders" | "webhooks" | "sync" | "activity" | "health";
 
 function Overview({ d }: { d: IntegrationDetail }) {
   const queryClient = useQueryClient();
@@ -37,7 +38,7 @@ function Overview({ d }: { d: IntegrationDetail }) {
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
             <div>
               <p className="text-xs font-semibold text-emerald-800">Connection Verified & Live</p>
-              <p className="text-[11px] text-emerald-700">Webhook events and telephony data are flowing properly.</p>
+              <p className="text-[11px] text-emerald-700">{d.key === "website_leads" ? "A real submission from your website has been received." : "Webhook events and telephony data are flowing properly."}</p>
             </div>
           </div>
           <Badge tone="success">Connected</Badge>
@@ -59,7 +60,7 @@ function Overview({ d }: { d: IntegrationDetail }) {
       <p className="text-ink-2">{d.purpose}</p>
       {d.blockedReason && <p className="rounded-control border border-danger-100 bg-danger-100/50 px-3 py-2 text-xs text-danger-700">{d.blockedReason}. Nothing can be enabled or configured until it is provided.</p>}
       <dl className="grid grid-cols-2 gap-3 text-xs">
-        <div><dt className="text-ink-3">Enabled</dt><dd className="mt-0.5">{d.capability ? <Badge tone={d.enabled ? "primary" : "neutral"}>{d.enabled ? "On" : "Off"}</Badge> : "Always available"}</dd></div>
+        <div><dt className="text-ink-3">Enabled</dt><dd className="mt-0.5">{d.capability || d.key === "website_leads" ? <Badge tone={d.enabled ? "primary" : "neutral"}>{d.enabled ? "On" : "Off"}</Badge> : "Always available"}</dd></div>
         <div><dt className="text-ink-3">Configuration</dt><dd className="mt-0.5"><Badge tone={CONFIG_TONE[d.configuration]}>{CONFIG_LABEL[d.configuration]}</Badge></dd></div>
         <div><dt className="text-ink-3">Health</dt><dd className="mt-0.5"><Badge tone={HEALTH_TONE[d.health]}>{HEALTH_LABEL[d.health]}</Badge></dd></div>
         <div><dt className="text-ink-3">Mode</dt><dd className="mt-0.5"><Badge tone={MODE_TONE[d.mode]}>{MODE_LABEL[d.mode]}</Badge></dd></div>
@@ -394,16 +395,18 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
   const [section, setSection] = useState<SectionKey>("overview");
   const d = q.data;
   const isTelephony = d?.key === "ccs_ivr" || d?.key === "runo";
+  const isWebsite = d?.key === "website_leads";
   const canManageReminders = !!session.data && hasPermission(session.data.user.role, "MANAGE_SPECIALTIES");
   const sections: { key: SectionKey; label: string }[] = d
     ? [
         { key: "overview", label: "Overview" },
+        ...(isWebsite && d.websiteForm ? [{ key: "form" as const, label: "Website form" }] : []),
         ...(d.configurationFields.length ? [{ key: "configuration" as const, label: "Configuration" }] : []),
         ...(d.secretFields.length ? [{ key: "credentials" as const, label: "Credentials" }] : []),
-        ...(d.mappingNotes ? [{ key: "mappings" as const, label: "Mappings" }] : []),
+        ...(d.mappingNotes && !isWebsite ? [{ key: "mappings" as const, label: "Mappings" }] : []),
         ...(d.key === "whatsnexus" ? [{ key: "templates" as const, label: "Templates" }] : []),
         ...(d.key === "whatsnexus" && canManageReminders ? [{ key: "reminders" as const, label: "Reminders" }] : []),
-        ...(d.webhookUrl ? [{ key: "webhooks" as const, label: "Webhooks" }] : []),
+        ...(d.webhookUrl && !isWebsite ? [{ key: "webhooks" as const, label: "Webhooks" }] : []),
         ...(d.syncRuns || isTelephony ? [{ key: "sync" as const, label: "Sync" }] : []),
         ...(d.key !== "webhooks" && !d.blockedReason ? [{ key: "activity" as const, label: "Activity" }, { key: "health" as const, label: "Health" }] : []),
       ]
@@ -416,6 +419,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
         <div className="space-y-4">
           <Tabs variant="underline" ariaLabel="Integration sections" value={section} onChange={(k) => setSection(k as SectionKey)} items={sections.map((s) => ({ ...s, testId: `detail-tab-${s.key}` }))} />
           {section === "overview" && <Overview d={d} />}
+          {section === "form" && d.websiteForm && <WebsiteLeadsPanel d={d} />}
           {section === "configuration" && <ConfigurationForm d={d} secrets={false} />}
           {section === "credentials" && (
             <>

@@ -8,7 +8,9 @@ import { redactLogText } from "../security/redact.js";
 import { listSyncRuns } from "../ads/ads-sync.service.js";
 import { ADS_PROVIDERS, type AdsProvider } from "@pulseos/types";
 import { INTEGRATION_CATALOGUE, catalogueEntry, type CatalogueEntry } from "./hub-catalogue.js";
-import { deriveConfiguration, deriveHealth, deriveMode, type ConnectorFacts } from "./hub-state.js";
+import { deriveConfiguration, deriveHealth, deriveMode, deriveWebsiteLeads, type ConnectorFacts } from "./hub-state.js";
+import { websiteFormView } from "./website-leads.service.js";
+import { readWebsiteForm, resolvePublicApiBase } from "./website-leads-rules.js";
 import { recordConnectorEvent, markEventProcessed } from "../connector/connector-event.service.js";
 import { whatsNexusAdapter } from "../connector/adapters/whatsnexus.js";
 import { validateWebhookUrl, webhookAllowInsecure } from "./webhook-rules.js";
@@ -37,7 +39,7 @@ async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: C
     const phoneNumbers = endpoints
       .filter((e) => e.connectorId === row.id)
       .map((e) => ({ number: e.publicNumber, label: e.displayLabel, active: e.isActive }));
-    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys }, phoneNumbers });
+    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys, lastEventAt: row.lastEventAt }, phoneNumbers });
   }
   return out;
 }
@@ -72,22 +74,25 @@ async function webhookFacts(db: Db, tenantId: string): Promise<WebhookFacts> {
 
 function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] } | undefined, wh: WebhookFacts): IntegrationCard {
   const facts = found?.facts ?? null;
-  const enabled = entry.capability ? caps[entry.capability] : true;
-  let configuration = deriveConfiguration(entry, facts);
+  const websiteState = entry.key === "website_leads" ? deriveWebsiteLeads(facts) : null;
+  // Marked connected but never actually received anything: judged as still waiting for its first submission.
+  const judged: ConnectorFacts | null = websiteState && facts && facts.status === "CONNECTED" && !websiteState.verified ? { ...facts, status: "CONNECTING" } : facts;
+  const enabled = websiteState ? websiteState.enabled : entry.capability ? caps[entry.capability] : true;
+  let configuration = websiteState ? websiteState.configuration : deriveConfiguration(entry, facts);
   if (entry.key === "webhooks") configuration = wh.total > 0 ? "CONFIGURED" : "NOT_CONFIGURED";
 
   const mode =
     entry.key === "webhooks"
       ? wh.total === 0 ? "NOT_CONFIGURED" : wh.enabled === 0 ? "DISABLED" : wh.lastDelivery === "SENT" ? "LIVE_CONFIGURED" : "LIVE_CAPABLE"
-      : deriveMode(entry, enabled, configuration, facts);
+      : deriveMode(entry, enabled, configuration, judged);
 
   const health =
     entry.key === "webhooks"
       ? wh.lastDelivery === "SENT" ? "HEALTHY" : wh.lastDelivery === "FAILED" ? "UNHEALTHY" : wh.total > 0 ? "UNKNOWN" : "NOT_APPLICABLE"
-      : deriveHealth(entry, facts);
+      : deriveHealth(entry, judged);
 
   const isConnected =
-    found?.row.status === "CONNECTED" ||
+    (websiteState ? websiteState.verified : found?.row.status === "CONNECTED") ||
     (entry.key === "webhooks" && wh.enabled > 0 && wh.lastDelivery === "SENT");
 
   return {
@@ -104,7 +109,8 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
     blockedReason: entry.blockedReason,
     lastSyncAt: found?.row.lastSyncAt?.toISOString() ?? null,
     lastEventAt: found?.row.lastEventAt?.toISOString() ?? null,
-    lastError: found?.row.lastError ?? null,
+    // Website intake errors can quote what a visitor typed, so the card carries a category (websiteForm.lastErrorSummary), not the text.
+    lastError: entry.key === "website_leads" ? (found?.row.lastError ? "The last submission could not be processed." : null) : found?.row.lastError ?? null,
     // Webhooks, WhatsNexus and credentials are Super Admin territory; operational settings are Admin and Super Admin.
     canConfigure: entry.key === "webhooks" || entry.key === "whatsnexus" ? hasPermission(role, "MANAGE_INTEGRATION_SECRETS") : !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_CONFIG"),
     canManageSecrets: !entry.blockedReason && hasPermission(role, "MANAGE_INTEGRATION_SECRETS"),
@@ -139,6 +145,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
 
   const config = found?.facts.configuration ?? {};
   const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
+  const websitePublicBase = entry.key === "website_leads" ? resolvePublicApiBase(process.env.PUBLIC_API_BASE_URL, process.env.NODE_ENV, process.env.PORT) : null;
   const webhookPath =
     found && entry.key === "whatsapp_meta_cloud"
       ? `/webhooks/whatsapp/${found.row.id}`
@@ -146,6 +153,8 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
       ? `/webhooks/runo/${found.row.id}`
       : found && entry.key === "ccs_ivr"
       ? `/webhooks/ccs/${found.row.id}`
+      : found && entry.key === "website_leads"
+      ? `/forms/website/${found.row.id}`
       : entry.key === "whatsnexus"
       ? `/webhooks/whatsnexus/${tenantId}`
       : null;
@@ -187,8 +196,10 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
     mappingNotes: entry.key === "whatsnexus" ? await whatsNexusNotes(db, tenantId, entry.mappingNotes) : entry.mappingNotes,
     syncRuns: (ADS_PROVIDERS as readonly string[]).includes(entry.key) ? await listSyncRuns(db, tenantId, entry.key as AdsProvider) : undefined,
     recentCalls,
-    webhookUrl: webhookPath ? `${base_}${webhookPath}` : null,
+    // Website Leads is called from the internet: a missing or malformed public address is withheld, never shown as localhost or a bare path.
+    webhookUrl: webhookPath ? (entry.key === "website_leads" ? (websitePublicBase === null ? null : `${websitePublicBase}${webhookPath}`) : `${base_}${webhookPath}`) : null,
     connectorMode: found?.row.mode ?? null,
+    ...(entry.key === "website_leads" ? { websiteForm: websiteFormView(found?.row ?? null, found?.facts.secretKeys ?? [], websitePublicBase) } : {}),
   };
 }
 
@@ -223,6 +234,8 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   if (!entry) return { ok: false, reason: "unknown_integration" };
 
   if (entry.blockedReason || !entry.connectorProvider) return { ok: false, reason: "blocked" };
+  // Website Leads has typed settings and its own token endpoint; the generic string form must never create or change it.
+  if (key === "website_leads") return { ok: false, reason: "use_website_form_endpoint" };
   const connector = await ensureConnector(db, tenantId, entry);
   if (!connector) return { ok: false, reason: "blocked" };
 
@@ -333,6 +346,7 @@ export async function checkIntegrationStatus(
   }
 
   if (entry.key === "whatsnexus") return checkWhatsNexusStatus(db, tenantId, now);
+  if (entry.key === "website_leads") return checkWebsiteLeadsStatus(db, tenantId, now);
 
   if (!entry.connectorProvider) {
     return {
@@ -392,6 +406,39 @@ export async function checkIntegrationStatus(
       lastEventAt: lastEvent ? new Date(lastEvent).toISOString() : null,
       hasSecrets,
     },
+  };
+}
+
+/**
+ * Read-only. A website cannot be reached from here, so this never promotes the connector: it only reports what real submissions
+ * have already proven. Saved settings or a token are not proof that the website can submit.
+ */
+async function checkWebsiteLeadsStatus(db: Db, tenantId: string, now: Date): Promise<HealthCheckResult> {
+  const checkedAt = now.toISOString();
+  const [connector] = await db.select().from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, "website_form"))).limit(1);
+  if (!connector) return { ok: false, health: "UNKNOWN", status: "NOT_CONFIGURED", message: "Website Leads has not been set up yet. Save the website form and generate an intake token first.", checkedAt };
+  const intent = readWebsiteForm((connector.configuration as Record<string, unknown> | null) ?? {}, connector.status).enabled;
+  if (connector.status === "DISABLED" && !intent) return { ok: false, health: "NOT_APPLICABLE", status: "DISABLED", message: "Website intake is switched off: every submission is refused until it is switched on again.", checkedAt };
+  const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connector.id)).limit(1);
+  let hasToken = false;
+  try {
+    hasToken = !!secret && typeof decryptSecret(secret.encryptedPayload).intakeToken === "string";
+  } catch {
+    hasToken = false;
+  }
+  const lastEventAt = connector.lastEventAt?.toISOString() ?? null;
+  const details = { mode: connector.mode, hasToken, lastEventAt };
+  // Switched on by the admin but held closed because there is no token yet.
+  if (connector.status === "DISABLED") return { ok: false, health: "UNKNOWN", status: "NOT_CONFIGURED", message: "No intake token yet, so every submission is refused. Generate one, then send a request from your website's server.", checkedAt, details };
+  if (connector.status === "ERROR") return { ok: false, health: "UNHEALTHY", status: "ERROR", message: "The last submission could not be processed. Open Activity to see when it happened.", checkedAt, details };
+  if (connector.status === "CONNECTED" && lastEventAt) return { ok: true, health: "HEALTHY", status: "CONNECTED", message: lastEventAt ? `Receiving submissions. The last one arrived ${lastEventAt}.` : "Receiving submissions.", checkedAt, details };
+  return {
+    ok: false,
+    health: "UNKNOWN",
+    status: connector.status === "CONNECTED" ? "CONNECTING" : connector.status,
+    message: hasToken ? "Not verified yet: no submission has arrived since the last change. Send a request from your website's server to confirm." : "No intake token yet. Generate one, then send a request from your website's server.",
+    checkedAt,
+    details,
   };
 }
 
@@ -557,6 +604,9 @@ export async function simulateTelephonyTestCall(
 
 // -- Logs -------------------------------------------------------------------
 
+/** Only our own fixed categories are ever shown; anything else collapses to a generic word. */
+const rejectionLabel = (c: string | undefined) => (["auth", "origin", "validation", "disabled"].includes(c ?? "") ? c : "other");
+
 export interface LogFilters {
   provider?: string;
   status?: string;
@@ -584,7 +634,7 @@ export async function listIntegrationLogs(db: Db, tenantId: string, filters: Log
       .limit(limit);
     for (const { e, provider } of events) {
       const type = (e.payload as { type?: string } | null)?.type;
-      rows.push({ id: e.id, provider, direction: e.direction, status: e.status, summary: type ? `${type} event` : "event", error: redactLogText(e.error), at: e.receivedAt.toISOString() });
+      rows.push({ id: e.id, provider, direction: e.direction, status: e.status, summary: type === "website_rejected" ? `submission rejected (${rejectionLabel((e.payload as { category?: string }).category)})` : type ? `${type} event` : "event", error: redactLogText(e.error), at: e.receivedAt.toISOString() });
     }
   }
 

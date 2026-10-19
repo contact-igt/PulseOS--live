@@ -2,12 +2,13 @@
 
 import { Badge, relativeTime } from "@pulseos/ui";
 import type { IntegrationCard } from "@pulseos/types";
-import { BarChart3, Megaphone, MessageCircle, Phone, PhoneCall, Smartphone, Webhook } from "lucide-react";
+import { BarChart3, Globe, Megaphone, MessageCircle, Phone, PhoneCall, Smartphone, Webhook } from "lucide-react";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 
 const ICON: Record<IntegrationCard["key"], typeof Phone> = {
   google_ads: BarChart3,
   meta_ads: Megaphone,
+  website_leads: Globe,
   runo: Phone,
   ccs_ivr: PhoneCall,
   whatsapp_meta_cloud: MessageCircle,
@@ -76,7 +77,7 @@ export function IntegrationCardView({ card, onOpen }: { card: IntegrationCard; o
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-[11px]">
         <div>
           <dt className="text-ink-3">Enabled</dt>
-          <dd>{card.capability ? <Badge tone={card.enabled ? "primary" : "neutral"}>{card.enabled ? "On" : "Off"}</Badge> : <span className="text-ink-2">Always available</span>}</dd>
+          <dd>{card.capability || card.key === "website_leads" ? <Badge tone={card.enabled ? "primary" : "neutral"}>{card.enabled ? "On" : "Off"}</Badge> : <span className="text-ink-2">Always available</span>}</dd>
         </div>
         <div>
           <dt className="text-ink-3">Configuration</dt>
@@ -93,7 +94,7 @@ export function IntegrationCardView({ card, onOpen }: { card: IntegrationCard; o
       </dl>
       {card.lastEventAt && (
         <p className="text-[11px] text-ink-3">
-          Last event: <span className="font-medium text-ink-2">{relativeTime(card.lastEventAt)}</span>
+          {card.key === "website_leads" ? "Last submission" : "Last event"}: <span className="font-medium text-ink-2">{relativeTime(card.lastEventAt)}</span>
         </p>
       )}
     </button>

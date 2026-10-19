@@ -169,7 +169,9 @@ describe.skipIf(!DEMO_PASSWORD)("notifications: reminders and staff WhatsApp (in
     expect(all.filter((r) => r.status === "CANCELLED" && r.reason === "RESCHEDULED")).toHaveLength(2); // the old day/hour reminders
     expect(all.filter((r) => r.status === "SENT")).toHaveLength(1);
     const fresh = all.filter((r) => r.subjectAt!.getTime() === newAt.getTime() && r.status === "PENDING");
-    expect(fresh).toHaveLength(4); // the change notice, a new confirmation, and the two reminders at the new time
+    // The change notice goes out now and the two reminders follow the new time. A second, immediate confirmation is not planned: it
+    // would land inside the minimum gap of the change notice (TOO_CLOSE_TO_PREVIOUS_NOTIFICATION), which is the point of the notice.
+    expect(fresh).toHaveLength(3);
     expect(sorted(fresh).map((r) => r.scheduledFor.getTime()).slice(1)).toEqual([newAt.getTime() - 86_400_000, newAt.getTime() - 3_600_000]);
   });
 

@@ -226,12 +226,16 @@ describe.skipIf(!DEMO_PASSWORD)("appointment notification reconciliation (integr
     await new Promise((r) => setTimeout(r, 300));
     await reconcile();
     const rs = await rows(a.id);
-    expect(rs).toHaveLength(3);
-    expect(rs.every((r) => r.status === "CANCELLED" && r.reason === "RESCHEDULED")).toBe(true);
+    // The three rows for the old time stay cancelled and are not resurrected; the one new row is the immediate change notice
+    // that every reschedule now queues for the new time.
+    expect(rs).toHaveLength(4);
+    expect(rs.filter((r) => r.status === "CANCELLED" && r.reason === "RESCHEDULED")).toHaveLength(3);
+    expect(rs.filter((r) => r.status === "PENDING" && r.subjectAt!.getTime() === newAt.getTime())).toHaveLength(1);
     // Re-confirmed (without the event, as in a crash): the NEW time is planned, the old rows stay cancelled.
     await db.update(appointments).set({ status: "confirmed" }).where(eq(appointments.id, a.id));
     await reconcile();
     const after = await rows(a.id);
+    // The change notice and the two reminders; no second immediate confirmation (inside the change notice's minimum gap).
     expect(after.filter((r) => r.status === "PENDING" && r.subjectAt!.getTime() === newAt.getTime())).toHaveLength(3);
     expect(after.filter((r) => r.status === "CANCELLED")).toHaveLength(3);
   });

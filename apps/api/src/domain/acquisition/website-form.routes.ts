@@ -7,6 +7,7 @@ import { throttleAddress } from "../auth/login-throttle.js";
 import { normalizePhone, resolveDefaultPhoneRegion } from "../patient/phone.js";
 import { SlidingWindowLimiter } from "../../lib/rate-limiter.js";
 import { processWebsiteFormSubmission } from "./website-form.service.js";
+import { noteRejectedSubmission } from "./website-intake-rejections.js";
 
 // Every field has a ceiling: this endpoint is public, so nothing a stranger sends may be unbounded.
 const short = (max: number) => z.string().trim().max(max);
@@ -46,6 +47,8 @@ interface IntakeConfig {
   fixedSource?: "website";
   /** A browser request carrying an Origin that is not listed is refused. Requests with no Origin (server-to-server) are judged by the token alone. */
   allowedOrigins?: string[];
+  /** Set by the Integration Hub: the intake stays closed until a token exists. Older connectors do not have it and behave as before. */
+  requireToken?: boolean;
 }
 
 const readConfig = (raw: unknown): IntakeConfig => {
@@ -54,6 +57,7 @@ const readConfig = (raw: unknown): IntakeConfig => {
     requireService: c.requireService === true,
     fixedSource: c.fixedSource === "website" ? "website" : undefined,
     allowedOrigins: Array.isArray(c.allowedOrigins) ? c.allowedOrigins.filter((o): o is string => typeof o === "string").slice(0, 20) : undefined,
+    requireToken: c.requireToken === true,
   };
 };
 
@@ -89,12 +93,14 @@ export async function websiteFormRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "not_found" });
     }
     if (connector.status === "DISABLED") {
+      await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "disabled");
       return reply.status(403).send({ error: "connector_disabled" });
     }
 
     const config = readConfig(connector.configuration);
     const origin = request.headers.origin;
     if (config.allowedOrigins && config.allowedOrigins.length > 0 && typeof origin === "string" && !config.allowedOrigins.includes(origin)) {
+      await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "origin");
       return reply.status(403).send({ error: "origin_not_allowed" });
     }
 
@@ -102,17 +108,31 @@ export async function websiteFormRoutes(app: FastifyInstance) {
     const expectedToken = typeof secrets?.intakeToken === "string" && secrets.intakeToken.length > 0 ? secrets.intakeToken : null;
     if (expectedToken) {
       const sent = request.headers["x-pulseos-intake-token"];
-      if (typeof sent !== "string" || sent.length === 0 || !sameSecret(sent, expectedToken)) return reply.status(401).send({ error: "unauthorized" });
+      if (typeof sent !== "string" || sent.length === 0 || !sameSecret(sent, expectedToken)) {
+        await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "auth");
+        return reply.status(401).send({ error: "unauthorized" });
+      }
+    } else if (config.requireToken) {
+      // Configured through the Hub but no token generated yet: closed, with the same answer as a wrong token.
+      await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "auth");
+      return reply.status(401).send({ error: "unauthorized" });
     }
 
     const parsed = submissionBody.safeParse(request.body);
     if (!parsed.success) {
+      await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "validation");
       return reply.status(422).send({ error: "invalid_request" });
     }
     const data = parsed.data;
-    if (config.requireService && !data.service) return reply.status(422).send({ error: "invalid_request" });
+    if (config.requireService && !data.service) {
+      await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "validation");
+      return reply.status(422).send({ error: "invalid_request" });
+    }
     const region = await resolveDefaultPhoneRegion(app.db, connector.tenantId);
-    if (!normalizePhone(data.phone, region).e164) return reply.status(422).send({ error: "invalid_request" });
+    if (!normalizePhone(data.phone, region).e164) {
+      await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "validation");
+      return reply.status(422).send({ error: "invalid_request" });
+    }
 
     const { duplicate, eventId } = await recordConnectorEvent(app.db, {
       tenantId: connector.tenantId,
@@ -158,8 +178,10 @@ export async function websiteFormRoutes(app: FastifyInstance) {
       // A closed (token-protected) intake tells the caller only what it needs; internal ids stay inside.
       return reply.status(200).send(expectedToken ? { ok: true, duplicate: false, deduped: result.deduped } : { ok: true, duplicate: false, ...result });
     } catch (err) {
-      await markEventFailed(app.db, eventId, (err as Error).message);
-      await touchConnectorError(app.db, connectorId, (err as Error).message);
+      // A category, never the error text: database errors quote the request (name, phone), and this text is shown in the Hub.
+      request.log.error({ connectorId, errorName: (err as Error).name }, "website intake processing failed");
+      await markEventFailed(app.db, eventId, "processing_failed");
+      await touchConnectorError(app.db, connectorId, "processing_failed");
       return reply.status(500).send({ error: "processing_failed" });
     }
   });

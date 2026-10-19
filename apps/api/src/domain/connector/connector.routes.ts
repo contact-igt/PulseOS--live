@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireCapability, requirePermission } from "../auth/permission.middleware.js";
 import { hasPermission } from "@pulseos/types";
-import { getConnectorDetail, listConnectors, upsertConnectorConfig } from "./connector.service.js";
+import { getConnectorById, getConnectorDetail, listConnectors, upsertConnectorConfig } from "./connector.service.js";
 import { syncConnectorCampaigns } from "../acquisition/campaign-sync.service.js";
 import { syncConnectorPerformance } from "../acquisition/gbp-performance.service.js";
 import {
@@ -45,6 +45,12 @@ export async function connectorRoutes(app: FastifyInstance) {
     // refused outright (not silently stripped) if the request carries secrets.
     if (body?.secrets !== undefined && !hasPermission(request.sessionUser!.role, "MANAGE_INTEGRATION_SECRETS")) {
       return reply.status(403).send({ error: "forbidden", requiredPermission: "MANAGE_INTEGRATION_SECRETS" });
+    }
+    // The website intake's settings are typed (a boolean, a list of origins) and validated by their own endpoint; writing them here would
+    // skip that validation and the intake would silently ignore a malformed value. (Its token, a secret, is still Super Admin only above.)
+    if (body?.configuration !== undefined) {
+      const target = await getConnectorById(app.db, id);
+      if (target && target.tenantId === tenantId && target.provider === "website_form") return reply.status(409).send({ error: "use_website_form_endpoint" });
     }
     const result = await upsertConnectorConfig(app.db, tenantId, id, body);
     if (!result.ok) return reply.status(REASON_STATUS[result.reason] ?? 400).send({ error: result.reason });

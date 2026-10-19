@@ -36,6 +36,15 @@ Origin: (optional; if sent it must be https://www.namokar-eye.example)
 Finds the patient by normalized phone (or creates one), uses the patient's open journey or opens a new one for the service, records **Source = Website** (whatever UTM tags say), writes a Timeline line "Website enquiry received" with the message, and creates a callback task for the team. Internal ids are **not** returned.
 
 ## Configuration (non-secret, on the connector)
-`requireService`, `fixedSource: "website"`, `allowedOrigins: [...]`. The token is stored encrypted as the connector secret `intakeToken`. The seeded token is a **fixture** and must be replaced before any real website posts. Replace it with `PATCH /connectors/{connectorId}` and `{ "secrets": { "intakeToken": "<a long random value>" } }` (Super Admin only). The Integrations screen has **no field for this token yet** — a known gap; until then use the API.
+`requireService`, `fixedSource: "website"`, `allowedOrigins: [...]`. Settings are now managed in **Integrations → Ads & Attribution → Website Leads → Website form** (typed settings; the form ID is a label, not a security boundary). A Super Admin creates or replaces the token there: it is shown once, stored encrypted as the connector secret `intakeToken`, and replacing it stops the old one at once. A connector configured through that screen has `requireToken: true`, so the intake refuses every request until a token exists; connectors created before it (no flag) behave as before. Processing failures are recorded as the category `processing_failed` only, never the error text.
+
+### Refused requests in Activity
+Refusals for a real connector appear under Integrations → Website Leads → Activity as **submission rejected (auth | origin | validation | disabled)** with fixed wording only: never the visitor's details, headers, the token or the body. At most one entry per kind per minute is stored however many requests are refused, an unknown connector id writes nothing, and these never change the connector's health. Rate-limited (429) requests are answered before the connector is looked up and are not recorded.
+
+### Behind a proxy
+Set `TRUST_PROXY` to the number of proxies in front of the API; unset means trust nobody, so a forged `X-Forwarded-For` cannot change a client's rate-limit identity. Set `PUBLIC_API_BASE_URL` to the API's public https address: in production without it the Hub shows no intake address (not a localhost one).
+
+### Failures and retries
+A submission is stored all-or-nothing: if processing fails, nothing is kept, the event is recorded as `processing_failed`, and a retry with the same `submissionId` creates the complete set once.
 
 Not configured live: nothing posts to this endpoint until Namokar's website is changed to do so.

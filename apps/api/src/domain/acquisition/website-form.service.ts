@@ -58,7 +58,9 @@ export async function processWebsiteFormSubmission(
     metadata: { pageUrl: input.pageUrl, formId: input.formId },
   };
 
-  const result = await ingestNormalizedLead(db, tenantId, lead, {
+  // All-or-nothing for this source: a failure part-way (after the patient, before the follow-up task) must not leave a half-made
+  // lead behind, because the retry would then reuse that journey and never create the task. The shared pipeline is unchanged.
+  const result = await db.transaction((tx) => ingestNormalizedLead(tx as unknown as Db, tenantId, lead, {
     branchId: input.branchId,
     journeyTypeFallback: input.service ?? "Website Enquiry",
     campaignNameFallback: "Website – Direct",
@@ -69,7 +71,7 @@ export async function processWebsiteFormSubmission(
     additionalTouchEventType: "website_form_resubmitted",
     additionalTouchTitle: "Website form resubmitted",
     description: [input.message, input.pageUrl].filter((x): x is string => !!x).join(" · ") || null,
-  });
+  }));
 
   return { patientId: result.patientId, journeyId: result.journeyId, touchpointId: result.touchpointId, deduped: result.journeyReused };
 }
