@@ -7,10 +7,11 @@ describe("capability defaults by edition (a default bundle, not a fork)", () => 
     expect(resolveCapabilities("BETA_V2_GROWTH", {}).ANALYTICS_CORE).toBe(true);
   });
 
-  it("V1 defaults: marketing, ads, inbox and conversation intelligence off; WhatsApp notifications on", () => {
+  it("V1 defaults: marketing, ads, inbox and conversation intelligence off; WhatsApp notifications and calling (Runo, CCS IVR) on", () => {
     const v1 = resolveCapabilities("BETA_V1_CORE", {});
-    for (const off of ["MARKETING_ANALYTICS", "GOOGLE_ADS", "META_ADS", "WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "SPEND_ATTRIBUTION", "CCS_IVR", "SMS_NOTIFICATIONS"] as const) expect(v1[off], off).toBe(false);
-    for (const on of ["ANALYTICS_CORE", "RUNO_CALLING", "WHATSAPP_NOTIFICATIONS"] as const) expect(v1[on], on).toBe(true);
+    for (const off of ["MARKETING_ANALYTICS", "GOOGLE_ADS", "META_ADS", "WHATSAPP_INBOX", "CONVERSATION_INTELLIGENCE", "CAMPAIGNS", "SPEND_ATTRIBUTION", "SMS_NOTIFICATIONS"] as const) expect(v1[off], off).toBe(false);
+    // CCS IVR is a V1 default since the CCS Express IVR integration shipped (it is an operational capability an Admin may switch).
+    for (const on of ["ANALYTICS_CORE", "RUNO_CALLING", "CCS_IVR", "WHATSAPP_NOTIFICATIONS"] as const) expect(v1[on], on).toBe(true);
   });
 
   it("V2 defaults: marketing, inbox, conversation intelligence on", () => {

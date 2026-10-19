@@ -37,7 +37,7 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
 
   it("lists the catalogue by category with enabled, configuration, health and mode as separate facts", async () => {
     const cards = await hub(v1, "HOSPITAL_ADMIN");
-    expect(cards.map((c) => c.key)).toEqual(["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "whatsnexus", "sms", "webhooks"]);
+    expect(cards.map((c) => c.key)).toEqual(["google_ads", "meta_ads", "website_leads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "whatsnexus", "sms", "webhooks"]);
     const google = cards.find((c) => c.key === "google_ads")!;
     expect(google).toMatchObject({ category: "ADS", enabled: false, mode: "DISABLED", configuration: "NOT_CONFIGURED" }); // V1 default: off
     const wa = cards.find((c) => c.key === "whatsapp_meta_cloud")!;

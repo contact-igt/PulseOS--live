@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fixtureFacts, daysBetween } from "../domain/ads/fixture.js";
-import { googleAdsProvider, microsToMajor, parseGoogleRows } from "../domain/ads/google-ads.js";
+import { GOOGLE_ADS_API_VERSION, googleAdsProvider, microsToMajor, parseGoogleRows } from "../domain/ads/google-ads.js";
 import { metaAdsProvider, parseMetaInsights } from "../domain/ads/meta-ads.js";
 import { TransientAdsError } from "../domain/ads/types.js";
 import { mappedActionTypes, sumMappedActions } from "../domain/ads/ads-analytics.service.js";
@@ -43,6 +43,8 @@ describe("Google Ads adapter", () => {
     await googleAdsProvider.fetchDailyFacts({ customerId: "123-456-7890" }, { developerToken: "dev-tok", clientId: "cid", clientSecret: "csecret", refreshToken: "rtok" }, { from: "2026-09-01", to: "2026-09-02" });
     expect(calls).toHaveLength(2);
     const search = calls[1]!;
+    expect(GOOGLE_ADS_API_VERSION).toBe("v26");
+    expect(search.url).toContain(`/v26/customers/1234567890/googleAds:searchStream`);
     expect(search.url).toContain("/customers/1234567890/googleAds:searchStream");
     expect(search.url).not.toContain("mutate");
     expect(search.url).not.toMatch(/dev-tok|ya29|csecret|rtok/);

@@ -13,6 +13,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/seed/seed.ts",
+    "audit:website-intake": "tsx src/scripts/audit-website-intake.ts",
     "staff:add": "tsx src/ops/add-staff.ts"
   },
   "dependencies": {

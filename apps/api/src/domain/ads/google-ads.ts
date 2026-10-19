@@ -1,8 +1,8 @@
 import { TransientAdsError, adsFetch, type AdsReportingProvider, type NormalizedAdFact } from "./types.js";
 import { fixtureFacts } from "./fixture.js";
 
-/** Configurable per tenant (`apiVersion`) because Google retires API versions on a fixed schedule. */
-export const GOOGLE_ADS_API_VERSION = "v21";
+/** Google Ads retires versions regularly; keep this on a supported release and upgrade deliberately. */
+export const GOOGLE_ADS_API_VERSION = "v26";
 
 /** Google reports money in micros of the account currency. */
 export const microsToMajor = (micros: string | number): number => Math.round((Number(micros) / 1_000_000) * 100) / 100;
@@ -46,7 +46,7 @@ export const googleAdsProvider: AdsReportingProvider = {
     }
     const { developerToken, clientId, clientSecret, refreshToken } = secrets as Record<string, string | undefined>;
     if (!customerId || !developerToken || !clientId || !clientSecret || !refreshToken) throw new Error("Google Ads is missing its customer ID or credentials");
-    const version = String(config.apiVersion ?? GOOGLE_ADS_API_VERSION);
+    const version = GOOGLE_ADS_API_VERSION;
 
     // 1) OAuth refresh-token exchange. Credentials go in the request body to Google's token endpoint and nowhere else.
     const tokenRes = await adsFetch("https://oauth2.googleapis.com/token", {

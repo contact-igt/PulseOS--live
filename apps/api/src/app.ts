@@ -46,7 +46,8 @@ export async function buildApp() {
   // Behind a reverse proxy set TRUST_PROXY=<number of proxy hops> (usually 1) so request.ip is the client's address — the
   // sign-in throttle keys on it. Unset trusts no proxy: all clients then share the proxy's address.
   const options: FastifyServerOptions = {
-    logger: true,
+    // shortcut: redact the whole URL rather than parse sensitive query keys; use a tested path-only serializer if endpoint-level request logging is needed.
+    logger: { redact: ["req.url"] },
     // Base64 media is capped again at the route boundary; allow the largest supported document plus encoding overhead.
     bodyLimit: 35 * 1024 * 1024,
     // Fastify accepts a hop count at runtime (proxy-addr); its type declaration omits `number`.

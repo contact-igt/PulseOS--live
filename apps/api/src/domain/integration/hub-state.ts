@@ -6,6 +6,8 @@ export interface ConnectorFacts {
   mode: "FIXTURE" | "SANDBOX" | "LIVE";
   configuration: Record<string, unknown> | null;
   secretKeys: string[];
+  /** When the connector last accepted a real event (a submission, a call). Null if it never has. */
+  lastEventAt?: Date | null;
 }
 
 export function deriveConfiguration(entry: CatalogueEntry, connector: ConnectorFacts | null): IntegrationConfigurationState {
@@ -22,6 +24,22 @@ export function deriveConfiguration(entry: CatalogueEntry, connector: ConnectorF
   const need = entry.requiredConfig.length + secrets.length;
   if (need === 0) return "CONFIGURED";
   return have === 0 ? "NOT_CONFIGURED" : have === need ? "CONFIGURED" : "PARTIAL";
+}
+
+/**
+ * Website Leads has no on/off tenant capability: its switch is the connector itself (status DISABLED refuses every submission).
+ * Configured means a token exists. Without one the intake is either closed (connectors configured through the Hub) or, for an
+ * older connector, open to anyone holding the address, so it is reported as only partly configured either way.
+ */
+export function deriveWebsiteLeads(connector: ConnectorFacts | null): { enabled: boolean; configuration: IntegrationConfigurationState; verified: boolean } {
+  if (!connector) return { enabled: true, configuration: "NOT_CONFIGURED", verified: false };
+  return {
+    // The admin's own choice (a form with no token is held DISABLED but is not "switched off"); older connectors: the status.
+    enabled: typeof connector.configuration?.formEnabled === "boolean" ? connector.configuration.formEnabled : connector.status !== "DISABLED",
+    configuration: connector.secretKeys.includes("intakeToken") ? "CONFIGURED" : "PARTIAL",
+    // Connected means a REAL submission was accepted. A status flag alone (a seeded sample, a stale value) proves nothing.
+    verified: connector.status === "CONNECTED" && !!connector.lastEventAt,
+  };
 }
 
 /** Health is only what the provider/connection last told us; unknown stays unknown (never assumed healthy). */

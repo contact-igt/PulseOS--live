@@ -2906,7 +2906,7 @@ export interface ActivityEntry {
   metadata: Record<string, unknown>;
 }
 
-export const INTEGRATION_KEYS = ["google_ads", "meta_ads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "whatsnexus", "sms", "webhooks"] as const;
+export const INTEGRATION_KEYS = ["google_ads", "meta_ads", "website_leads", "runo", "ccs_ivr", "whatsapp_meta_cloud", "whatsnexus", "sms", "webhooks"] as const;
 export type IntegrationKey = (typeof INTEGRATION_KEYS)[number];
 export type IntegrationCategory = "ADS" | "CALLING" | "MESSAGING" | "ADVANCED";
 export const INTEGRATION_CATEGORY_LABEL: Record<IntegrationCategory, string> = {
@@ -2978,6 +2978,42 @@ export interface IntegrationDetail extends IntegrationCard {
   recentCalls?: TelephonyCallRecord[];
   webhookUrl: string | null;
   connectorMode: "FIXTURE" | "SANDBOX" | "LIVE" | null;
+  /** Website Leads only: the form's typed settings and facts. Never carries the token, only whether one exists. */
+  websiteForm?: WebsiteFormView;
+}
+
+/** The Website Leads form as the Hub shows it. `lastSubmissionAt` is the last SUCCESSFUL submission. */
+export interface WebsiteFormView {
+  /** False until the first save/token: there is no intake address before then. */
+  connectorExists: boolean;
+  /** The intake address without the host (always known once the connector exists). */
+  intakePath: string | null;
+  /** False when this API has no valid public address configured (PUBLIC_API_BASE_URL): the full address is then withheld, not guessed. */
+  publicBaseConfigured: boolean;
+  formId: string;
+  displayName: string;
+  description: string | null;
+  enabled: boolean;
+  requireService: boolean;
+  /** Always record the source as "Website", whatever the page's UTM tags say. */
+  fixedSource: boolean;
+  allowedOrigins: string[];
+  hasToken: boolean;
+  /** Intake refuses every request until a token exists. False only for connectors that predate the setting. */
+  requireToken: boolean;
+  lastSubmissionAt: string | null;
+  lastErrorSummary: string | null;
+}
+
+/** What a Super Admin or Admin may save for the website form. */
+export interface WebsiteFormInputVm {
+  displayName: string;
+  formId: string;
+  description?: string | null;
+  enabled: boolean;
+  requireService: boolean;
+  fixedSource: boolean;
+  allowedOrigins: string[];
 }
 
 export interface IntegrationLogRow {

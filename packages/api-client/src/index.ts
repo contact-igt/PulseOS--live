@@ -17,6 +17,7 @@ import type {
   Edition,
   IntegrationCard,
   IntegrationDetail,
+  WebsiteFormInputVm,
   IntegrationLogRow,
   OutboundWebhookVm,
   WebhookCondition,
@@ -419,6 +420,12 @@ export const api = {
     request<IntegrationDetail>(`/integrations/hub/${key}/pair`, { method: "POST", body: JSON.stringify(body) }),
   configureIntegration: (key: string, body: { configuration?: Record<string, string>; secrets?: Record<string, string>; mode?: "FIXTURE" | "SANDBOX" | "LIVE" }) =>
     request<IntegrationDetail>(`/integrations/hub/${key}/configuration`, { method: "PUT", body: JSON.stringify(body) }),
+  /** Website Leads: save the form's typed settings (booleans and a list of origins, not strings). */
+  saveWebsiteForm: (input: WebsiteFormInputVm) =>
+    request<IntegrationDetail>("/integrations/hub/website_leads/form", { method: "PUT", body: JSON.stringify(input) }),
+  /** Website Leads (Super Admin): create or replace the intake token. The token is in THIS response only. */
+  rotateWebsiteToken: () =>
+    request<{ token: string; detail: IntegrationDetail }>("/integrations/hub/website_leads/token", { method: "POST" }),
   integrationLogs: (filters: { provider?: string; status?: string; from?: string; to?: string }) => {
     const qs = new URLSearchParams(Object.entries(filters).filter(([, v]) => !!v) as [string, string][]).toString();
     return request<IntegrationLogRow[]>(`/integrations/logs${qs ? `?${qs}` : ""}`);
