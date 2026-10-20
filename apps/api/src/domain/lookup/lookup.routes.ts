@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { branches, marketingCampaigns, scheduleResources, tenants, users } from "../../db/schema.js";
 
 export async function lookupRoutes(app: FastifyInstance) {
@@ -13,7 +13,8 @@ export async function lookupRoutes(app: FastifyInstance) {
       app.db
         .select({ id: users.id, name: users.name })
         .from(users)
-        .where(and(eq(users.tenantId, tenantId), or(eq(users.role, "FRONT_DESK"), eq(users.role, "PATIENT_COORDINATOR")))),
+        // Assignable people: never the PulseOS Support system account, never a suspended or removed membership.
+        .where(and(eq(users.tenantId, tenantId), eq(users.isSystem, false), inArray(users.status, ["ACTIVE", "INVITED"]), or(eq(users.role, "FRONT_DESK"), eq(users.role, "PATIENT_COORDINATOR")))),
       app.db.select({ id: marketingCampaigns.id, name: marketingCampaigns.name, source: marketingCampaigns.source }).from(marketingCampaigns).where(eq(marketingCampaigns.tenantId, tenantId)),
       app.db.select({ clinicHours: tenants.clinicHours }).from(tenants).where(eq(tenants.id, tenantId)).limit(1),
     ]);

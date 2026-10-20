@@ -151,4 +151,32 @@ test.describe("Platform Console", () => {
     await expect(page.getByTestId("platform-access")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("#token=");
   });
+
+  test("support mode: reason, persistent banner naming the staff member, read-only, ended and audited", async ({ page }) => {
+    await platformLogin(page, "support@platform.pulseos.local");
+    await page.goto("/platform/tenants?q=eye-demo");
+    await page.getByTestId("tenant-row-eye-demo").click();
+    await page.getByTestId("open-as-support").click();
+    await expect(page.getByTestId("support-tenant")).not.toHaveValue("");
+    await expect(page.getByTestId("start-support-submit")).toBeDisabled();
+    await page.getByTestId("support-reason").fill("E2E: checking the command centre for a client ticket");
+    await page.getByTestId("start-support-submit").click();
+
+    await expect(page).toHaveURL(/\/command-centre/);
+    const banner = page.getByTestId("support-banner");
+    await expect(banner).toContainText("Support Mode — PulseOS Ophthalmology Demo");
+    await expect(banner).toContainText("Meera Iyer");
+    await expect(banner).toContainText("read-only");
+    // A write through the API is refused while read-only.
+    const write = await page.request.post("http://localhost:4310/lead-sources", { data: { label: "E2E support write" }, headers: { origin: "http://localhost:3310" } });
+    expect(write.status()).toBe(403);
+    // Still visible on another page.
+    await page.goto("/patients");
+    await expect(banner).toBeVisible();
+
+    await page.getByTestId("end-support").click();
+    await expect(page).toHaveURL(/\/platform\/support/);
+    await expect(page.getByTestId("start-support")).toBeVisible();
+    expect(Number(sql("select count(*) from platform_audit_events where action = 'support.ended' and actor_label = 'support@platform.pulseos.local'"))).toBeGreaterThan(0);
+  });
 });

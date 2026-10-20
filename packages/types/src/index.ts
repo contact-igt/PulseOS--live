@@ -196,6 +196,18 @@ export interface SessionUser {
   edition: Edition;
   /** What this tenant can actually do: the edition's defaults with the tenant's own overrides applied. */
   capabilities: CapabilityMap;
+  /** Present only in Support Mode: PulseOS platform staff viewing this hospital (never a hospital user). */
+  support?: SupportModeInfo;
+}
+
+export interface SupportModeInfo {
+  sessionId: string;
+  staffName: string;
+  staffEmail: string;
+  expiresAt: string;
+  writeEnabled: boolean;
+  writeExpiresAt: string | null;
+  tenantStatus: string;
 }
 
 export interface Branch {
@@ -4041,4 +4053,21 @@ export interface PlatformIntegrationDetail {
   eventTotals: { last24h: number; failed24h: number; lastProcessedAt: string | null } | null;
   recordings: { calls: number; withRecording: number; lastCallAt: string | null } | null;
   webhooks: { id: string; name: string; enabled: boolean; category: string; events: string[]; lastDelivery: string | null }[];
+}
+
+export interface PlatformSupportSession {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  staffName: string;
+  staffEmail: string;
+  reason: string;
+  startedAt: string;
+  expiresAt: string;
+  endedAt: string | null;
+  endReason: string | null;
+  active: boolean;
+  writeEnabled: boolean;
+  writeExpiresAt: string | null;
+  writeReason: string | null;
 }

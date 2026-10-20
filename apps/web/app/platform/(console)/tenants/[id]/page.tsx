@@ -142,6 +142,11 @@ function TenantDetail() {
             <TenantStatusBadge status={t.status} />
             <EnvironmentBadge environment={t.environment} />
           </span>
+          {can("START_SUPPORT_SESSION") && (
+            <Link href={`/platform/support?tenant=${t.id}`} className="inline-flex min-h-11 items-center gap-1.5 rounded-control border border-line-strong bg-white/85 px-3.5 text-sm font-medium text-neutral-700 shadow-panel hover:bg-white md:min-h-9" data-testid="open-as-support">
+              Open as support
+            </Link>
+          )}
           {can("EDIT_TENANT") && (
             <Button onClick={() => setEditing(true)} data-testid="edit-tenant">
               Edit details

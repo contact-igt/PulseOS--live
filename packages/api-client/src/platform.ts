@@ -4,6 +4,7 @@ import type {
   Edition,
   PlatformCapabilityMatrix,
   PlatformIntegrationDetail,
+  PlatformSupportSession,
   PlatformIntegrationRow,
   PlatformPlan,
   PlatformInvitationRow,
@@ -97,6 +98,13 @@ export const platformApi = {
   integrations: (q: { connector?: string; tenantId?: string; bucket?: "healthy" | "attention" | "not_configured"; page?: number; pageSize?: number } = {}) =>
     request<Paged<PlatformIntegrationRow> & { totals: { all: number; healthy: number; attention: number; not_configured: number }; connectors: { key: string; name: string }[] }>(`/platform/integrations${qs(q)}`),
   tenantIntegration: (tenantId: string, key: string) => request<PlatformIntegrationDetail>(`/platform/tenants/${encodeURIComponent(tenantId)}/integrations/${encodeURIComponent(key)}`),
+
+  // Support Mode (time-limited, reasoned, audited; read-only unless edits are enabled)
+  supportSessions: (q: { tenantId?: string; active?: "true" | "false"; mine?: "true" | "false"; page?: number; pageSize?: number } = {}) => request<Paged<PlatformSupportSession>>(`/platform/support-sessions${qs(q)}`),
+  startSupport: (tenantId: string, body: { reason: string; minutes?: number }) => request<{ session: PlatformSupportSession }>(`/platform/tenants/${encodeURIComponent(tenantId)}/support-sessions`, json("POST", body)),
+  enableSupportEdits: (id: string, body: { reason: string; minutes: number }) => request<{ session: PlatformSupportSession }>(`/platform/support-sessions/${encodeURIComponent(id)}/enable-edits`, json("POST", body)),
+  disableSupportEdits: (id: string) => request<{ ok: true }>(`/platform/support-sessions/${encodeURIComponent(id)}/disable-edits`, { method: "POST" }),
+  endSupport: (id: string) => request<{ ok: true }>(`/platform/support-sessions/${encodeURIComponent(id)}/end`, { method: "POST" }),
 
   // Platform staff
   staff: () => request<{ staff: PlatformStaffMember[] }>("/platform/staff"),

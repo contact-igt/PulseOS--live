@@ -499,7 +499,7 @@ export async function getTeamWorkload(db: Db, tenantId: string, filters: Dashboa
     })
     .from(users)
     .leftJoin(tasks, and(eq(tasks.assignedTo, users.id), eq(tasks.status, "pending"), journeyScope(tasks.journeyId, { journeyType: filters.journeyType })))
-    .where(and(eq(users.tenantId, tenantId), sql`${users.role} IN ('FRONT_DESK', 'PATIENT_COORDINATOR')`, branchClause))
+    .where(and(eq(users.tenantId, tenantId), eq(users.isSystem, false), sql`${users.role} IN ('FRONT_DESK', 'PATIENT_COORDINATOR')`, branchClause))
     .groupBy(users.id, users.name, users.role);
 
   const now = new Date();
@@ -530,7 +530,7 @@ export async function getBranchDoctorPerformance(db: Db, tenantId: string, filte
     })
     .from(users)
     .leftJoin(appointments, and(eq(appointments.doctorUserId, users.id), inPeriod(appointments.scheduledAt, filters)))
-    .where(and(eq(users.tenantId, tenantId), eq(users.role, "DOCTOR"), branchClause))
+    .where(and(eq(users.tenantId, tenantId), eq(users.isSystem, false), eq(users.role, "DOCTOR"), branchClause))
     .groupBy(users.id, users.name);
 
   const waitingRows = await db
@@ -627,7 +627,7 @@ export async function getSetupStatus(db: Db, tenantId: string): Promise<SetupSta
     db.select({ id: scheduleResources.id }).from(scheduleResources).where(eq(scheduleResources.tenantId, tenantId)).limit(1),
     db.select({ id: connectors.id }).from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, "runo"), inArray(connectors.status, ["CONNECTED", "DEGRADED"]))).limit(1),
     db.select({ id: connectors.id }).from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, "whatsapp_meta_cloud"), inArray(connectors.status, ["CONNECTED", "DEGRADED"]))).limit(1),
-    db.select({ c: count() }).from(users).where(eq(users.tenantId, tenantId)),
+    db.select({ c: count() }).from(users).where(and(eq(users.tenantId, tenantId), eq(users.isSystem, false))),
   ]);
   return {
     hasJourneys: journey.length > 0,

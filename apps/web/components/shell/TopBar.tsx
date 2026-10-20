@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronDown, LogOut, Menu, Search, Type } from "lucide-react";
 import { QuickCreateMenu, JOURNEY_STAGE_LABEL, useExclusiveMenu, useFloatingMenu, type QuickCreateItem } from "@pulseos/ui";
 import { roleGroupLabel, type SessionUser } from "@pulseos/types";
-import { api, ApiError } from "@pulseos/api-client";
+import { api, ApiError, platformApi } from "@pulseos/api-client";
 import { useQuickCreate } from "./QuickCreateProvider";
 import { initials } from "./nav";
 import { loginPathFor } from "@/lib/loginPage";
@@ -43,6 +43,17 @@ export function TopBar({
     if (loggingOut) return;
     setLoggingOut(true);
     setLogoutError(null);
+    // In Support Mode "log out" leaves Support Mode (the staff member's console session stays).
+    if (user.support) {
+      try {
+        await platformApi.endSupport(user.support.sessionId);
+      } finally {
+        queryClient.clear();
+        // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full load resets the app's session state when entering or leaving Support Mode
+        window.location.assign("/platform/support");
+      }
+      return;
+    }
     try {
       await api.logout();
     } catch (err) {

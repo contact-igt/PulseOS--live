@@ -475,7 +475,7 @@ export async function getReportFilterOptions(db: Db, tenantId: string): Promise<
     db
       .select({ id: users.id, name: users.name })
       .from(users)
-      .where(and(eq(users.tenantId, tenantId), inArray(users.role, ["HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR"])))
+      .where(and(eq(users.tenantId, tenantId), eq(users.isSystem, false), inArray(users.role, ["HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR"])))
       .orderBy(users.name),
     db.select({ id: scheduleResources.id, name: scheduleResources.name }).from(scheduleResources).where(eq(scheduleResources.tenantId, tenantId)).orderBy(scheduleResources.name),
   ]);

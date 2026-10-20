@@ -201,7 +201,7 @@ export async function getPerformanceDashboard(db: Db, tenantId: string, filters:
 const ALWAYS_LISTED = ["HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR"];
 
 async function loadStaff(db: Db, tenantId: string, facts: PerfJourneyFact[], period: DashboardPeriod | null, now: Date): Promise<PerformanceStaffRow[]> {
-  const people = await db.select({ id: users.id, name: users.name, role: users.role }).from(users).where(eq(users.tenantId, tenantId));
+  const people = await db.select({ id: users.id, name: users.name, role: users.role }).from(users).where(and(eq(users.tenantId, tenantId), eq(users.isSystem, false)));
   const callWindow = period ? inLocalRange(calls.startedAt, period.timezone, period.from, period.to) : undefined;
   const doneWindow = period ? inLocalRange(tasks.completedAt, period.timezone, period.from, period.to) : undefined;
   const [callRows, doneRows, overdueRows] = await Promise.all([

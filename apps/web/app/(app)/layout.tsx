@@ -8,6 +8,7 @@ import { PulseMark, getDisplayTimeZone, setDisplayTimeZone } from "@pulseos/ui";
 import { Sidebar } from "../../components/shell/Sidebar";
 import { TopBar } from "../../components/shell/TopBar";
 import { QuickCreateProvider } from "../../components/shell/QuickCreateProvider";
+import { SupportBanner } from "../../components/shell/SupportBanner";
 import { ListContextRecorder } from "../../components/shell/Breadcrumb";
 import { rememberLoginPage, rememberedLoginPath } from "../../lib/loginPage";
 import { loginHrefWithReturn } from "../../lib/authRedirect";
@@ -140,12 +141,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Ambient layered-gradient environment (.app-shell) behind a floating glass
           nav rail + glass top bar. The TopBar is absolutely positioned over the
           scrolling <main>, so content passes beneath the glass. */}
-      <div className="app-shell flex h-dvh overflow-hidden">
-        <ListContextRecorder />
-        <Sidebar user={data.user} open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          <TopBar user={data.user} title={meta.title} subtitle={meta.subtitle} onMenuClick={() => setMobileNavOpen((v) => !v)} />
-          <main className="flex-1 overflow-x-hidden overflow-y-auto p-4 pt-20 lg:p-6 lg:pl-3 lg:pt-[6.25rem]">{children}</main>
+      {/* Support Mode: PulseOS staff viewing this hospital. The banner sits above the whole shell and cannot be dismissed. */}
+      <div className={data.user.support ? "flex h-dvh flex-col" : "contents"}>
+        {data.user.support && <SupportBanner user={data.user} />}
+        <div className={`app-shell flex overflow-hidden ${data.user.support ? "min-h-0 flex-1" : "h-dvh"}`}>
+          <ListContextRecorder />
+          <Sidebar user={data.user} open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            <TopBar user={data.user} title={meta.title} subtitle={meta.subtitle} onMenuClick={() => setMobileNavOpen((v) => !v)} />
+            <main className="flex-1 overflow-x-hidden overflow-y-auto p-4 pt-20 lg:p-6 lg:pl-3 lg:pt-[6.25rem]">{children}</main>
+          </div>
         </div>
       </div>
     </QuickCreateProvider>

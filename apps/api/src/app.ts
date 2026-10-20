@@ -46,6 +46,10 @@ import { platformRoutes } from "./domain/platform/platform.routes.js";
 import { accountRoutes } from "./domain/platform/account.routes.js";
 import { PLATFORM_SESSION_COOKIE, resolvePlatformSession } from "./domain/platform/platform-auth.service.js";
 import { PUBLIC_PLATFORM_PATHS } from "./domain/platform/platform-guard.js";
+import { resolveSupportSession, SUPPORT_COOKIE } from "./domain/platform/support.service.js";
+import { recordPlatformAudit, userAgentOf } from "./domain/platform/audit.service.js";
+
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export async function buildApp() {
   // Behind a reverse proxy set TRUST_PROXY=<number of proxy hops> (usually 1) so request.ip is the client's address — the
@@ -80,10 +84,59 @@ export async function buildApp() {
   app.decorateRequest("sessionUser", null);
   app.decorateRequest("platformUser", null);
 
+  app.decorateRequest("supportContext", null);
+
   app.addHook("onRequest", async (request) => {
+    // Support Mode first: an explicit, time-limited choice by platform staff, honoured only with that same staff member's
+    // live platform session. The resulting session is labelled as support everywhere it is read.
+    const supportId = request.cookies[SUPPORT_COOKIE];
+    const platformSessionId = request.cookies[PLATFORM_SESSION_COOKIE];
+    if (supportId && platformSessionId) {
+      const staff = await resolvePlatformSession(app.db, platformSessionId);
+      const resolved = staff ? await resolveSupportSession(app.db, supportId, staff) : null;
+      if (resolved) {
+        request.sessionUser = resolved.user;
+        request.supportContext = resolved.context;
+        return;
+      }
+    }
     const sessionId = request.cookies[SESSION_COOKIE];
     if (!sessionId) return;
     request.sessionUser = await resolveSession(app.db, sessionId);
+  });
+
+  // Support Mode is read-only unless edits were enabled; every write it does make is audited as the platform staff member.
+  app.addHook("preHandler", async (request, reply) => {
+    const ctx = request.supportContext;
+    if (!ctx || !UNSAFE_METHODS.has(request.method)) return;
+    const path = request.url.split("?")[0] ?? "";
+    if (path.startsWith("/platform/") || path === "/auth/logout") return;
+    if (!ctx.session.writeEnabled) return reply.status(403).send({ error: "support_read_only", message: "Support Mode is read-only. Enable support edits in the Platform Console to make changes." });
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const ctx = request.supportContext;
+    if (!ctx) return;
+    const path = request.url.split("?")[0] ?? "";
+    const route = request.routeOptions.url ?? null;
+    const isWrite = UNSAFE_METHODS.has(request.method) && !path.startsWith("/platform/") && path !== "/auth/logout" && ctx.session.writeEnabled;
+    const isRecording = request.method === "GET" && route === "/calls/:id/recording";
+    if (!isWrite && !isRecording) return;
+    await recordPlatformAudit(
+      app.db,
+      { platformUserId: ctx.staff.id, label: ctx.staff.email, ip: request.ip, userAgent: userAgentOf(request) },
+      {
+        action: isWrite ? "support.write" : "support.recording_accessed",
+        outcome: reply.statusCode < 400 ? "SUCCESS" : "FAILURE",
+        summary: isWrite ? `${ctx.staff.name} (support) ${request.method} ${route ?? "unknown route"} in ${ctx.session.tenantName}` : `${ctx.staff.name} (support) played a call recording in ${ctx.session.tenantName}`,
+        targetType: "route",
+        targetId: route,
+        tenantId: ctx.session.tenantId,
+        context: "SUPPORT_MODE",
+        supportSessionId: ctx.session.id,
+        reason: isWrite ? ctx.session.writeReason : ctx.session.reason,
+        metadata: { method: request.method, route, status: reply.statusCode, actingAs: "PulseOS Support system account" },
+      },
+    );
   });
 
   // CSRF: the session cookie is SameSite=Lax, which still travels with same-site requests from a sibling subdomain or
@@ -92,7 +145,6 @@ export async function buildApp() {
   // the public website form are cross-origin by design and authenticate themselves.
   // WEB_ORIGIN may list several comma-separated web addresses; a request's Origin must equal one of them exactly.
   const webOrigins = parseWebOrigins(process.env.WEB_ORIGIN);
-  const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
   app.addHook("onRequest", async (request, reply) => {
     if (!UNSAFE_METHODS.has(request.method)) return;
     const path = request.url.split("?")[0] ?? "";
