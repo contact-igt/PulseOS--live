@@ -3991,3 +3991,54 @@ export interface PlatformStaffMember {
   lastSignInAt: string | null;
   createdAt: string;
 }
+
+export interface PlatformPlan {
+  key: Edition;
+  name: string;
+  label: string;
+  description: string;
+  status: "ACTIVE";
+  capabilities: { key: Capability; label: string; description: string; included: boolean; locked: boolean; dependsOn: Capability[]; provider: string | null }[];
+  tenants: { total: number; byStatus: Partial<Record<TenantStatus, number>> };
+  tenantsWithOverrides: number;
+}
+
+export interface PlatformCapabilityMatrix {
+  edition: Edition;
+  plan: string;
+  version: number;
+  capabilities: { key: Capability; label: string; description: string; planDefault: boolean; override: boolean | null; effective: boolean; locked: boolean; dependsOn: Capability[]; provider: string | null }[];
+}
+
+export interface PlatformIntegrationRow {
+  tenantId: string;
+  tenantName: string;
+  tenantStatus: TenantStatus;
+  environment: TenantEnvironment;
+  connector: string;
+  connectorName: string;
+  category: string;
+  enabled: boolean;
+  configuration: IntegrationConfigurationState;
+  credentialState: CredentialState;
+  mode: IntegrationMode;
+  health: IntegrationHealth;
+  lastEventAt: string | null;
+  lastError: string | null;
+  endpointCount: number;
+  attention: string | null;
+  bucket: "healthy" | "attention" | "not_configured" | "other";
+}
+
+export interface PlatformIntegrationDetail {
+  tenant: { id: string; name: string; status: TenantStatus; environment: TenantEnvironment };
+  integration: PlatformIntegrationRow & { purpose: string; provider: string; capability: Capability | null; connectorMode: string | null; lastSyncAt: string | null };
+  configurationFields: { key: string; label: string; set: boolean }[];
+  secretFields: { key: string; label: string; saved: boolean }[];
+  endpoints: { id: string; type: string; publicNumber: string; label: string; active: boolean; branch: string | null }[];
+  dispositionMappings: { disposition: string; action: string }[];
+  recentEvents: { at: string; processedAt: string | null; status: string; direction: string; error: string | null }[];
+  eventTotals: { last24h: number; failed24h: number; lastProcessedAt: string | null } | null;
+  recordings: { calls: number; withRecording: number; lastCallAt: string | null } | null;
+  webhooks: { id: string; name: string; enabled: boolean; category: string; events: string[]; lastDelivery: string | null }[];
+}

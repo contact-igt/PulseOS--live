@@ -1,5 +1,11 @@
 import type {
   CreateTenantRequest,
+  Capability,
+  Edition,
+  PlatformCapabilityMatrix,
+  PlatformIntegrationDetail,
+  PlatformIntegrationRow,
+  PlatformPlan,
   PlatformInvitationRow,
   PlatformRole,
   PlatformStaffMember,
@@ -80,6 +86,17 @@ export const platformApi = {
     request<Paged<PlatformInvitationRow> & { summary: { pending: number; expired: number; accepted: number; revoked: number } }>(`/platform/invitations${qs(q)}`),
   resendInvitation: (id: string) => request<{ invitation: { id: string; deliveryStatus: "SENT" | "NOT_DELIVERED" } }>(`/platform/invitations/${encodeURIComponent(id)}/resend`, { method: "POST" }),
   revokeInvitation: (id: string, reason: string) => request<{ ok: true }>(`/platform/invitations/${encodeURIComponent(id)}/revoke`, json("POST", { reason })),
+
+  // Plans & capabilities (entitlements only - no billing)
+  plans: () => request<{ plans: PlatformPlan[] }>("/platform/plans"),
+  tenantCapabilities: (tenantId: string) => request<PlatformCapabilityMatrix>(`/platform/tenants/${encodeURIComponent(tenantId)}/capabilities`),
+  setTenantCapability: (tenantId: string, key: Capability, enabled: boolean | null) => request<{ effective: Record<string, boolean> }>(`/platform/tenants/${encodeURIComponent(tenantId)}/capabilities/${key}`, json("PUT", { enabled })),
+  changeTenantPlan: (tenantId: string, body: { edition: Edition; version: number; reason: string }) => request<{ ok: true }>(`/platform/tenants/${encodeURIComponent(tenantId)}/plan`, json("PUT", body)),
+
+  // Integrations (state only: never a credential, ciphertext, payload or recording link)
+  integrations: (q: { connector?: string; tenantId?: string; bucket?: "healthy" | "attention" | "not_configured"; page?: number; pageSize?: number } = {}) =>
+    request<Paged<PlatformIntegrationRow> & { totals: { all: number; healthy: number; attention: number; not_configured: number }; connectors: { key: string; name: string }[] }>(`/platform/integrations${qs(q)}`),
+  tenantIntegration: (tenantId: string, key: string) => request<PlatformIntegrationDetail>(`/platform/tenants/${encodeURIComponent(tenantId)}/integrations/${encodeURIComponent(key)}`),
 
   // Platform staff
   staff: () => request<{ staff: PlatformStaffMember[] }>("/platform/staff"),

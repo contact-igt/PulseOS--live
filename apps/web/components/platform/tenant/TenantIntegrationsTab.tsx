@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Badge, Panel, Table, TableBody, TableHead, Td, Th, Tr } from "@pulseos/ui";
 import type { PlatformTenantDetail } from "@pulseos/types";
 import { ConfigurationBadge, CredentialBadge, EnabledBadge, HealthBadge, MODE_LABEL } from "../integrationLabels";
@@ -33,7 +34,9 @@ export function TenantIntegrationsTab({ detail }: { detail: PlatformTenantDetail
             {detail.integrations.map((i) => (
               <Tr key={i.key} data-testid={`tenant-integration-${i.key}`}>
                 <Td leading>
-                  <span className="font-medium">{i.name}</span>
+                  <Link href={`/platform/tenants/${detail.tenant.id}/integrations/${i.key}`} className="font-medium text-ink hover:text-primary-700">
+                    {i.name}
+                  </Link>
                   <span className="block text-[11px] text-ink-2">{i.category.toLowerCase()}</span>
                 </Td>
                 <Td>

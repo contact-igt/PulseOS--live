@@ -170,6 +170,8 @@ export async function listHub(db: Db, tenantId: string, role: Role, caps: Capabi
 /** One hospital's Hub as the Platform Console sees it: the same cards, plus credential readability and the connector id. */
 export interface TenantHubCard extends IntegrationCard {
   credentialState: CredentialState;
+  /** The NAMES of stored secret fields (never a value). */
+  secretKeys: string[];
   connectorId: string | null;
   endpointCount: number;
 }
@@ -190,7 +192,7 @@ export async function listHubForTenants(db: Db, tenants: { id: string; caps: Cap
         const found = INTEGRATION_CATALOGUE.find((e) => e.key === c.key)?.connectorProvider;
         const f = found ? tf.get(found) : undefined;
         // Provider error text is redacted before it leaves the server; website intake errors are already a category.
-        return { ...c, lastError: redactLogText(c.lastError), canConfigure: false, canManageSecrets: false, credentialState: f?.secretState ?? "NONE", connectorId: f?.row.id ?? null, endpointCount: f?.phoneNumbers.length ?? 0 };
+        return { ...c, lastError: redactLogText(c.lastError), canConfigure: false, canManageSecrets: false, credentialState: f?.secretState ?? "NONE", secretKeys: f?.facts.secretKeys ?? [], connectorId: f?.row.id ?? null, endpointCount: f?.phoneNumbers.length ?? 0 };
       }),
     );
   }
