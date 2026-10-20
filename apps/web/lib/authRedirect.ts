@@ -3,7 +3,7 @@
 // here reads or stores a token. The value is untrusted input from the address bar, so only a plain in-app path is ever followed;
 // anything that could leave the app, or land on a public page, is dropped.
 
-const PUBLIC_PATHS = /^\/(login|signup)(\/|\?|$)/;
+const PUBLIC_PATHS = /^\/(login|signup|account|platform)(\/|\?|$)/;
 
 export function safeReturnPath(raw: string | null | undefined): string | null {
   if (!raw || raw.length > 512) return null;

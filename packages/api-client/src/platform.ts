@@ -1,5 +1,13 @@
 import type {
   CreateTenantRequest,
+  PlatformInvitationRow,
+  PlatformRole,
+  PlatformStaffMember,
+  PlatformTenantMember,
+  PlatformUserDetail,
+  PlatformUserQuery,
+  PlatformUserRow,
+  Role,
   Paged,
   PlatformOverview,
   PlatformSessionUser,
@@ -54,6 +62,37 @@ export const platformApi = {
   updateDepartment: (id: string, departmentId: string, body: { displayName?: string; archived?: boolean }) => request<{ ok: true }>(`/platform/tenants/${encodeURIComponent(id)}/departments/${encodeURIComponent(departmentId)}`, json("PATCH", body)),
   addLeadSource: (id: string, body: { label: string; bucket: SourceChannel }) => request<{ ok: true }>(`/platform/tenants/${encodeURIComponent(id)}/lead-sources`, json("POST", body)),
   updateLeadSource: (id: string, sourceId: string, body: { label?: string; bucket?: SourceChannel; archived?: boolean }) => request<{ ok: true }>(`/platform/tenants/${encodeURIComponent(id)}/lead-sources/${encodeURIComponent(sourceId)}`, json("PATCH", body)),
+
+  // Users, memberships and account access (never a password, a token or a hash)
+  users: (q: PlatformUserQuery = {}) => request<Paged<PlatformUserRow>>(`/platform/users${qs(q)}`),
+  user: (accountId: string) => request<PlatformUserDetail>(`/platform/users/${encodeURIComponent(accountId)}`),
+  tenantMembers: (tenantId: string) => request<{ members: PlatformTenantMember[] }>(`/platform/tenants/${encodeURIComponent(tenantId)}/members`),
+  addMember: (tenantId: string, body: { name: string; email: string; role: Role }) => request<{ userId: string; invitation: { id: string; deliveryStatus: "SENT" | "NOT_DELIVERED" } }>(`/platform/tenants/${encodeURIComponent(tenantId)}/members`, json("POST", body)),
+  changeMemberRole: (userId: string, body: { role: Role; version: number; confirmNoAdmin?: boolean }) => request<{ ok: true }>(`/platform/memberships/${encodeURIComponent(userId)}`, json("PATCH", body)),
+  membershipAction: (userId: string, action: "suspend" | "reactivate" | "remove", body: { reason: string; confirmNoAdmin?: boolean }) => request<{ ok: true }>(`/platform/memberships/${encodeURIComponent(userId)}/${action}`, json("POST", body)),
+  sendPasswordReset: (userId: string) => request<{ deliveryStatus: "SENT" | "NOT_DELIVERED" }>(`/platform/memberships/${encodeURIComponent(userId)}/password-reset`, { method: "POST" }),
+  revokeMemberSessions: (userId: string) => request<{ revoked: number }>(`/platform/memberships/${encodeURIComponent(userId)}/revoke-sessions`, { method: "POST" }),
+  revokeSession: (sessionId: string) => request<{ ok: true }>(`/platform/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
+  identityAction: (accountId: string, action: "suspend" | "reactivate", body: { reason: string; confirmNoAdmin?: boolean }) => request<{ affected: number }>(`/platform/users/${encodeURIComponent(accountId)}/${action}`, json("POST", body)),
+
+  // Invitations
+  invitations: (q: { status?: "pending" | "accepted" | "expired" | "revoked"; tenantId?: string; kind?: "tenant" | "platform"; q?: string; page?: number; pageSize?: number } = {}) =>
+    request<Paged<PlatformInvitationRow> & { summary: { pending: number; expired: number; accepted: number; revoked: number } }>(`/platform/invitations${qs(q)}`),
+  resendInvitation: (id: string) => request<{ invitation: { id: string; deliveryStatus: "SENT" | "NOT_DELIVERED" } }>(`/platform/invitations/${encodeURIComponent(id)}/resend`, { method: "POST" }),
+  revokeInvitation: (id: string, reason: string) => request<{ ok: true }>(`/platform/invitations/${encodeURIComponent(id)}/revoke`, json("POST", { reason })),
+
+  // Platform staff
+  staff: () => request<{ staff: PlatformStaffMember[] }>("/platform/staff"),
+  inviteStaff: (body: { name: string; email: string; role: PlatformRole }) => request<{ id: string; invitation: { id: string; deliveryStatus: "SENT" | "NOT_DELIVERED" } }>("/platform/staff", json("POST", body)),
+  changeStaffRole: (id: string, body: { role: PlatformRole; version: number }) => request<{ ok: true }>(`/platform/staff/${encodeURIComponent(id)}`, json("PATCH", body)),
+  staffAction: (id: string, action: "suspend" | "reactivate", reason: string) => request<{ ok: true }>(`/platform/staff/${encodeURIComponent(id)}/${action}`, json("POST", { reason })),
+  revokeStaffSessions: (id: string, sessionId?: string) => request<{ revoked: number }>(`/platform/staff/${encodeURIComponent(id)}/revoke-sessions`, json("POST", sessionId ? { sessionId } : {})),
+};
+
+/** Public account links (invitation / password reset). The token is read from the URL fragment and sent only in a body. */
+export const accountApi = {
+  inspect: (token: string) => request<{ purpose: "INVITE" | "PASSWORD_RESET"; email: string; name: string; workspace: string | null; signInPath: string }>("/auth/account-token/inspect", json("POST", { token })),
+  accept: (token: string, password: string) => request<{ ok: true; signInPath: string }>("/auth/account-token/accept", json("POST", { token, password })),
 };
 
 export { qs as platformQuery, json as platformJson };

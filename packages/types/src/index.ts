@@ -3890,3 +3890,104 @@ export interface CreateTenantRequest {
   setup: { branches: { name: string; city: string }[]; departmentTemplates: string[]; customLeadSources: { label: string; bucket: SourceChannel }[]; branding?: Partial<TenantBrandingConfig> };
   admin: { name: string; email: string; role: "SUPER_ADMIN" | "HOSPITAL_ADMIN" };
 }
+
+export interface PlatformMembershipSummary {
+  userId: string;
+  tenantId: string;
+  tenantName: string;
+  tenantStatus: TenantStatus;
+  role: Role;
+  status: UserStatus;
+}
+
+export interface PlatformUserRow {
+  key: string;
+  name: string;
+  email: string;
+  status: UserStatus;
+  memberships: PlatformMembershipSummary[];
+  platform: { id: string; role: PlatformRole; status: PlatformUserStatus } | null;
+  lastSignInAt: string | null;
+  createdAt: string;
+}
+
+export interface PlatformUserQuery {
+  q?: string;
+  status?: "active" | "invited" | "suspended";
+  kind?: "staff" | "client";
+  tenantId?: string;
+  role?: Role | PlatformRole;
+  sort?: "name" | "created" | "lastSignIn";
+  page?: number;
+  pageSize?: number;
+}
+
+export interface PlatformSessionInfo {
+  id: string;
+  kind: "tenant" | "platform";
+  userId: string;
+  context: string;
+  userAgent: string | null;
+  ipAddress: string | null;
+  createdAt: string | null;
+  lastSeenAt: string | null;
+  expiresAt: string | null;
+}
+
+export type InvitationStatus = "PENDING" | "ACCEPTED" | "REVOKED" | "EXPIRED";
+
+export interface PlatformUserDetail {
+  key: string;
+  email: string;
+  name: string;
+  status: UserStatus;
+  createdAt: string | null;
+  lastSignInAt: string | null;
+  memberships: (PlatformMembershipSummary & { tenantSlug: string | null; version: number; primaryAdmin: boolean; lastSignInAt: string | null; createdAt: string | null })[];
+  platform: { id: string; role: PlatformRole; status: PlatformUserStatus; version: number; lastSignInAt: string | null; createdAt: string | null } | null;
+  sessions: PlatformSessionInfo[];
+  invitations: { id: string; purpose: "INVITE" | "PASSWORD_RESET"; status: InvitationStatus; tenantName: string | null; role: string; deliveryStatus: string; sendCount: number; createdAt: string | null; expiresAt: string | null; acceptedAt: string | null }[];
+  history: { id: string; at: string | null; action: string; outcome: string; actor: string; summary: string; reason: string | null; context: string }[];
+}
+
+export interface PlatformTenantMember {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  status: UserStatus;
+  version: number;
+  lastSignInAt: string | null;
+  createdAt: string | null;
+  sessions: number;
+  primaryAdmin: boolean;
+}
+
+export interface PlatformInvitationRow {
+  id: string;
+  email: string;
+  tenantId: string | null;
+  tenantName: string | null;
+  kind: "tenant" | "platform";
+  accountId: string;
+  role: string;
+  invitedBy: string | null;
+  status: InvitationStatus;
+  deliveryStatus: "SENT" | "NOT_DELIVERED";
+  sendCount: number;
+  createdAt: string;
+  lastSentAt: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+}
+
+export interface PlatformStaffMember {
+  id: string;
+  name: string;
+  email: string;
+  role: PlatformRole;
+  status: PlatformUserStatus;
+  version: number;
+  lastSignInAt: string | null;
+  createdAt: string;
+}

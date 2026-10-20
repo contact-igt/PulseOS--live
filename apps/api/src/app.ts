@@ -43,6 +43,7 @@ import { websiteFormRoutes } from "./domain/acquisition/website-form.routes.js";
 import { reportRoutes } from "./domain/report/report.routes.js";
 import { platformAuthRoutes } from "./domain/platform/platform-auth.routes.js";
 import { platformRoutes } from "./domain/platform/platform.routes.js";
+import { accountRoutes } from "./domain/platform/account.routes.js";
 import { PLATFORM_SESSION_COOKIE, resolvePlatformSession } from "./domain/platform/platform-auth.service.js";
 import { PUBLIC_PLATFORM_PATHS } from "./domain/platform/platform-guard.js";
 
@@ -149,6 +150,7 @@ export async function buildApp() {
   await app.register(authRoutes);
   await app.register(platformAuthRoutes);
   await app.register(platformRoutes);
+  await app.register(accountRoutes);
   await app.register(webhookRoutes);
   await app.register(websiteFormRoutes);
   await app.register(async (protectedApp) => {

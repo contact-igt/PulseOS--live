@@ -7,6 +7,15 @@ import { sql } from "./support/fixtures";
 const PASSWORD = process.env.DEMO_PASSWORD ?? "";
 const OWNER = "owner@platform.pulseos.local";
 
+/** What the API's local outbox "sent" to this address (development only; there is no email provider). */
+async function linkFor(email: string): Promise<string> {
+  const res = await fetch("http://localhost:4310/dev/outbox");
+  const { messages } = (await res.json()) as { messages: { to: string; text: string }[] };
+  const msg = messages.find((m) => m.to === email);
+  if (!msg) throw new Error(`no outbox message for ${email}`);
+  return /(https?:\/\/\S+#token=[A-Za-z0-9_-]+)/.exec(msg.text)![1]!;
+}
+
 async function platformLogin(page: Page, email = OWNER) {
   await page.goto("/platform/login");
   await page.fill("#platform-email", email);
@@ -93,5 +102,53 @@ test.describe("Platform Console", () => {
     await expect(page.locator('[data-testid^="tenant-row-"]')).toHaveCount(1);
     await page.getByTestId("tenant-row-namokar-v1").click();
     await expect(page.getByTestId("tenant-login-link")).toContainText("/login/namokar-v1");
+  });
+
+  test("invite a hospital user, who sets their own password and signs in; then change their role", async ({ page, browser }) => {
+    const tag = Date.now().toString(36);
+    const email = `nila.${tag}@e2e-platform.local`;
+    await platformLogin(page);
+    await page.goto("/platform/tenants?q=gyn-demo");
+    await page.getByTestId("tenant-row-gyn-demo").click();
+    await page.getByRole("tab", { name: "Users" }).click();
+    await page.getByTestId("invite-member").click();
+    await page.getByTestId("member-name").fill("Nila Frontdesk");
+    await page.getByTestId("member-email").fill(email);
+    await page.getByTestId("action-dialog-confirm").click();
+    await expect(page.getByTestId("tenant-users-notice")).toContainText(`Invitation sent to ${email}`);
+    await expect(page.getByTestId(`member-${email}`)).toContainText("Invited");
+
+    // The invitee, in their own browser: the link carries the token in the fragment only.
+    const link = await linkFor(email);
+    const invitee = await (await browser.newContext()).newPage();
+    await invitee.goto(link);
+    await expect(invitee).not.toHaveURL(/token=/);
+    await invitee.fill("#new-password", "nila-chooses-this-1");
+    await invitee.fill("#confirm-password", "nila-chooses-this-1");
+    await invitee.getByTestId("set-password-submit").click();
+    await expect(invitee.getByTestId("set-password-done")).toBeVisible();
+    await invitee.goto(link);
+    await expect(invitee.getByTestId("set-password-invalid")).toBeVisible();
+    const login = await invitee.request.post("http://localhost:4310/auth/login", { data: { email, password: "nila-chooses-this-1" } });
+    expect(login.status()).toBe(200);
+
+    // Back in the console: the person's page, then a role change.
+    await page.goto(`/platform/users?q=${encodeURIComponent(email)}`);
+    await page.getByTestId(`user-row-${email}`).click();
+    await expect(page.getByTestId("platform-user-detail")).toContainText(email);
+    await page.getByTestId("membership-menu-gyn-demo").click();
+    await page.getByTestId("row-menu-role").click();
+    await page.locator("#new-role").selectOption("PATIENT_COORDINATOR");
+    await page.getByTestId("action-dialog-confirm").click();
+    await expect(page.getByTestId("user-notice")).toContainText("Role changed to Coordinator");
+    expect(sql(`select role from users where email = '${email}'`)).toBe("PATIENT_COORDINATOR");
+    await expect(page.getByTestId("user-history")).toContainText("PATIENT_COORDINATOR");
+  });
+
+  test("access page lists invitations and resends without ever showing a link", async ({ page }) => {
+    await platformLogin(page);
+    await page.goto("/platform/access");
+    await expect(page.getByTestId("platform-access")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("#token=");
   });
 });
