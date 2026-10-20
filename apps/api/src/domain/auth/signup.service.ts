@@ -50,7 +50,7 @@ const EDITION: Record<SignupPayload["edition"], Edition> = { V1: "BETA_V1_CORE",
 const TEMPLATE_BY_DEPARTMENT: Record<string, string> = { Ophthalmology: "ophthalmology", Gynaecology: "gynecology" };
 
 /** Words that must never be a hospital's sign-in address (they are, or could become, real routes). */
-const RESERVED_SLUGS = new Set(["admin", "api", "app", "auth", "login", "logout", "signup", "sign-up", "dev", "developer", "demo", "test", "www", "settings", "static", "public", "pulseos", "support", "help", "billing", "root"]);
+export const RESERVED_SLUGS = new Set(["admin", "api", "app", "auth", "login", "logout", "signup", "sign-up", "dev", "developer", "demo", "test", "www", "settings", "static", "public", "pulseos", "platform", "account", "support", "help", "billing", "root"]);
 
 /** "ABC Eye Hospital" -> "abc-eye-hospital": lower-case words, at most 38 characters, starting with a letter. */
 export function slugifyWorkspaceName(name: string): string {

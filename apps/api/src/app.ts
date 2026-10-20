@@ -85,16 +85,6 @@ export async function buildApp() {
     request.sessionUser = await resolveSession(app.db, sessionId);
   });
 
-  // Platform Console staff: a separate cookie and identity space, resolved only for the console's own API. Every /platform
-  // path except sign-in needs a platform session - including paths that do not exist, so nothing can be enumerated.
-  app.addHook("onRequest", async (request, reply) => {
-    const path = request.url.split("?")[0] ?? "";
-    if (path !== "/platform" && !path.startsWith("/platform/")) return;
-    const platformSessionId = request.cookies[PLATFORM_SESSION_COOKIE];
-    if (platformSessionId) request.platformUser = await resolvePlatformSession(app.db, platformSessionId);
-    if (!request.platformUser && !PUBLIC_PLATFORM_PATHS.has(path) && request.method !== "OPTIONS") return reply.status(401).send({ error: "unauthenticated" });
-  });
-
   // CSRF: the session cookie is SameSite=Lax, which still travels with same-site requests from a sibling subdomain or
   // port. So a state-changing request must also come from the app's own origin. A request carrying neither Origin nor
   // Sec-Fetch-Site is not a browser (server-to-server, scripts, tests) and is not a CSRF vector. Provider webhooks and
@@ -136,6 +126,17 @@ export async function buildApp() {
       reply.status(204).send();
     }
   });
+
+  // Platform Console staff (after CORS, so a 401 still carries the CORS headers the browser needs to read it): a separate cookie and identity space, resolved only for the console's own API. Every /platform
+  // path except sign-in needs a platform session - including paths that do not exist, so nothing can be enumerated.
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.url.split("?")[0] ?? "";
+    if (path !== "/platform" && !path.startsWith("/platform/")) return;
+    const platformSessionId = request.cookies[PLATFORM_SESSION_COOKIE];
+    if (platformSessionId) request.platformUser = await resolvePlatformSession(app.db, platformSessionId);
+    if (!request.platformUser && !PUBLIC_PLATFORM_PATHS.has(path) && request.method !== "OPTIONS") return reply.status(401).send({ error: "unauthenticated" });
+  });
+
 
   function requireAuth(request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply, done: () => void) {
     if (!request.sessionUser) {

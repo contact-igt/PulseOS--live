@@ -3782,3 +3782,111 @@ export interface Paged<T> {
   page: number;
   pageSize: number;
 }
+
+export interface PlatformTenant {
+  id: string;
+  name: string;
+  loginSlug: string | null;
+  status: TenantStatus;
+  statusReason: string | null;
+  statusChangedAt: string | null;
+  environment: TenantEnvironment;
+  edition: Edition;
+  industry: string | null;
+  country: string | null;
+  timezone: string;
+  locale: string;
+  surfaceStyle: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformTenantRow extends PlatformTenant {
+  primaryAdmin: { name: string; email: string; status: UserStatus } | null;
+  users: number;
+  branches: number;
+  modules: { enabled: number; total: number };
+  integrations: { configured: number; attention: number };
+  lastActivityAt: string | null;
+}
+
+export interface PlatformTenantQuery {
+  q?: string;
+  status?: TenantStatus;
+  edition?: Edition;
+  industry?: string;
+  environment?: TenantEnvironment;
+  health?: "healthy" | "attention" | "not_configured";
+  createdFrom?: string;
+  createdTo?: string;
+  sort?: "created" | "name" | "status" | "lastActivity";
+  dir?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+}
+
+export type CredentialState = "NONE" | "SAVED" | "UNREADABLE";
+export type TenantReadiness = "SETUP_INCOMPLETE" | "READY_FOR_CLIENT" | "ACTIVE" | "NEEDS_ATTENTION";
+
+export interface PlatformTenantIntegration {
+  key: string;
+  name: string;
+  category: string;
+  enabled: boolean;
+  configuration: IntegrationConfigurationState;
+  credentialState: CredentialState;
+  health: IntegrationHealth;
+  mode: IntegrationMode;
+  lastEventAt: string | null;
+  lastError: string | null;
+  endpointCount: number;
+  attention: string | null;
+  bucket: "healthy" | "attention" | "not_configured" | "other";
+  blockedReason: string | null;
+}
+
+export interface PlatformTenantDetail {
+  tenant: PlatformTenant & { source: string; primaryAdminUserId: string | null };
+  loginPath: string | null;
+  counts: { users: number; branches: number; departments: number; leadSources: number; patients: number; journeys: number; calls: number; appointments: number };
+  admins: { id: string; name: string; email: string; role: Role; status: UserStatus; lastSignInAt: string | null; primary: boolean }[];
+  lastLoginAt: string | null;
+  pendingInvitations: number;
+  capabilities: { enabled: number; total: number };
+  integrations: PlatformTenantIntegration[];
+  recentIntegrationEvents: { at: string; status: string; direction: string; provider: string; displayName: string }[];
+  checklist: { key: string; label: string; done: boolean; detail?: string }[];
+  readiness: TenantReadiness | null;
+  branding: TenantBrandingConfig | null;
+}
+
+export interface TenantBrandingConfig {
+  shortName: string | null;
+  logoPath: string | null;
+  headline: string | null;
+  tagline: string | null;
+  badgeLabel: string | null;
+  supportText: string | null;
+  updatedAt?: string;
+}
+
+export interface PlatformTenantConfiguration {
+  branches: { id: string; name: string; city: string; createdAt: string }[];
+  departments: { id: string; key: string; displayName: string; archived: boolean; templateKey: string | null }[];
+  leadSources: { id: string; key: string; label: string; bucket: SourceChannel; archived: boolean }[];
+  availableDepartmentTemplates: { key: string; displayName: string; description: string }[];
+}
+
+export interface PlatformTenantUsage {
+  windowDays: number;
+  metrics: { key: string; label: string; total: number; recent: number }[];
+}
+
+export interface CreateTenantRequest {
+  creationKey: string;
+  organization: { name: string; slug: string; industry: string; country: string; timezone: string; locale: string; environment: TenantEnvironment };
+  plan: { edition: Edition; capabilityOverrides: Partial<Record<Capability, boolean>> };
+  setup: { branches: { name: string; city: string }[]; departmentTemplates: string[]; customLeadSources: { label: string; bucket: SourceChannel }[]; branding?: Partial<TenantBrandingConfig> };
+  admin: { name: string; email: string; role: "SUPER_ADMIN" | "HOSPITAL_ADMIN" };
+}

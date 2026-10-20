@@ -38,12 +38,15 @@ export const tenants = pgTable("tenants", {
   statusReason: text("status_reason"),
   statusChangedAt: timestamp("status_changed_at", { withTimezone: true }),
   createdByPlatformUserId: uuid("created_by_platform_user_id"),
+  // One key per Create Tenant submission: a repeated submission returns the first tenant instead of making another.
+  creationKey: text("creation_key"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   // Optimistic concurrency for platform edits: a save made on a stale copy is refused, never silently overwrites.
   version: integer("version").notNull().default(1),
 }, (t) => ({
   statusIdx: index("tenants_status_idx").on(t.status),
+  creationKeyUnique: uniqueIndex("tenants_creation_key_unique").on(t.creationKey),
   localeShape: check("tenants_locale_shape", sql`${t.locale} ~ '^[a-z]{2}(-[A-Z]{2})?$'`),
   loginSlugUnique: uniqueIndex("tenants_login_slug_unique").on(t.loginSlug),
   surfaceStyleShape: check("tenants_surface_style_shape", sql`${t.surfaceStyle} is null or ${t.surfaceStyle} in ('airy', 'balanced', 'solid')`),

@@ -170,7 +170,7 @@ export function SearchBox({ value, onChange, placeholder, label, testId }: { val
     return () => clearTimeout(t);
   }, [draft, value, onChange]);
   return (
-    <label className="glass-control flex h-11 min-w-0 flex-1 items-center gap-2 rounded-control px-2.5 sm:h-8 sm:max-w-xs">
+    <label className="glass-control col-span-2 flex h-11 w-full min-w-0 items-center gap-2 rounded-control px-2.5 sm:h-8 sm:w-64">
       <Search size={14} className="shrink-0 text-neutral-500" aria-hidden="true" />
       <span className="sr-only">{label}</span>
       <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={placeholder} className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-neutral-500" data-testid={testId} />
@@ -268,6 +268,20 @@ export function ActionDialog({
       </div>
     </div>
   );
+}
+
+/** Shown in place of a page a platform role cannot use (the API refuses it as well). */
+export function NoAccess({ what = "this page" }: { what?: string }) {
+  return (
+    <div role="alert" className="rounded-card border border-line bg-surface-info px-4 py-3 text-sm text-ink-2" data-testid="platform-no-access">
+      Your platform role does not include {what}.
+    </div>
+  );
+}
+
+/** Filter row: a two-column grid on phones (search full width), a wrapping row from tablet up. Never widens the page. */
+export function PlatformFilters({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center [&>span]:min-w-0" data-testid="platform-filters">{children}</div>;
 }
 
 /** A label + value pair for detail pages. */

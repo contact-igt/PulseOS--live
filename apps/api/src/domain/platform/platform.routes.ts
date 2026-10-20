@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requirePlatform } from "./platform-guard.js";
 import { getPlatformOverview } from "./overview.service.js";
+import { platformTenantRoutes } from "./tenants.routes.js";
 
 /**
  * The Platform Console API. Every route here names its own platform permission (requirePlatform); the app-level hook has
@@ -8,4 +9,5 @@ import { getPlatformOverview } from "./overview.service.js";
  */
 export async function platformRoutes(app: FastifyInstance) {
   app.get("/platform/overview", { preHandler: requirePlatform("VIEW_PLATFORM") }, async () => getPlatformOverview(app.db));
+  await app.register(platformTenantRoutes);
 }

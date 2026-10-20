@@ -60,6 +60,12 @@ describe("platform auth and isolation (integration)", () => {
     }
   });
 
+  it("a refused platform request still carries CORS headers, so the console can read the 401", async () => {
+    const res = await app.inject({ method: "GET", url: "/platform/auth/session", headers: { origin: (process.env.WEB_ORIGIN ?? "http://localhost:3310").split(",")[0]! } });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers["access-control-allow-origin"]).toBeTruthy();
+  });
+
   it("unknown email and wrong password answer identically", async () => {
     const u = await createPlatformUser(db, app, "SUPPORT_AGENT", PASSWORD, { signIn: false });
     const wrong = await app.inject({ method: "POST", url: "/platform/auth/login", payload: { email: u.email, password: "not-the-password" } });

@@ -76,7 +76,7 @@ export function purgeSignupTenants() {
     BEGIN
       SELECT array_agg(id) INTO ids FROM tenants WHERE name LIKE 'E2E Signup %';
       IF ids IS NULL THEN RETURN; END IF;
-      FOR r IN SELECT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'tenant_id' AND table_name <> 'tenants' LOOP
+      FOR r IN SELECT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'tenant_id' AND table_name NOT IN ('tenants', 'platform_audit_events') LOOP
         EXECUTE format('DELETE FROM %I WHERE tenant_id = ANY($1)', r.table_name) USING ids;
       END LOOP;
       DELETE FROM tenants WHERE id = ANY(ids);
