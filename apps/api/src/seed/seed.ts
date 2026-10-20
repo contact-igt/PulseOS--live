@@ -48,7 +48,12 @@ import {
   outboundWebhookDeliveries,
   adsDailyFacts,
   adsSyncRuns,
+  accountTokens,
+  supportSessions,
+  platformSessions,
 } from "../db/schema.js";
+import { sql } from "drizzle-orm";
+import { seedPlatformStaff } from "./demo/platform.js";
 import { assertSafeToWipe } from "./safety.js";
 import { hashPassword } from "../domain/auth/auth.service.js";
 import { DEMO_ENVIRONMENTS, DEMO_STAFF_SLUGS, NAMOKAR_STAFF_SLUGS, NAMOKAR_V2_STAFF_SLUGS } from "../domain/auth/demo-environments.js";
@@ -75,6 +80,11 @@ async function main() {
   const demoPassword = requireDemoPassword();
 
   console.log("Clearing existing demo data...");
+  // Platform Console rows that point at tenants / tenant accounts. The platform audit trail is append-only and is never wiped.
+  await db.delete(accountTokens);
+  await db.delete(supportSessions);
+  await db.delete(platformSessions);
+  await db.update(tenants).set({ primaryAdminUserId: null });
   await db.delete(sessions);
   await db.delete(activityLog);
   await db.delete(notifications);
@@ -134,7 +144,16 @@ async function main() {
   await seedNamokarV2Tenant(passwordHash);
   await seedConversationSessions();
 
+  // Every seeded hospital is demo data, marked as such (never inferred from its name), with its earliest admin as primary admin.
+  await db.update(tenants).set({ environment: "DEMO" });
+  await db.execute(sql`
+    update tenants t set primary_admin_user_id = (
+      select u.id from users u where u.tenant_id = t.id and u.role in ('SUPER_ADMIN', 'HOSPITAL_ADMIN') and u.status = 'ACTIVE'
+      order by (u.role = 'SUPER_ADMIN') desc, u.created_at asc limit 1)`);
+  await seedPlatformStaff(passwordHash);
+
   console.log("Seed complete. Password for every demo account: value of DEMO_PASSWORD env var");
+  console.log("Platform Console (/platform/login): owner / admin / implementation / support / auditor @platform.pulseos.local");
   for (const env of DEMO_ENVIRONMENTS) {
     const slugs = env.key === "namokar" ? NAMOKAR_STAFF_SLUGS : env.key === "namokar-v2" ? NAMOKAR_V2_STAFF_SLUGS : DEMO_STAFF_SLUGS;
     const logins = slugs.map((slug) => `${env.emailPrefix}.${slug}`).join(" / ");

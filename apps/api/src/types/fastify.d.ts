@@ -1,6 +1,6 @@
 import "fastify";
 import type { Db } from "../db/client.js";
-import type { SessionUser } from "@pulseos/types";
+import type { PlatformSessionUser, SessionUser } from "@pulseos/types";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -8,5 +8,7 @@ declare module "fastify" {
   }
   interface FastifyRequest {
     sessionUser: SessionUser | null;
+    /** Platform Console staff (separate cookie, separate identity space). Null on every tenant request. */
+    platformUser: (PlatformSessionUser & { sessionId: string }) | null;
   }
 }

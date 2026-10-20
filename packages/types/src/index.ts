@@ -3639,3 +3639,146 @@ export interface TenantLoginBranding {
   badgeLabel: string | null;
   supportText: string;
 }
+
+// ---------------------------------------------------------------------------
+// Platform Console (company side) — PulseOS by Invictus Global Tech.
+// Platform staff are a separate identity space from tenant accounts: a tenant SUPER_ADMIN has no platform access, and
+// platform access is only ever an explicit platform role. Enforced by the API (domain/platform/platform-guard.ts); the
+// console UI uses the same map only to hide actions a role cannot take.
+// ---------------------------------------------------------------------------
+
+export type PlatformRole = "PLATFORM_OWNER" | "PLATFORM_ADMIN" | "IMPLEMENTATION_ADMIN" | "SUPPORT_AGENT" | "PLATFORM_AUDITOR";
+
+export const PLATFORM_ROLES: { key: PlatformRole; label: string; description: string }[] = [
+  { key: "PLATFORM_OWNER", label: "Platform Owner", description: "Full company-level control, including platform staff and global settings." },
+  { key: "PLATFORM_ADMIN", label: "Platform Admin", description: "Tenants, users, plans, capabilities and lifecycle." },
+  { key: "IMPLEMENTATION_ADMIN", label: "Implementation Admin", description: "Client onboarding, setup and configuration." },
+  { key: "SUPPORT_AGENT", label: "Support Agent", description: "Account support and read-only Support Mode." },
+  { key: "PLATFORM_AUDITOR", label: "Platform Auditor", description: "Read-only access, including the audit trail." },
+];
+export const platformRoleLabel = (role: PlatformRole): string => PLATFORM_ROLES.find((r) => r.key === role)?.label ?? role;
+
+/** Only a Platform Owner may grant, change or revoke these. */
+export const TOP_PLATFORM_ROLES: PlatformRole[] = ["PLATFORM_OWNER", "PLATFORM_ADMIN"];
+
+export type PlatformPermission =
+  /** Overview, tenant / user / integration directories, health, settings (read). Aggregate counts only, never clinical data. */
+  | "VIEW_PLATFORM"
+  | "CREATE_TENANT"
+  /** Basic details, branding & login page, appearance, primary admin, initial configuration. */
+  | "EDIT_TENANT"
+  /** Activate, suspend, reactivate, archive. */
+  | "MANAGE_TENANT_LIFECYCLE"
+  /** Plan (edition) and capability overrides. */
+  | "MANAGE_ENTITLEMENTS"
+  /** Invite people, add / remove memberships, change tenant roles, suspend / reactivate a membership. */
+  | "MANAGE_MEMBERSHIPS"
+  /** Password reset, session revocation, resend / revoke invitations. */
+  | "MANAGE_ACCOUNT_ACCESS"
+  /** Suspend / reactivate a person across every hospital they belong to. */
+  | "SUSPEND_ACCOUNTS"
+  | "START_SUPPORT_SESSION"
+  | "ENABLE_SUPPORT_EDITS"
+  | "VIEW_AUDIT"
+  /** Invite / change / suspend platform staff (top roles: Platform Owner only). */
+  | "MANAGE_PLATFORM_STAFF"
+  | "MANAGE_PLATFORM_SETTINGS";
+
+export const PLATFORM_ROLE_PERMISSIONS: Record<PlatformRole, PlatformPermission[]> = {
+  PLATFORM_OWNER: [
+    "VIEW_PLATFORM", "CREATE_TENANT", "EDIT_TENANT", "MANAGE_TENANT_LIFECYCLE", "MANAGE_ENTITLEMENTS", "MANAGE_MEMBERSHIPS",
+    "MANAGE_ACCOUNT_ACCESS", "SUSPEND_ACCOUNTS", "START_SUPPORT_SESSION", "ENABLE_SUPPORT_EDITS", "VIEW_AUDIT", "MANAGE_PLATFORM_STAFF", "MANAGE_PLATFORM_SETTINGS",
+  ],
+  PLATFORM_ADMIN: [
+    "VIEW_PLATFORM", "CREATE_TENANT", "EDIT_TENANT", "MANAGE_TENANT_LIFECYCLE", "MANAGE_ENTITLEMENTS", "MANAGE_MEMBERSHIPS",
+    "MANAGE_ACCOUNT_ACCESS", "SUSPEND_ACCOUNTS", "START_SUPPORT_SESSION", "ENABLE_SUPPORT_EDITS", "VIEW_AUDIT", "MANAGE_PLATFORM_STAFF",
+  ],
+  IMPLEMENTATION_ADMIN: ["VIEW_PLATFORM", "CREATE_TENANT", "EDIT_TENANT", "MANAGE_MEMBERSHIPS", "MANAGE_ACCOUNT_ACCESS", "START_SUPPORT_SESSION", "ENABLE_SUPPORT_EDITS"],
+  SUPPORT_AGENT: ["VIEW_PLATFORM", "MANAGE_ACCOUNT_ACCESS", "START_SUPPORT_SESSION"],
+  PLATFORM_AUDITOR: ["VIEW_PLATFORM", "VIEW_AUDIT"],
+};
+
+export function hasPlatformPermission(role: PlatformRole, permission: PlatformPermission): boolean {
+  return PLATFORM_ROLE_PERMISSIONS[role].includes(permission);
+}
+
+/** May `actor` grant / change / revoke `target`? Top roles are the Platform Owner's alone; nobody manages their own access. */
+export function canManagePlatformRole(actor: PlatformRole, target: PlatformRole): boolean {
+  if (!hasPlatformPermission(actor, "MANAGE_PLATFORM_STAFF")) return false;
+  return actor === "PLATFORM_OWNER" || !TOP_PLATFORM_ROLES.includes(target);
+}
+
+export interface PlatformSessionUser {
+  id: string;
+  name: string;
+  email: string;
+  role: PlatformRole;
+  permissions: PlatformPermission[];
+}
+
+// Tenant lifecycle -------------------------------------------------------------------------------------------------------
+
+export type TenantStatus = "DRAFT" | "ONBOARDING" | "ACTIVE" | "SUSPENDED" | "ARCHIVED";
+export const TENANT_STATUSES: TenantStatus[] = ["DRAFT", "ONBOARDING", "ACTIVE", "SUSPENDED", "ARCHIVED"];
+export const TENANT_STATUS_LABEL: Record<TenantStatus, { label: string; hint: string }> = {
+  DRAFT: { label: "Draft", hint: "Created; setup not started." },
+  ONBOARDING: { label: "Onboarding", hint: "Implementation and configuration underway. Staff can sign in." },
+  ACTIVE: { label: "Active", hint: "The hospital is using PulseOS." },
+  SUSPENDED: { label: "Suspended", hint: "Sign-in blocked; all data preserved." },
+  ARCHIVED: { label: "Archived", hint: "Inactive historical account; data preserved." },
+};
+/** Hospitals whose staff may sign in. */
+export const TENANT_SIGN_IN_STATUSES: TenantStatus[] = ["ONBOARDING", "ACTIVE"];
+
+export type TenantLifecycleAction = "START_ONBOARDING" | "ACTIVATE" | "SUSPEND" | "REACTIVATE" | "ARCHIVE";
+/** The only transitions there are. Nothing ever hard-deletes a tenant. */
+export const TENANT_TRANSITIONS: Record<TenantLifecycleAction, { from: TenantStatus[]; to: TenantStatus; label: string; dangerous: boolean }> = {
+  START_ONBOARDING: { from: ["DRAFT"], to: "ONBOARDING", label: "Start onboarding", dangerous: false },
+  ACTIVATE: { from: ["DRAFT", "ONBOARDING"], to: "ACTIVE", label: "Activate", dangerous: false },
+  SUSPEND: { from: ["ONBOARDING", "ACTIVE"], to: "SUSPENDED", label: "Suspend", dangerous: true },
+  REACTIVATE: { from: ["SUSPENDED", "ARCHIVED"], to: "ACTIVE", label: "Reactivate", dangerous: false },
+  ARCHIVE: { from: ["DRAFT", "ONBOARDING", "SUSPENDED"], to: "ARCHIVED", label: "Archive", dangerous: true },
+};
+export function lifecycleActionsFor(status: TenantStatus): TenantLifecycleAction[] {
+  return (Object.keys(TENANT_TRANSITIONS) as TenantLifecycleAction[]).filter((a) => TENANT_TRANSITIONS[a].from.includes(status));
+}
+
+export type TenantEnvironment = "PRODUCTION" | "DEMO" | "TEST";
+export type UserStatus = "ACTIVE" | "INVITED" | "SUSPENDED" | "REMOVED";
+export type PlatformUserStatus = "ACTIVE" | "INVITED" | "SUSPENDED";
+
+/** The edition is the plan: a named default bundle of capabilities. Labels for the Platform Console. */
+export const PLAN_META: Record<Edition, { name: string; description: string }> = {
+  BETA_V1_CORE: { name: "Core", description: "Core hospital CRM: leads, patients, journeys, appointments, follow-ups, calling and reminders." },
+  BETA_V2_GROWTH: { name: "Growth", description: "Core plus marketing analytics, campaigns, ads reporting, spend attribution and the WhatsApp inbox." },
+};
+
+// Platform Console view models -------------------------------------------------------------------------------------------
+
+export interface PlatformOverview {
+  tenants: { total: number; active: number; onboarding: number; suspended: number; archived: number; byStatus: Partial<Record<TenantStatus, number>> };
+  activeUsers: number;
+  pendingInvitations: number;
+  configuredIntegrations: number;
+  integrationsNeedingAttention: number;
+  integrationIssues: { tenantId: string; tenantName: string; integration: string; reason: string }[];
+  recentActivity: { tenantId: string; tenantName: string; status: TenantStatus; lastSignInAt: string | null; activeUsers: number }[];
+  onboarding: { id: string; name: string; status: TenantStatus; createdAt: string }[];
+  recentSecurity: PlatformAuditSummary[];
+}
+
+export interface PlatformAuditSummary {
+  id: string;
+  at: string;
+  action: string;
+  outcome: "SUCCESS" | "DENIED" | "FAILURE";
+  actor: string;
+  summary: string;
+}
+
+export interface Paged<T> {
+  rows: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}

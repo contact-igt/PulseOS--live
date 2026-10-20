@@ -41,6 +41,10 @@ import { campaignRoutes } from "./domain/campaign/campaign.routes.js";
 import { analyticsRoutes } from "./domain/analytics/analytics.routes.js";
 import { websiteFormRoutes } from "./domain/acquisition/website-form.routes.js";
 import { reportRoutes } from "./domain/report/report.routes.js";
+import { platformAuthRoutes } from "./domain/platform/platform-auth.routes.js";
+import { platformRoutes } from "./domain/platform/platform.routes.js";
+import { PLATFORM_SESSION_COOKIE, resolvePlatformSession } from "./domain/platform/platform-auth.service.js";
+import { PUBLIC_PLATFORM_PATHS } from "./domain/platform/platform-guard.js";
 
 export async function buildApp() {
   // Behind a reverse proxy set TRUST_PROXY=<number of proxy hops> (usually 1) so request.ip is the client's address — the
@@ -73,11 +77,22 @@ export async function buildApp() {
   await app.register(cookie);
 
   app.decorateRequest("sessionUser", null);
+  app.decorateRequest("platformUser", null);
 
   app.addHook("onRequest", async (request) => {
     const sessionId = request.cookies[SESSION_COOKIE];
     if (!sessionId) return;
     request.sessionUser = await resolveSession(app.db, sessionId);
+  });
+
+  // Platform Console staff: a separate cookie and identity space, resolved only for the console's own API. Every /platform
+  // path except sign-in needs a platform session - including paths that do not exist, so nothing can be enumerated.
+  app.addHook("onRequest", async (request, reply) => {
+    const path = request.url.split("?")[0] ?? "";
+    if (path !== "/platform" && !path.startsWith("/platform/")) return;
+    const platformSessionId = request.cookies[PLATFORM_SESSION_COOKIE];
+    if (platformSessionId) request.platformUser = await resolvePlatformSession(app.db, platformSessionId);
+    if (!request.platformUser && !PUBLIC_PLATFORM_PATHS.has(path) && request.method !== "OPTIONS") return reply.status(401).send({ error: "unauthenticated" });
   });
 
   // CSRF: the session cookie is SameSite=Lax, which still travels with same-site requests from a sibling subdomain or
@@ -105,7 +120,7 @@ export async function buildApp() {
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
-    if (request.sessionUser && !reply.hasHeader("Cache-Control")) reply.header("Cache-Control", "private, no-store");
+    if ((request.sessionUser || request.platformUser) && !reply.hasHeader("Cache-Control")) reply.header("Cache-Control", "private, no-store");
     return payload;
   });
 
@@ -131,6 +146,8 @@ export async function buildApp() {
   }
 
   await app.register(authRoutes);
+  await app.register(platformAuthRoutes);
+  await app.register(platformRoutes);
   await app.register(webhookRoutes);
   await app.register(websiteFormRoutes);
   await app.register(async (protectedApp) => {

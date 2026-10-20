@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { calls, communicationEndpoints, connectorEvents, connectors, connectorSecrets, outboundWebhookDeliveries, outboundWebhooks, patients } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../security/encryption.js";
@@ -21,27 +21,43 @@ import { recordActivity } from "../activity/activity.service.js";
 type ConnectorRowT = typeof connectors.$inferSelect;
 type Result<T> = ({ ok: true } & T) | { ok: false; reason: string };
 
-async function loadFacts(db: Db, tenantId: string): Promise<Map<string, { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] }>> {
-  const rows = await db.select().from(connectors).where(eq(connectors.tenantId, tenantId));
-  const endpoints = await db.select().from(communicationEndpoints).where(eq(communicationEndpoints.tenantId, tenantId));
-  const out = new Map<string, { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] }>();
+type FoundConnector = { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[]; secretState: CredentialState };
+
+/** Whether a connector's stored credentials can be used: none stored, stored and readable, or stored but undecryptable. */
+export type CredentialState = "NONE" | "SAVED" | "UNREADABLE";
+
+/** Connector facts for many hospitals at once: three queries whatever the number of tenants or connectors. */
+async function loadFactsForTenants(db: Db, tenantIds: string[]): Promise<Map<string, Map<string, FoundConnector>>> {
+  const out = new Map<string, Map<string, FoundConnector>>(tenantIds.map((id) => [id, new Map()]));
+  if (tenantIds.length === 0) return out;
+  const rows = await db.select().from(connectors).where(inArray(connectors.tenantId, tenantIds));
+  const endpoints = await db.select().from(communicationEndpoints).where(inArray(communicationEndpoints.tenantId, tenantIds));
+  const secrets = rows.length ? await db.select().from(connectorSecrets).where(inArray(connectorSecrets.connectorId, rows.map((r) => r.id))) : [];
+  const secretByConnector = new Map(secrets.map((x) => [x.connectorId, x]));
   for (const row of rows) {
-    const [secret] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, row.id)).limit(1);
+    const secret = secretByConnector.get(row.id);
     let secretKeys: string[] = [];
+    let secretState: CredentialState = "NONE";
     if (secret) {
       try {
         // Only the NAMES of stored secrets leave this function, never a value.
         secretKeys = Object.entries(decryptSecret(secret.encryptedPayload)).filter(([, v]) => v !== "" && v != null).map(([k]) => k);
+        secretState = secretKeys.length ? "SAVED" : "NONE";
       } catch {
         secretKeys = [];
+        secretState = "UNREADABLE";
       }
     }
     const phoneNumbers = endpoints
       .filter((e) => e.connectorId === row.id)
       .map((e) => ({ number: e.publicNumber, label: e.displayLabel, active: e.isActive }));
-    out.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys, lastEventAt: row.lastEventAt }, phoneNumbers });
+    out.get(row.tenantId)?.set(row.provider, { row, facts: { status: row.status, mode: row.mode, configuration: (row.configuration as Record<string, unknown> | null) ?? null, secretKeys, lastEventAt: row.lastEventAt }, phoneNumbers, secretState });
   }
   return out;
+}
+
+async function loadFacts(db: Db, tenantId: string): Promise<Map<string, FoundConnector>> {
+  return (await loadFactsForTenants(db, [tenantId])).get(tenantId) ?? new Map();
 }
 
 interface WebhookFacts {
@@ -52,27 +68,39 @@ interface WebhookFacts {
   lastDelivery: "SENT" | "FAILED" | "PENDING" | null;
 }
 
-async function webhookFacts(db: Db, tenantId: string): Promise<WebhookFacts> {
-  const [c] = await db
+async function webhookFactsForTenants(db: Db, tenantIds: string[]): Promise<Map<string, WebhookFacts>> {
+  const out = new Map<string, WebhookFacts>(tenantIds.map((id) => [id, { total: 0, enabled: 0, whatsNexusTotal: 0, whatsNexusEnabled: 0, lastDelivery: null }]));
+  if (tenantIds.length === 0) return out;
+  const counts = await db
     .select({
+      tenantId: outboundWebhooks.tenantId,
       total: sql<number>`count(*)::int`,
       enabled: sql<number>`count(*) filter (where ${outboundWebhooks.enabled})::int`,
       whatsNexusTotal: sql<number>`count(*) filter (where ${outboundWebhooks.webhookCategory} = 'WHATSNEXUS')::int`,
       whatsNexusEnabled: sql<number>`count(*) filter (where ${outboundWebhooks.webhookCategory} = 'WHATSNEXUS' and ${outboundWebhooks.enabled})::int`,
     })
     .from(outboundWebhooks)
-    .where(eq(outboundWebhooks.tenantId, tenantId));
-  const [last] = await db.select({ status: outboundWebhookDeliveries.status }).from(outboundWebhookDeliveries).where(eq(outboundWebhookDeliveries.tenantId, tenantId)).orderBy(desc(outboundWebhookDeliveries.createdAt)).limit(1);
-  return {
-    total: c?.total ?? 0,
-    enabled: c?.enabled ?? 0,
-    whatsNexusTotal: c?.whatsNexusTotal ?? 0,
-    whatsNexusEnabled: c?.whatsNexusEnabled ?? 0,
-    lastDelivery: (last?.status as WebhookFacts["lastDelivery"]) ?? null,
-  };
+    .where(inArray(outboundWebhooks.tenantId, tenantIds))
+    .groupBy(outboundWebhooks.tenantId);
+  // The latest delivery per hospital, in one query.
+  const last = await db
+    .selectDistinctOn([outboundWebhookDeliveries.tenantId], { tenantId: outboundWebhookDeliveries.tenantId, status: outboundWebhookDeliveries.status })
+    .from(outboundWebhookDeliveries)
+    .where(inArray(outboundWebhookDeliveries.tenantId, tenantIds))
+    .orderBy(outboundWebhookDeliveries.tenantId, desc(outboundWebhookDeliveries.createdAt));
+  for (const c of counts) out.set(c.tenantId, { total: c.total, enabled: c.enabled, whatsNexusTotal: c.whatsNexusTotal, whatsNexusEnabled: c.whatsNexusEnabled, lastDelivery: null });
+  for (const l of last) {
+    const wh = out.get(l.tenantId);
+    if (wh) wh.lastDelivery = (l.status as WebhookFacts["lastDelivery"]) ?? null;
+  }
+  return out;
 }
 
-function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { row: ConnectorRowT; facts: ConnectorFacts; phoneNumbers: { number: string; label: string; active: boolean }[] } | undefined, wh: WebhookFacts): IntegrationCard {
+async function webhookFacts(db: Db, tenantId: string): Promise<WebhookFacts> {
+  return (await webhookFactsForTenants(db, [tenantId])).get(tenantId)!;
+}
+
+function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: FoundConnector | undefined, wh: WebhookFacts): IntegrationCard {
   const facts = found?.facts ?? null;
   const websiteState = entry.key === "website_leads" ? deriveWebsiteLeads(facts) : null;
   // Marked connected but never actually received anything: judged as still waiting for its first submission.
@@ -119,9 +147,8 @@ function card(entry: CatalogueEntry, caps: CapabilityMap, role: Role, found: { r
   };
 }
 
-export async function listHub(db: Db, tenantId: string, role: Role, caps: CapabilityMap): Promise<IntegrationCard[]> {
-  const facts = await loadFacts(db, tenantId);
-  const wh = await webhookFacts(db, tenantId);
+/** The Hub's cards for one hospital from already-loaded facts: the single derivation behind the tenant Hub and the Platform Console. */
+function composeHub(facts: Map<string, FoundConnector>, wh: WebhookFacts, role: Role, caps: CapabilityMap): IntegrationCard[] {
   const whatsNexusSelected = String(facts.get("whatsnexus")?.facts.configuration?.useForSending ?? "") === "true";
   return INTEGRATION_CATALOGUE.map((e) => {
     const result = card(e, caps, role, e.connectorProvider ? facts.get(e.connectorProvider) : undefined, wh);
@@ -134,6 +161,40 @@ export async function listHub(db: Db, tenantId: string, role: Role, caps: Capabi
       ? { ...result, enabled: false, configuration: "NOT_CONFIGURED", health: "NOT_APPLICABLE", mode: "DISABLED", phoneNumbers: [], isConnected: false }
       : result;
   });
+}
+
+export async function listHub(db: Db, tenantId: string, role: Role, caps: CapabilityMap): Promise<IntegrationCard[]> {
+  return composeHub(await loadFacts(db, tenantId), await webhookFacts(db, tenantId), role, caps);
+}
+
+/** One hospital's Hub as the Platform Console sees it: the same cards, plus credential readability and the connector id. */
+export interface TenantHubCard extends IntegrationCard {
+  credentialState: CredentialState;
+  connectorId: string | null;
+  endpointCount: number;
+}
+
+/**
+ * The Hub for many hospitals at once (Platform Console). Same derivation as the tenant Hub, a fixed number of queries.
+ * Read as a role with no configuration rights: the console never edits integrations itself.
+ */
+export async function listHubForTenants(db: Db, tenants: { id: string; caps: CapabilityMap }[]): Promise<Map<string, TenantHubCard[]>> {
+  const ids = tenants.map((t) => t.id);
+  const [facts, wh] = await Promise.all([loadFactsForTenants(db, ids), webhookFactsForTenants(db, ids)]);
+  const out = new Map<string, TenantHubCard[]>();
+  for (const t of tenants) {
+    const tf = facts.get(t.id) ?? new Map<string, FoundConnector>();
+    out.set(
+      t.id,
+      composeHub(tf, wh.get(t.id)!, "DOCTOR", t.caps).map((c) => {
+        const found = INTEGRATION_CATALOGUE.find((e) => e.key === c.key)?.connectorProvider;
+        const f = found ? tf.get(found) : undefined;
+        // Provider error text is redacted before it leaves the server; website intake errors are already a category.
+        return { ...c, lastError: redactLogText(c.lastError), canConfigure: false, canManageSecrets: false, credentialState: f?.secretState ?? "NONE", connectorId: f?.row.id ?? null, endpointCount: f?.phoneNumbers.length ?? 0 };
+      }),
+    );
+  }
+  return out;
 }
 
 export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: CapabilityMap, key: string): Promise<IntegrationDetail | null> {

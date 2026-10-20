@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createSessionForUserId, DEV_TENANT_PREFIX, getTenantBranding, listDevEnvironments, loginByRole, loginToTenant, loginWithPassword, revokeSession } from "./auth.service.js";
 import { signUpHospital, signupSchema } from "./signup.service.js";
 import { LoginThrottle } from "./login-throttle.js";
+import { sessionCookieBase } from "./cookies.js";
 import { DEFAULT_DEMO_ENVIRONMENT, DEMO_ENVIRONMENTS, DEMO_LOGIN_ROLES } from "./demo-environments.js";
 
 const loginBody = z.object({
@@ -54,16 +55,22 @@ class SignupLimiter {
 }
 
 function setSessionCookie(reply: import("fastify").FastifyReply, sessionId: string, expiresAt: Date, persistent = true) {
-  const sameSite = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
-  const secure = process.env.NODE_ENV === "production" || sameSite === "none";
   reply.setCookie(SESSION_COOKIE, sessionId, {
-    httpOnly: true,
-    sameSite,
-    secure,
-    path: "/",
+    ...sessionCookieBase(),
     // A session cookie (no expiry) unless the person asked to be remembered; the server-side session expires either way.
     ...(persistent ? { expires: expiresAt } : {}),
   });
+}
+
+function signInMeta(request: import("fastify").FastifyRequest) {
+  const ua = request.headers["user-agent"];
+  return { ip: request.ip, userAgent: typeof ua === "string" ? ua.slice(0, 200) : null };
+}
+
+/** Wrong credentials stay a 401. A correct password for a hospital that is not open says so (it is the account holder asking). */
+function sendLoginFailure(reply: import("fastify").FastifyReply, reason: "invalid_credentials" | "workspace_unavailable") {
+  if (reason === "workspace_unavailable") return reply.status(403).send({ error: reason, message: "This workspace is not available right now. Please contact your PulseOS administrator." });
+  return reply.status(401).send({ error: reason });
 }
 
 /** The caller is the same machine (IPv4/IPv6 loopback, or IPv4-mapped IPv6). */
@@ -89,10 +96,8 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.header("Retry-After", String(gate.retryAfterSeconds)).status(429).send({ error: "too_many_attempts", message: "Too many sign-in attempts. Please wait a few minutes and try again." });
     }
 
-    const result = await loginWithPassword(app.db, parsed.data.email, parsed.data.password, parsed.data.remember === true);
-    if (!result.ok) {
-      return reply.status(401).send({ error: result.reason });
-    }
+    const result = await loginWithPassword(app.db, parsed.data.email, parsed.data.password, parsed.data.remember === true, signInMeta(request));
+    if (!result.ok) return sendLoginFailure(reply, result.reason);
     throttle.succeed(request.ip, parsed.data.email);
 
     setSessionCookie(reply, result.sessionId, result.expiresAt, result.remember);
@@ -118,8 +123,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (!gate.allowed) {
       return reply.header("Retry-After", String(gate.retryAfterSeconds)).status(429).send({ error: "too_many_attempts", message: "Too many sign-in attempts. Please wait a few minutes and try again." });
     }
-    const result = SLUG.test(slug) ? await loginToTenant(app.db, slug, parsed.data.email, parsed.data.password, parsed.data.remember === true) : ({ ok: false, reason: "invalid_credentials" } as const);
-    if (!result.ok) return reply.status(401).send({ error: result.reason });
+    const result = SLUG.test(slug) ? await loginToTenant(app.db, slug, parsed.data.email, parsed.data.password, parsed.data.remember === true, signInMeta(request)) : ({ ok: false, reason: "invalid_credentials" } as const);
+    if (!result.ok) return sendLoginFailure(reply, result.reason);
     throttle.succeed(request.ip, account);
 
     setSessionCookie(reply, result.sessionId, result.expiresAt, result.remember);
@@ -179,9 +184,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (sessionId) {
       await revokeSession(app.db, sessionId);
     }
-    const sameSite = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
-    const secure = process.env.NODE_ENV === "production" || sameSite === "none";
-    reply.clearCookie(SESSION_COOKIE, { path: "/", sameSite, secure });
+    const { path, sameSite, secure } = sessionCookieBase();
+    reply.clearCookie(SESSION_COOKIE, { path, sameSite, secure });
     return reply.send({ ok: true });
   });
 

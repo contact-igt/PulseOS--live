@@ -5,6 +5,10 @@ export const roleEnum = pgEnum("role", ["SUPER_ADMIN", "HOSPITAL_ADMIN", "FRONT_
 
 // One codebase, one schema: the edition is a tenant property read by the API (see domain/auth/edition.ts) and mirrored in the UI.
 export const tenantEditionEnum = pgEnum("tenant_edition", ["BETA_V1_CORE", "BETA_V2_GROWTH"]);
+// Tenant lifecycle (Platform Console). Only ONBOARDING and ACTIVE hospitals can sign in; SUSPENDED keeps every row.
+export const tenantStatusEnum = pgEnum("tenant_status", ["DRAFT", "ONBOARDING", "ACTIVE", "SUSPENDED", "ARCHIVED"]);
+// What kind of workspace a tenant is - set explicitly (the demo seed marks its own), never inferred from a name.
+export const tenantEnvironmentEnum = pgEnum("tenant_environment", ["PRODUCTION", "DEMO", "TEST"]);
 
 export const tenants = pgTable("tenants", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -25,8 +29,22 @@ export const tenants = pgTable("tenants", {
   clinicHours: jsonb("clinic_hours").$type<import("@pulseos/types").ClinicHours | null>(),
   // Interface style (Settings > Appearance): "airy" | "balanced" | "solid". Null = the default (balanced).
   surfaceStyle: text("surface_style"),
+  status: tenantStatusEnum("status").notNull().default("ACTIVE"),
+  environment: tenantEnvironmentEnum("environment").notNull().default("PRODUCTION"),
+  locale: text("locale").notNull().default("en-IN"),
+  industry: text("industry"),
+  country: text("country"),
+  primaryAdminUserId: uuid("primary_admin_user_id").references((): AnyPgColumn => users.id, { onDelete: "set null" }),
+  statusReason: text("status_reason"),
+  statusChangedAt: timestamp("status_changed_at", { withTimezone: true }),
+  createdByPlatformUserId: uuid("created_by_platform_user_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  // Optimistic concurrency for platform edits: a save made on a stale copy is refused, never silently overwrites.
+  version: integer("version").notNull().default(1),
 }, (t) => ({
+  statusIdx: index("tenants_status_idx").on(t.status),
+  localeShape: check("tenants_locale_shape", sql`${t.locale} ~ '^[a-z]{2}(-[A-Z]{2})?$'`),
   loginSlugUnique: uniqueIndex("tenants_login_slug_unique").on(t.loginSlug),
   surfaceStyleShape: check("tenants_surface_style_shape", sql`${t.surfaceStyle} is null or ${t.surfaceStyle} in ('airy', 'balanced', 'solid')`),
   loginSlugShape: check("tenants_login_slug_shape", sql`${t.loginSlug} is null or ${t.loginSlug} ~ '^[a-z][a-z0-9-]{1,38}[a-z0-9]$'`),
@@ -99,20 +117,32 @@ export const branches = pgTable("branches", {
   tenantIdx: index("branches_tenant_idx").on(t.tenantId),
 }));
 
+// A tenant account = one person's membership of one hospital (tenant, role, status) with its own credential. The same
+// person (same email) may hold accounts in several hospitals. INVITED has no password yet; SUSPENDED / REMOVED keep history.
+export const userStatusEnum = pgEnum("user_status", ["ACTIVE", "INVITED", "SUSPENDED", "REMOVED"]);
+
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   branchId: uuid("branch_id").references(() => branches.id),
   name: text("name").notNull(),
   email: text("email").notNull(),
-  passwordHash: text("password_hash").notNull(),
+  passwordHash: text("password_hash"),
   role: roleEnum("role").notNull(),
+  status: userStatusEnum("status").notNull().default("ACTIVE"),
+  // The per-tenant "PulseOS Support" account behind audited support edits: never signs in, never listed as staff.
+  isSystem: boolean("is_system").notNull().default(false),
+  lastSignInAt: timestamp("last_sign_in_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  version: integer("version").notNull().default(1),
   // Personal display preferences (bounded names, never raw sizes). Null = never chosen = the standard.
   interfaceSize: text("interface_size"),
   textSize: text("text_size"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   tenantIdx: index("users_tenant_idx").on(t.tenantId),
+  emailLowerIdx: index("users_email_lower_idx").on(sql`lower(${t.email})`),
+  activeHasPassword: check("users_active_has_password", sql`${t.status} <> 'ACTIVE' or ${t.isSystem} or ${t.passwordHash} is not null`),
   emailTenantUnique: uniqueIndex("users_email_tenant_unique").on(t.tenantId, t.email),
   interfaceSizeShape: check("users_interface_size_shape", sql`${t.interfaceSize} is null or ${t.interfaceSize} in ('compact', 'comfortable', 'large')`),
   textSizeShape: check("users_text_size_shape", sql`${t.textSize} is null or ${t.textSize} in ('small', 'default', 'large', 'xlarge')`),
@@ -122,6 +152,9 @@ export const sessions = pgTable("sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  userAgent: text("user_agent"),
+  ipAddress: text("ip_address"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   userIdx: index("sessions_user_idx").on(t.userId),
@@ -1345,3 +1378,121 @@ export const activityLog = pgTable("activity_log", {
 }, (t) => ({
   tenantTimeIdx: index("activity_log_tenant_time_idx").on(t.tenantId, t.createdAt),
 }));
+
+// ---------------------------------------------------------------------------
+// Platform Console (company side). Platform staff are a separate identity space from tenant accounts: no tenant role ever
+// implies platform access. See domain/platform.
+// ---------------------------------------------------------------------------
+
+export const platformRoleEnum = pgEnum("platform_role", ["PLATFORM_OWNER", "PLATFORM_ADMIN", "IMPLEMENTATION_ADMIN", "SUPPORT_AGENT", "PLATFORM_AUDITOR"]);
+export const platformUserStatusEnum = pgEnum("platform_user_status", ["ACTIVE", "INVITED", "SUSPENDED"]);
+
+export const platformUsers = pgTable("platform_users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  passwordHash: text("password_hash"),
+  role: platformRoleEnum("role").notNull(),
+  status: platformUserStatusEnum("status").notNull().default("INVITED"),
+  lastSignInAt: timestamp("last_sign_in_at", { withTimezone: true }),
+  createdBy: uuid("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  version: integer("version").notNull().default(1),
+}, (t) => ({
+  emailUnique: uniqueIndex("platform_users_email_unique").on(sql`lower(${t.email})`),
+  activeHasPassword: check("platform_users_active_has_password", sql`${t.status} <> 'ACTIVE' or ${t.passwordHash} is not null`),
+  nameLen: check("platform_users_name_len", sql`char_length(${t.name}) between 1 and 120`),
+}));
+
+export const platformSessions = pgTable("platform_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  platformUserId: uuid("platform_user_id").notNull().references(() => platformUsers.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  userAgent: text("user_agent"),
+  ipAddress: text("ip_address"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  userIdx: index("platform_sessions_user_idx").on(t.platformUserId),
+}));
+
+export const accountTokenPurposeEnum = pgEnum("account_token_purpose", ["INVITE", "PASSWORD_RESET"]);
+export const accountTokenStatusEnum = pgEnum("account_token_status", ["PENDING", "ACCEPTED", "REVOKED"]);
+
+// Invitations and password resets. Only a SHA-256 of the token is stored; a PENDING row past expires_at is expired.
+export const accountTokens = pgTable("account_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  purpose: accountTokenPurposeEnum("purpose").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  userId: uuid("user_id").references(() => users.id),
+  platformUserId: uuid("platform_user_id").references(() => platformUsers.id),
+  tenantId: uuid("tenant_id").references(() => tenants.id),
+  email: text("email").notNull(),
+  role: text("role").notNull(),
+  status: accountTokenStatusEnum("status").notNull().default("PENDING"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdByPlatformUserId: uuid("created_by_platform_user_id"),
+  deliveryStatus: text("delivery_status").notNull().default("NOT_DELIVERED"),
+  sendCount: integer("send_count").notNull().default(1),
+  lastSentAt: timestamp("last_sent_at", { withTimezone: true }).notNull().defaultNow(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  hashUnique: uniqueIndex("account_tokens_hash_unique").on(t.tokenHash),
+  onePending: uniqueIndex("account_tokens_one_pending").on(t.purpose, sql`coalesce(${t.userId}, ${t.platformUserId})`).where(sql`${t.status} = 'PENDING'`),
+  tenantIdx: index("account_tokens_tenant_idx").on(t.tenantId),
+  oneAccount: check("account_tokens_one_account", sql`(${t.userId} is null) <> (${t.platformUserId} is null)`),
+  deliveryShape: check("account_tokens_delivery_shape", sql`${t.deliveryStatus} in ('SENT', 'NOT_DELIVERED')`),
+}));
+
+export const supportSessions = pgTable("support_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  platformUserId: uuid("platform_user_id").notNull().references(() => platformUsers.id),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  reason: text("reason").notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+  endReason: text("end_reason"),
+  writeEnabledAt: timestamp("write_enabled_at", { withTimezone: true }),
+  writeExpiresAt: timestamp("write_expires_at", { withTimezone: true }),
+  writeReason: text("write_reason"),
+}, (t) => ({
+  tenantIdx: index("support_sessions_tenant_idx").on(t.tenantId, t.startedAt),
+  reasonLen: check("support_sessions_reason_len", sql`char_length(${t.reason}) between 5 and 500`),
+}));
+
+// Append-only (a trigger refuses UPDATE / DELETE / TRUNCATE) and deliberately free of foreign keys.
+export const platformAuditEvents = pgTable("platform_audit_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  actorPlatformUserId: uuid("actor_platform_user_id"),
+  actorLabel: text("actor_label").notNull(),
+  action: text("action").notNull(),
+  outcome: text("outcome").notNull().default("SUCCESS"),
+  targetType: text("target_type"),
+  targetId: text("target_id"),
+  tenantId: uuid("tenant_id"),
+  context: text("context").notNull().default("PLATFORM"),
+  supportSessionId: uuid("support_session_id"),
+  summary: text("summary").notNull(),
+  reason: text("reason"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+}, (t) => ({
+  timeIdx: index("platform_audit_time_idx").on(t.createdAt),
+  tenantTimeIdx: index("platform_audit_tenant_time_idx").on(t.tenantId, t.createdAt),
+  actionIdx: index("platform_audit_action_idx").on(t.action),
+  outcomeShape: check("platform_audit_outcome_shape", sql`${t.outcome} in ('SUCCESS', 'DENIED', 'FAILURE')`),
+  contextShape: check("platform_audit_context_shape", sql`${t.context} in ('PLATFORM', 'SUPPORT_MODE', 'SYSTEM')`),
+}));
+
+export const platformSettings = pgTable("platform_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedBy: uuid("updated_by"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

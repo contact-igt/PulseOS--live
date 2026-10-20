@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { tenantCapabilities, tenants } from "../../db/schema.js";
 import { recordActivity } from "../activity/activity.service.js";
@@ -110,4 +110,14 @@ async function applyCapabilityChange(db: Db, tenantId: string, actor: { id: stri
 export async function tenantCapabilityMap(db: Db, tenantId: string): Promise<CapabilityMap> {
   const [tenant] = await db.select({ edition: tenants.edition }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   return resolveCapabilities(tenant?.edition ?? "BETA_V1_CORE", await loadCapabilityOverrides(db, tenantId));
+}
+
+/** Effective capabilities for many hospitals at once (Platform Console): one query for every tenant's overrides. */
+export async function resolveCapabilitiesForTenants(db: Db, list: { id: string; edition: Edition }[]): Promise<Map<string, CapabilityMap>> {
+  const overrides = new Map<string, Partial<Record<Capability, boolean>>>(list.map((t) => [t.id, {}]));
+  if (list.length) {
+    const rows = await db.select().from(tenantCapabilities).where(inArray(tenantCapabilities.tenantId, list.map((t) => t.id)));
+    for (const r of rows) if (isCapability(r.capability)) overrides.get(r.tenantId)![r.capability] = r.enabled;
+  }
+  return new Map(list.map((t) => [t.id, resolveCapabilities(t.edition, overrides.get(t.id) ?? {})]));
 }

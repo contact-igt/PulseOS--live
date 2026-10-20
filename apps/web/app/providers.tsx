@@ -14,8 +14,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
       // query itself is excluded so the sign-in pages' own "am I signed in?" check cannot loop.
       queryCache: new QueryCache({
         onError: (error, query) => {
-          if (query.queryKey[0] === "session") return;
-          if (error instanceof ApiError && error.status === 401) void qc.invalidateQueries({ queryKey: ["session"] });
+          const root = query.queryKey[0];
+          if (root === "session" || root === "platform-session") return;
+          if (!(error instanceof ApiError && error.status === 401)) return;
+          // The Platform Console has its own session (separate cookie): an expired one sends staff back to platform sign-in.
+          void qc.invalidateQueries({ queryKey: [root === "platform" ? "platform-session" : "session"] });
         },
       }),
     });
