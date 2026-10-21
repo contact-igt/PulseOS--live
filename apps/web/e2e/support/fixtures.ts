@@ -6,6 +6,14 @@ import { execFileSync } from "node:child_process";
 // tenants never accumulate test journeys, tasks or appointments.
 
 const DATABASE_URL = process.env.E2E_DATABASE_URL ?? "postgres://localhost:5432/pulseos_dev";
+{
+  // These helpers delete rows: only ever against a local PulseOS database, never a remote, staging or production one.
+  const u = new URL(DATABASE_URL);
+  const name = u.pathname.slice(1);
+  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname) || !/^pulseos(_[a-z0-9]+)*$/.test(name) || /prod|live|staging/.test(name)) {
+    throw new Error(`e2e fixtures refuse database "${name}" on "${u.hostname}": local PulseOS databases only`);
+  }
+}
 
 export function sql(statement: string): string {
   return execFileSync("psql", [DATABASE_URL, "-v", "ON_ERROR_STOP=1", "-q", "-At", "-F", "|", "-c", statement], { encoding: "utf8" }).trim();

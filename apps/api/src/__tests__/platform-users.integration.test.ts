@@ -258,6 +258,17 @@ describe("platform users, memberships, invitations and sessions (integration)", 
       }
     });
 
+    it("there is no way to delete a platform account, and suspending a person everywhere leaves platform access alone", async () => {
+      expect((await inject(owner, "DELETE", `/platform/staff/${admin.id}`)).statusCode).toBe(404);
+      expect((await inject(owner, "DELETE", `/platform/users/${owner.id}`)).statusCode).toBe(404);
+      // A platform account is not a hospital membership: suspending "the person" changes no platform access.
+      const res = await inject(admin, "POST", `/platform/users/${owner.id}/suspend`, { reason: "Checking scope of a person suspension" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().affected).toBe(0);
+      const [o] = await db.select().from(platformUsers).where(eq(platformUsers.id, owner.id));
+      expect(o!.status).toBe("ACTIVE");
+    });
+
     it("an owner can suspend another owner when one stays active, which signs them out", async () => {
       const target = await createPlatformUser(db, app, "PLATFORM_OWNER", PASSWORD);
       const res = await inject(owner, "POST", `/platform/staff/${target.id}/suspend`, { reason: "Left the company" });

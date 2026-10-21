@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, lte, sql } from "drizzle-orm";
+import { outboundDecision, tenantLifecycleFacts } from "../platform/outbound-policy.js";
 import type { Db } from "../../db/client.js";
 import { outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../security/encryption.js";
@@ -174,7 +175,15 @@ export async function deliverDueWebhooks(db: Db, now: Date, fetchImpl: WebhookFe
     .where(and(eq(outboundWebhookDeliveries.status, "PENDING"), eq(outboundWebhooks.enabled, true), lte(outboundWebhookDeliveries.nextAttemptAt, now)))
     .limit(50);
   const tally = { sent: 0, failed: 0, retrying: 0 };
+  // Outbound automation follows the tenant lifecycle: nothing is delivered for a tenant that is not ACTIVE, and an event
+  // that happened while it was not active is never delivered late after reactivation (see platform/outbound-policy.ts).
+  const lifecycle = await tenantLifecycleFacts(db, due.map(({ d }) => d.tenantId));
   for (const { d, w } of due) {
+    if (!outboundDecision(lifecycle.get(d.tenantId), d.createdAt).ok) {
+      const held = await db.update(outboundWebhookDeliveries).set({ status: "FAILED", error: "tenant_not_active" }).where(and(eq(outboundWebhookDeliveries.id, d.id), eq(outboundWebhookDeliveries.status, "PENDING"))).returning({ id: outboundWebhookDeliveries.id });
+      if (held.length) tally.failed++;
+      continue;
+    }
     // Claim before sending so a second worker (or a repeated tick) cannot send the same delivery twice.
     const claimed = await db
       .update(outboundWebhookDeliveries)

@@ -22,9 +22,9 @@ import { TENANT_EXTRA_TABS } from "../../../../../components/platform/tenant/ext
 const LIFECYCLE_COPY: Record<TenantLifecycleAction, string> = {
   START_ONBOARDING: "Staff of this tenant will be able to sign in while implementation continues.",
   ACTIVATE: "The tenant goes live. Its staff can sign in and use PulseOS.",
-  SUSPEND: "Every staff member is signed out immediately and cannot sign in. All data is kept and platform support access still works. Inbound integrations keep recording enquiries; automated messages follow the tenant's capabilities — switch notifications off under Modules & Capabilities to stop them.",
-  REACTIVATE: "Staff can sign in again. Nothing was deleted while it was unavailable.",
-  ARCHIVE: "The tenant becomes an inactive historical account. Sign-in stays blocked; data is kept. It can be reactivated later.",
+  SUSPEND: "Suspending this tenant blocks client access straight away: everyone is signed out and no one can sign in. Automated patient messages (appointment reminders, follow-ups, scheduled WhatsApp) and outbound webhooks pause. Inbound calls, messages, forms and integration events keep being recorded, so no enquiry is lost. Nothing is deleted, and platform support access still works.",
+  REACTIVATE: "Client staff can sign in again, and automated messages resume for anything scheduled from now on, with the tenant's settings exactly as they were. Messages that fell due while the tenant was unavailable are not sent late. Everything recorded in the meantime is waiting in the workspace.",
+  ARCHIVE: "The tenant becomes an inactive historical account. Sign-in stays blocked and automated messages stay paused; inbound events are still recorded and nothing is deleted. It can be reactivated later.",
 };
 
 function EditDetailsDialog({ detail, open, onClose }: { detail: PlatformTenantDetail; open: boolean; onClose: () => void }) {

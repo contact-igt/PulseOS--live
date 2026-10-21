@@ -3,6 +3,7 @@ import type { Db } from "../../db/client.js";
 import { appointments, branches, connectorEvents, conversations, messages, messageTemplates, notificationRules, notifications, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
 import { TEMPLATE_VARIABLES, checkProviderTemplate, type WhatsAppDelivery, type MessageTemplateVm, type NotificationOffsetUnit, type NotificationRuleVm, type NotificationSubject, type NotificationVm, type TemplatePurpose, type WhatsAppPreview } from "@pulseos/types";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
+import { outboundDecision, tenantLifecycleFacts } from "../platform/outbound-policy.js";
 import { getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
 import { getMessagingAdapter } from "../connector/registry.js";
 import { AmbiguousSendError, PermanentSendError, RetryableSendError, type MessagingProviderAdapter } from "../connector/types.js";
@@ -472,6 +473,10 @@ async function recordAfterSend(db: Db, n: Row, connectorId: string, tenantId: st
 /** Resolve the connector/adapter/template and send ONE notification row that is already claimed (PROCESSING). */
 async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"sent" | "blocked" | "cancelled" | "retry" | "failed"> {
   const tenantId = n.tenantId;
+  // A tenant that is not ACTIVE (suspended, archived, not yet live) sends no automated message, and a message that fell due
+  // before it became active again is never sent late. Its saved rules and capabilities are untouched (see outbound-policy.ts).
+  const lifecycle = outboundDecision((await tenantLifecycleFacts(db, [tenantId])).get(tenantId), n.scheduledFor);
+  if (!lifecycle.ok) return (await finish(db, n.id, { status: "CANCELLED", reason: lifecycle.reason }), "cancelled");
   const caps = await tenantCapabilityMap(db, tenantId);
   if (!caps.WHATSAPP_NOTIFICATIONS) return (await finish(db, n.id, { status: "BLOCKED", reason: "CAPABILITY_DISABLED" }), "blocked");
 
