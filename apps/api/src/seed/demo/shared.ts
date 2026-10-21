@@ -259,10 +259,12 @@ export async function createDemoUsers(
   passwordHash: string,
   branchByKey: { a: BranchRow; b: BranchRow },
   defs: DemoUserDef[],
+  /** A test copy of a demo gets its own addresses, so a demo sign-in can never resolve to the copy. */
+  emailPrefix?: string,
 ) {
   const rows = await db
     .insert(users)
-    .values(defs.map((d) => ({ tenantId, branchId: branchByKey[d.branch].id, name: d.name, email: demoEmail(environment, d.slug), passwordHash, role: d.role })))
+    .values(defs.map((d) => ({ tenantId, branchId: branchByKey[d.branch].id, name: d.name, email: emailPrefix ? `${emailPrefix}.${d.slug}@pulseos.local` : demoEmail(environment, d.slug), passwordHash, role: d.role })))
     .returning();
   return Object.fromEntries(defs.map((d, i) => [d.slug, rows[i]])) as Record<string, UserRow>;
 }

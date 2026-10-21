@@ -606,6 +606,8 @@ export interface OphthalmologyVariant {
   tag: string;
   /** Website form id the demo tenant's form connector accepts. */
   formId: string;
+  /** Test copies only: staff sign in as <emailPrefix>.<role>@pulseos.local instead of the demo's own addresses. */
+  emailPrefix?: string;
 }
 
 export const OPHTHALMOLOGY_V2: OphthalmologyVariant = { environment: "ophthalmology", loginSlug: "eye-demo", loginShortName: "Eye Demo", tenantName: "PulseOS Ophthalmology Demo", edition: "BETA_V2_GROWTH", tag: "EYE", formId: "eye-care-enquiry-v1" };
@@ -648,7 +650,7 @@ export async function seedOphthalmologyTenant(passwordHash: string, variant: Oph
     { slug: "doctor2", name: "Dr. Shalini Bhat", role: "DOCTOR", branch: "b" },
     { slug: "frontdesk", name: "Deepa Nair", role: "FRONT_DESK", branch: "a" },
     { slug: "coordinator", name: "Arun Kulkarni", role: "PATIENT_COORDINATOR", branch: "a" },
-  ]);
+  ], variant.emailPrefix);
   const { admin, coordinator, frontdesk: frontDesk } = staff;
 
   const campaignDefs = [

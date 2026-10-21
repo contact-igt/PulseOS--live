@@ -3,11 +3,13 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
 import { queryClient } from "../db/client.js";
 import { journeyConfigProblems } from "../seed/demo/consistency.js";
-import { NAMOKAR_JOURNEYS, NAMOKAR_PATIENT_NAMES, NAMOKAR_TENANT_NAME } from "../seed/demo/namokar.js";
+import { NAMOKAR_JOURNEYS, NAMOKAR_PATIENT_NAMES } from "../seed/demo/namokar.js";
+import { awayFromHospitalMidnight, FRESH_DEMO_HOOK_TIMEOUT, freshNamokarDemo, type FreshDemo } from "./helpers/fresh-demo.js";
 
 // The Namokar telecalling demo must hold its story: a realistic "today" (enquiries, a clinic queue in every state,
 // this morning's calls) plus callbacks that are due today, overdue and coming up. Counts are relative to the hospital's
-// day, so this needs a seed run on the same day (the seed is the only thing that creates this data).
+// day, so each run builds a fresh copy with the seed's own builder (helpers/fresh-demo.ts): "today" is always the
+// server's today, whenever the shared demo was seeded.
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
 
@@ -29,16 +31,20 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar Eye & Oculoplasty Centre pilot (seeded)
   let tenantId: string;
   let tz: string;
   let today: string;
+  let slug: string;
+  let fresh: FreshDemo;
 
   beforeAll(async () => {
     app = await buildApp();
     await app.ready();
-    const [t] = await queryClient`select id, timezone from tenants where name = ${NAMOKAR_TENANT_NAME}`;
-    expect(t, "run `pnpm db:seed` first").toBeTruthy();
-    tenantId = t!.id as string;
+    await awayFromHospitalMidnight();
+    fresh = await freshNamokarDemo(DEMO_PASSWORD!);
+    tenantId = fresh.tenantId;
+    slug = fresh.loginSlug;
+    const [t] = await queryClient`select timezone from tenants where id = ${tenantId}`;
     tz = t!.timezone as string;
     today = ((await queryClient`select to_char(now() at time zone ${tz}, 'YYYY-MM-DD') as d`)[0]!.d as string);
-  });
+  }, FRESH_DEMO_HOOK_TIMEOUT);
   afterAll(async () => {
     await app.close();
     await queryClient.end();
@@ -115,7 +121,7 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar Eye & Oculoplasty Centre pilot (seeded)
   });
 
   it("shows the telecalling team a meaningful Command Centre, Front Desk and Leads (through the API, as staff)", async () => {
-    const login = await app.inject({ method: "POST", url: "/auth/login", payload: { email: "namokar.admin@pulseos.local", password: DEMO_PASSWORD } });
+    const login = await app.inject({ method: "POST", url: `/auth/login/tenant/${slug}`, payload: { email: fresh.email("admin"), password: DEMO_PASSWORD } });
     expect(login.statusCode).toBe(200);
     const cookie = login.cookies.find((c) => c.name === "pulseos_session")!.value;
     const get = (url: string) => app.inject({ method: "GET", url, cookies: { pulseos_session: cookie } });

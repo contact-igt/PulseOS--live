@@ -1,16 +1,24 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { db, queryClient } from "../db/client.js";
-import { appointments, followUpTypes, journeys, tasks, tenants } from "../db/schema.js";
+import { appointments, followUpTypes, journeys, tasks } from "../db/schema.js";
+import { awayFromHospitalMidnight, FRESH_DEMO_HOOK_TIMEOUT, freshOphthalmologyDemo } from "./helpers/fresh-demo.js";
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
 
+// Built fresh at the start of this file by the seed's own builders, so "today" here is the server's today - whenever
+// the database was seeded and whatever the time zone of the machine running the suite.
 describe.skipIf(!DEMO_PASSWORD)("Ophthalmology demo follow-up data (seed guarantees)", () => {
+  const tenantIds = new Map<string, string>();
+  beforeAll(async () => {
+    await awayFromHospitalMidnight();
+    for (const base of ["V1", "V2"] as const) tenantIds.set(base, (await freshOphthalmologyDemo(DEMO_PASSWORD!, base)).tenantId);
+  }, FRESH_DEMO_HOOK_TIMEOUT);
   afterAll(() => queryClient.end());
 
-  for (const name of ["PulseOS Ophthalmology V1 Demo", "PulseOS Ophthalmology Demo"]) {
+  for (const [base, name] of [["V1", "PulseOS Ophthalmology V1 Demo"], ["V2", "PulseOS Ophthalmology Demo"]] as const) {
     it(`${name}: shows an overdue callback, an appointment follow-up today, an appointment risk, an upcoming surgery follow-up, a journey with none, and a booked appointment`, async () => {
-      const tenantId = (await db.select().from(tenants).where(eq(tenants.name, name)))[0]!.id;
+      const tenantId = tenantIds.get(base)!;
       const typeKeys = new Map((await db.select().from(followUpTypes).where(eq(followUpTypes.tenantId, tenantId))).map((t) => [t.id, t.key]));
       const open = (await db.select().from(tasks).where(and(eq(tasks.tenantId, tenantId), inArray(tasks.status, ["pending", "in_progress"])))).map((t) => ({ ...t, key: t.followUpTypeId ? typeKeys.get(t.followUpTypeId) : null }));
       const now = Date.now();

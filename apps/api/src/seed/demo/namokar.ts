@@ -345,10 +345,23 @@ async function keepAddLeadSimple(tenantId: string) {
     .where(eq(customFieldDefinitions.tenantId, tenantId));
 }
 
-export async function seedNamokarTenant(passwordHash: string) {
+/**
+ * A separate copy of this demo, built "now" with its own name, sign-in address and fixture ids. Tests that check the demo's
+ * same-day story build one at their own start, so their "today" is always the server's today (never a stale seed's).
+ */
+export interface DemoCopy {
+  tenantName: string;
+  loginSlug: string;
+  /** Upper-case, unique: keeps fixture page ids, form ids and provider refs apart from the real demo's. */
+  tag: string;
+}
+
+export async function seedNamokarTenant(passwordHash: string, copy?: DemoCopy) {
   assertJourneyConfigsConsistent("namokar", NAMOKAR_JOURNEYS, NAMOKAR_PATIENT_NAMES, new Set(OPHTHALMOLOGY_TREATMENTS.map((t) => t.key)));
-  const tenant = await createDemoTenant(NAMOKAR_TENANT_NAME, "BETA_V1_CORE", {
-    loginSlug: NAMOKAR_LOGIN_SLUG,
+  const tag = copy?.tag ?? "NAMOKAR";
+  const formSuffix = copy ? `-${tag.toLowerCase()}` : "";
+  const tenant = await createDemoTenant(copy?.tenantName ?? NAMOKAR_TENANT_NAME, "BETA_V1_CORE", {
+    loginSlug: copy?.loginSlug ?? NAMOKAR_LOGIN_SLUG,
     // The approved Namokar sign-in: "PulseOS × Namokar", the full name, one operational line, the V1 Demo badge. No logo yet (none is approved):
     // the page uses the typographic fallback. Add an approved mark as /brand/<file> and set logo_path - nothing else changes.
     login: { shortName: "Namokar", tagline: "Every enquiry, call, appointment and follow-up for your patients, in one place.", badgeLabel: "V1 Demo" },
@@ -367,17 +380,17 @@ export async function seedNamokarTenant(passwordHash: string) {
 
   // Runo and WhatsApp are FIXTURES here: nothing real is contacted.
   const { whatsappConnector, runoConnector, endpoints } = await createDemoConnectors(tenant.id, branchByKey, {
-    identifiers: fixtureIdentifiers("NAMOKAR"),
-    phoneNumberId: "FIXTURE_NAMOKAR_PHONE_NUMBER_ID",
+    identifiers: fixtureIdentifiers(tag),
+    phoneNumberId: `FIXTURE_${tag}_PHONE_NUMBER_ID`,
     whatsappNumber: "+91 98100 55200",
     whatsappLabel: "WhatsApp Line",
-    formIds: ["namokar-enquiry-v1", "namokar-interested"],
+    formIds: [`namokar-enquiry-v1${formSuffix}`, `namokar-interested${formSuffix}`],
     // The website "I am interested" form is a closed door (fixture token, hospital-specific): see docs/namokar/NAMOKAR_WEBSITE_INTAKE.md.
     websiteIntake: { requireService: true, fixedSource: "website", allowedOrigins: ["https://www.namokar-eye.example"] },
-    metaPageId: "FIXTURE_NAMOKAR_PAGE_ID",
+    metaPageId: `FIXTURE_${tag}_PAGE_ID`,
     phoneLines: [
-      { key: "main", number: "+91 20 4155 0200", providerRef: "NAMOKAR-TELECALLING", label: "Telecalling Desk", isActive: true, branch: "a" },
-      { key: "reception", number: "+91 20 4155 0201", providerRef: "NAMOKAR-RECEPTION", label: "Reception", isActive: true, branch: "a" },
+      { key: "main", number: "+91 20 4155 0200", providerRef: `${tag}-TELECALLING`, label: "Telecalling Desk", isActive: true, branch: "a" },
+      { key: "reception", number: "+91 20 4155 0201", providerRef: `${tag}-RECEPTION`, label: "Reception", isActive: true, branch: "a" },
     ],
   });
 
@@ -389,7 +402,7 @@ export async function seedNamokarTenant(passwordHash: string) {
     { slug: "frontdesk", name: "Front Desk", role: "FRONT_DESK", branch: "a" },
     { slug: "coordinator", name: "Shivani", role: "PATIENT_COORDINATOR", branch: "a" },
     { slug: "coordinator2", name: "Sushil", role: "PATIENT_COORDINATOR", branch: "a" },
-  ]);
+  ], copy?.loginSlug);
   const { admin, coordinator, coordinator2, frontdesk: frontDesk } = staff;
 
   const patientRows = await createDemoPatients(tenant.id, branchByKey, NAMOKAR_PATIENT_NAMES, 720_000_000, ["Marathi", "Hindi", "English"]);

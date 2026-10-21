@@ -3,7 +3,8 @@ import type { FastifyInstance } from "fastify";
 import type { LeadsWorkspace, PerformanceDashboard } from "@pulseos/types";
 import { buildApp } from "../app.js";
 import { queryClient } from "../db/client.js";
-import { NAMOKAR_JOURNEYS, NAMOKAR_LOGIN_SLUG, NAMOKAR_TENANT_NAME } from "../seed/demo/namokar.js";
+import { NAMOKAR_JOURNEYS, NAMOKAR_LOGIN_SLUG } from "../seed/demo/namokar.js";
+import { awayFromHospitalMidnight, FRESH_DEMO_HOOK_TIMEOUT, freshNamokarDemo, type FreshDemo } from "./helpers/fresh-demo.js";
 
 // The Namokar pilot data must tell ONE consistent story. These tests read the seeded rows (never the seed's own config) and
 // check that nothing contradicts anything else, that every stage the pilot talks about is on screen today, and that the numbers
@@ -16,10 +17,12 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
   let tenantId: string;
   let tz: string;
   let today: string;
+  let slug: string;
+  let fresh: FreshDemo;
   const sql = queryClient;
 
   const login = async (email: string) => {
-    const res = await app.inject({ method: "POST", url: `/auth/login/tenant/${NAMOKAR_LOGIN_SLUG}`, payload: { email, password: DEMO_PASSWORD } });
+    const res = await app.inject({ method: "POST", url: `/auth/login/tenant/${slug}`, payload: { email, password: DEMO_PASSWORD } });
     expect(res.statusCode, `${email}: ${res.body}`).toBe(200);
     return res.cookies.find((c) => c.name === "pulseos_session")!.value;
   };
@@ -28,12 +31,15 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
   beforeAll(async () => {
     app = await buildApp();
     await app.ready();
-    const [t] = await sql`select id, timezone from tenants where name = ${NAMOKAR_TENANT_NAME}`;
-    expect(t, "run `pnpm db:seed` first").toBeTruthy();
-    tenantId = t!.id as string;
+    // A fresh copy built by the seed's own builder now, so its "today" is the server's today (see helpers/fresh-demo.ts).
+    await awayFromHospitalMidnight();
+    fresh = await freshNamokarDemo(DEMO_PASSWORD!);
+    tenantId = fresh.tenantId;
+    slug = fresh.loginSlug;
+    const [t] = await sql`select timezone from tenants where id = ${tenantId}`;
     tz = t!.timezone as string;
     today = (await sql`select to_char(now() at time zone ${tz}, 'YYYY-MM-DD') as d`)[0]!.d as string;
-  });
+  }, FRESH_DEMO_HOOK_TIMEOUT);
   afterAll(async () => {
     await app.close();
     await sql.end();
@@ -42,12 +48,13 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
   describe("the pilot workspace itself", () => {
     it("is its own tenant with its own sign-in page, a tenant-scoped owner and the five pilot roles", async () => {
       const [t] = await sql`select edition, login_slug from tenants where id = ${tenantId}`;
-      expect(t).toMatchObject({ edition: "BETA_V1_CORE", login_slug: "namokar-v1" });
+      expect(t).toMatchObject({ edition: "BETA_V1_CORE", login_slug: slug });
+      expect(NAMOKAR_LOGIN_SLUG, "the real demo's own sign-in page").toBe("namokar-v1");
       const roles = (await sql`select distinct role from users where tenant_id = ${tenantId}`).map((r) => r.role as string).sort();
       expect(roles).toEqual(["DOCTOR", "FRONT_DESK", "HOSPITAL_ADMIN", "PATIENT_COORDINATOR", "SUPER_ADMIN"]);
       // Every account signs in through the hospital's own page (and lands in this hospital).
       for (const who of ["superadmin", "admin", "doctor", "frontdesk", "coordinator"]) {
-        const res = await app.inject({ method: "POST", url: "/auth/login/tenant/namokar-v1", payload: { email: `namokar.${who}@pulseos.local`, password: DEMO_PASSWORD } });
+        const res = await app.inject({ method: "POST", url: `/auth/login/tenant/${slug}`, payload: { email: fresh.email(who), password: DEMO_PASSWORD } });
         expect(res.statusCode, who).toBe(200);
         expect(res.json().user.tenantId).toBe(tenantId);
       }
@@ -56,7 +63,7 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
     it("has revenue switched off by the hospital's own setting: no revenue event, no revenue figure, no revenue workflow", async () => {
       expect((await sql`select 1 from revenue_events where tenant_id = ${tenantId}`).length).toBe(0);
       expect((await sql`select enabled from tenant_capabilities where tenant_id = ${tenantId} and capability = 'REVENUE_TRACKING'`)[0]).toMatchObject({ enabled: false });
-      const cookie = await login("namokar.superadmin@pulseos.local");
+      const cookie = await login(fresh.email("superadmin"));
       const session = (await get(cookie, "/auth/session")).json() as { user: { capabilities: Record<string, boolean> } };
       expect(session.user.capabilities).toMatchObject({ REVENUE_TRACKING: false, WHATSAPP_INBOX: false, CONVERSATION_INTELLIGENCE: false, MARKETING_ANALYTICS: false, ANALYTICS_CORE: true, RUNO_CALLING: true, WHATSAPP_NOTIFICATIONS: true });
       for (const path of ["/analytics/revenue", "/analytics/summary", "/dashboard/executive", "/conversations"]) {
@@ -152,7 +159,7 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
 
   describe("every stage the pilot talks about is on screen today", () => {
     it("shows each derived status, and the lead statuses a telecaller works through", async () => {
-      const cookie = await login("namokar.admin@pulseos.local");
+      const cookie = await login(fresh.email("admin"));
       const ws = (await get(cookie, "/leads/workspace?view=all")).json() as LeadsWorkspace;
       const ops = new Set(ws.rows.map((r) => r.operationalStatus));
       for (const s of ["appointment_booked", "appointment_confirmed", "checked_in", "waiting", "with_doctor", "consultation_completed", "treatment_follow_up", "procedure_scheduled", "no_show", "closed"] as const) {
@@ -208,7 +215,7 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
     });
 
     it("reads Leads > Patient > Cataract, and Patient and Journey are different pages", async () => {
-      const cookie = await login("namokar.admin@pulseos.local");
+      const cookie = await login(fresh.email("admin"));
       const ws = (await get(cookie, "/leads/workspace?view=all")).json() as LeadsWorkspace;
       const row = ws.rows.find((r) => r.journeyType === "Cataract" && r.operationalStatus === "procedure_scheduled");
       expect(row).toBeTruthy();
@@ -221,7 +228,7 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
 
   describe("numbers are the rows", () => {
     it("the Leads counts, the Command Centre and the Performance funnel all reconcile to the journeys table", async () => {
-      const cookie = await login("namokar.superadmin@pulseos.local");
+      const cookie = await login(fresh.email("superadmin"));
       const [{ n: journeysTotal }] = (await sql`select count(*)::int as n from journeys where tenant_id = ${tenantId}`) as unknown as { n: number }[];
       const [{ n: lostTotal }] = (await sql`select count(*)::int as n from journeys where tenant_id = ${tenantId} and stage = 'lost'`) as unknown as { n: number }[];
       const ws = (await get(cookie, "/leads/workspace?view=all")).json() as LeadsWorkspace;
@@ -240,7 +247,7 @@ describe.skipIf(!DEMO_PASSWORD)("Namokar pilot seed: consistency and coverage", 
     });
 
     it("today's strip is counted from today's rows", async () => {
-      const cookie = await login("namokar.admin@pulseos.local");
+      const cookie = await login(fresh.email("admin"));
       const strip = (await get(cookie, "/dashboard/today")).json() as { newEnquiries: number; appointmentsToday: number; consultationsCompleted: number };
       const [{ n: created }] = (await sql`select count(*)::int as n from journeys where tenant_id = ${tenantId} and to_char(created_at at time zone ${tz}, 'YYYY-MM-DD') = ${today}`) as unknown as { n: number }[];
       const [{ n: visits }] = (await sql`select count(*)::int as n from appointments where tenant_id = ${tenantId} and to_char(scheduled_at at time zone ${tz}, 'YYYY-MM-DD') = ${today}`) as unknown as { n: number }[];

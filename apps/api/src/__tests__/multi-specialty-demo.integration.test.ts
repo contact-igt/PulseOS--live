@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { awayFromHospitalMidnight, FRESH_DEMO_HOOK_TIMEOUT, freshOphthalmologyDemo } from "./helpers/fresh-demo.js";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
 import { marketingCampaigns, tenants, users } from "../db/schema.js";
@@ -368,12 +369,19 @@ describe.skipIf(!DEMO_PASSWORD)("multi-specialty demo tenants (integration)", ()
       expect(cataractGoogle.roas).not.toBeNull();
     });
 
+    // Doctor Home is today's schedule, so it is read from a copy of the Ophthalmology demo built just now by the seed's own
+    // builder (helpers/fresh-demo.ts) - never from a shared demo seeded on another day.
     it("Doctor Home in the Ophthalmology tenant only lists eye patients", async () => {
-      const home = await getJson<unknown>(app, "/dashboard/doctor", eye.doctor);
+      await awayFromHospitalMidnight();
+      const fresh = await freshOphthalmologyDemo(DEMO_PASSWORD!, "V2");
+      const login = await app.inject({ method: "POST", url: `/auth/login/tenant/${fresh.loginSlug}`, payload: { email: fresh.email("doctor"), password: DEMO_PASSWORD } });
+      expect(login.statusCode).toBe(200);
+      const doctor = login.cookies.find((c) => c.name === "pulseos_session")!.value;
+      const home = await getJson<unknown>(app, "/dashboard/doctor", doctor);
       const text = JSON.stringify(home);
       for (const eyePatient of ["Anil Joshi", "Zoya Khan", "Harish Bhat"]) expect(text).toContain(eyePatient);
       for (const gynName of ["Priya Sharma", "Sneha Reddy", "Fertility", "IVF"]) expect(text).not.toContain(gynName);
-    });
+    }, FRESH_DEMO_HOOK_TIMEOUT);
   });
 });
 
