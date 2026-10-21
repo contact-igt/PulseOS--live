@@ -179,4 +179,46 @@ test.describe("Platform Console", () => {
     await expect(page.getByTestId("start-support")).toBeVisible();
     expect(Number(sql("select count(*) from platform_audit_events where action = 'support.ended' and actor_label = 'support@platform.pulseos.local'"))).toBeGreaterThan(0);
   });
+
+  test("capabilities: plan default, override and effective; the change is audited", async ({ page }) => {
+    await platformLogin(page, "admin@platform.pulseos.local");
+    await page.goto("/platform/tenants?q=eye-v1-demo");
+    await page.getByTestId("tenant-row-eye-v1-demo").click();
+    await page.getByRole("tab", { name: "Modules & Capabilities" }).click();
+    const row = page.getByTestId("cap-SMS_NOTIFICATIONS");
+    const before = await row.locator("[data-effective]").getAttribute("data-effective");
+    await page.getByTestId("cap-toggle-SMS_NOTIFICATIONS").click();
+    await expect(row.locator("[data-effective]")).toHaveAttribute("data-effective", before === "true" ? "false" : "true");
+    await expect(row).toContainText("Forced");
+    await row.getByRole("button", { name: "Use plan default" }).click();
+    await expect(row.locator("[data-effective]")).toHaveAttribute("data-effective", before!);
+    await page.goto("/platform/audit?q=SMS%20Notifications");
+    await expect(page.getByTestId("audit-row-capability.changed").first()).toBeVisible();
+  });
+
+  test("integrations: cross-tenant state without credentials", async ({ page }) => {
+    await platformLogin(page);
+    await page.goto("/platform/integrations");
+    await expect(page.getByTestId("integration-table")).toBeVisible();
+    await page.getByTestId("filter-connector").selectOption("website_leads");
+    await expect(page.locator('[data-testid^="integration-website_leads-"]').first()).toBeVisible();
+    await expect(page.locator('[data-testid^="integration-runo-"]')).toHaveCount(0);
+    await page.locator('[data-testid^="integration-website_leads-"]').first().click();
+    await expect(page.getByTestId("platform-integration-detail")).toContainText("Recent events");
+  });
+
+  test("role-based console: the auditor reads but cannot act; the support agent has no audit", async ({ page, browser }) => {
+    await platformLogin(page, "auditor@platform.pulseos.local");
+    await page.goto("/platform/tenants");
+    await expect(page.getByTestId("tenant-table")).toBeVisible();
+    await expect(page.getByTestId("create-tenant")).toHaveCount(0);
+    await page.goto("/platform/audit?security=1");
+    await expect(page.getByTestId("audit-table")).toBeVisible();
+
+    const agent = await (await browser.newContext()).newPage();
+    await platformLogin(agent, "support@platform.pulseos.local");
+    await expect(agent.getByTestId("platform-nav-/platform/audit")).toHaveCount(0);
+    await agent.goto("/platform/audit");
+    await expect(agent.getByTestId("platform-no-access")).toBeVisible();
+  });
 });

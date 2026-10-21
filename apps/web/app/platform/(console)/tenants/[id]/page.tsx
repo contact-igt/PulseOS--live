@@ -22,7 +22,7 @@ import { TENANT_EXTRA_TABS } from "../../../../../components/platform/tenant/ext
 const LIFECYCLE_COPY: Record<TenantLifecycleAction, string> = {
   START_ONBOARDING: "Staff of this tenant will be able to sign in while implementation continues.",
   ACTIVATE: "The tenant goes live. Its staff can sign in and use PulseOS.",
-  SUSPEND: "Every staff member is signed out immediately and cannot sign in. All data is kept. Platform support access still works.",
+  SUSPEND: "Every staff member is signed out immediately and cannot sign in. All data is kept and platform support access still works. Inbound integrations keep recording enquiries; automated messages follow the tenant's capabilities — switch notifications off under Modules & Capabilities to stop them.",
   REACTIVATE: "Staff can sign in again. Nothing was deleted while it was unavailable.",
   ARCHIVE: "The tenant becomes an inactive historical account. Sign-in stays blocked; data is kept. It can be reactivated later.",
 };

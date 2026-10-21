@@ -46,7 +46,11 @@ const securityHeaders = [
   ...(isDev ? [] : [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]),
 ];
 
+// The web build's own commit and build time, for Platform Health. From the platform's build variables; never a path or secret.
+const buildCommit = (process.env.GIT_COMMIT ?? process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.SOURCE_VERSION ?? "").replace(/[^0-9a-f]/gi, "").slice(0, 40);
+
 const nextConfig: NextConfig = {
+  env: { NEXT_PUBLIC_BUILD_COMMIT: buildCommit, NEXT_PUBLIC_BUILD_TIME: new Date().toISOString() },
   transpilePackages: ["@pulseos/ui", "@pulseos/design-tokens", "@pulseos/types", "@pulseos/api-client"],
   reactStrictMode: true,
   poweredByHeader: false,

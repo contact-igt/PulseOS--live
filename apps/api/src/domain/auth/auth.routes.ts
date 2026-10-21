@@ -4,6 +4,7 @@ import { createSessionForUserId, DEV_TENANT_PREFIX, getTenantBranding, listDevEn
 import { signUpHospital, signupSchema } from "./signup.service.js";
 import { LoginThrottle } from "./login-throttle.js";
 import { sessionCookieBase } from "./cookies.js";
+import { getPlatformSettings } from "../platform/platform-settings.service.js";
 import { DEFAULT_DEMO_ENVIRONMENT, DEMO_ENVIRONMENTS, DEMO_LOGIN_ROLES } from "./demo-environments.js";
 
 const loginBody = z.object({
@@ -67,9 +68,15 @@ function signInMeta(request: import("fastify").FastifyRequest) {
   return { ip: request.ip, userAgent: typeof ua === "string" ? ua.slice(0, 200) : null };
 }
 
-/** Wrong credentials stay a 401. A correct password for a hospital that is not open says so (it is the account holder asking). */
-function sendLoginFailure(reply: import("fastify").FastifyReply, reason: "invalid_credentials" | "workspace_unavailable") {
-  if (reason === "workspace_unavailable") return reply.status(403).send({ error: reason, message: "This workspace is not available right now. Please contact your PulseOS administrator." });
+/**
+ * Wrong credentials stay a 401. A correct password for a hospital that is not open says so (it is the account holder asking),
+ * with the platform's support contact when one is configured (Platform Settings).
+ */
+async function sendLoginFailure(reply: import("fastify").FastifyReply, reason: "invalid_credentials" | "workspace_unavailable") {
+  if (reason === "workspace_unavailable") {
+    const { supportContact } = await getPlatformSettings(reply.server.db);
+    return reply.status(403).send({ error: reason, message: `This workspace is not available right now. Please contact ${supportContact || "your PulseOS administrator"}.` });
+  }
   return reply.status(401).send({ error: reason });
 }
 

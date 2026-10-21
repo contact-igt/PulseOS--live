@@ -5,6 +5,9 @@ import type {
   PlatformCapabilityMatrix,
   PlatformIntegrationDetail,
   PlatformSupportSession,
+  PlatformAuditEvent,
+  PlatformHealth,
+  PlatformSettingsValues,
   PlatformIntegrationRow,
   PlatformPlan,
   PlatformInvitationRow,
@@ -105,6 +108,15 @@ export const platformApi = {
   enableSupportEdits: (id: string, body: { reason: string; minutes: number }) => request<{ session: PlatformSupportSession }>(`/platform/support-sessions/${encodeURIComponent(id)}/enable-edits`, json("POST", body)),
   disableSupportEdits: (id: string) => request<{ ok: true }>(`/platform/support-sessions/${encodeURIComponent(id)}/disable-edits`, { method: "POST" }),
   endSupport: (id: string) => request<{ ok: true }>(`/platform/support-sessions/${encodeURIComponent(id)}/end`, { method: "POST" }),
+
+  // Audit & security, health, settings
+  audit: (q: { q?: string; action?: string; outcome?: "SUCCESS" | "DENIED" | "FAILURE"; tenantId?: string; context?: "PLATFORM" | "SUPPORT_MODE" | "SYSTEM"; security?: "true"; from?: string; to?: string; page?: number; pageSize?: number } = {}) =>
+    request<Paged<PlatformAuditEvent>>(`/platform/audit${qs(q)}`),
+  tenantAudit: (tenantId: string) =>
+    request<{ platform: { id: string; at: string; actor: string; action: string; outcome: string; context: string; summary: string; reason: string | null }[]; tenantActivity: { id: string; at: string; actor: string; action: string; entityType: string; entityKey: string | null }[] }>(`/platform/tenants/${encodeURIComponent(tenantId)}/audit`),
+  health: () => request<PlatformHealth>("/platform/health"),
+  settings: () => request<{ settings: PlatformSettingsValues; defaults: PlatformSettingsValues; emailProvider: string }>("/platform/settings"),
+  saveSettings: (body: PlatformSettingsValues) => request<{ settings: PlatformSettingsValues; changed: string[] }>("/platform/settings", json("PUT", body)),
 
   // Platform staff
   staff: () => request<{ staff: PlatformStaffMember[] }>("/platform/staff"),

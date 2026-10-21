@@ -4071,3 +4071,45 @@ export interface PlatformSupportSession {
   writeExpiresAt: string | null;
   writeReason: string | null;
 }
+
+export interface PlatformAuditEvent {
+  id: string;
+  at: string;
+  actor: string;
+  actorId: string | null;
+  action: string;
+  outcome: "SUCCESS" | "DENIED" | "FAILURE";
+  targetType: string | null;
+  targetId: string | null;
+  tenantId: string | null;
+  context: "PLATFORM" | "SUPPORT_MODE" | "SYSTEM";
+  supportSessionId: string | null;
+  summary: string;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  ipAddress: string | null;
+  userAgent: string | null;
+}
+
+export interface PlatformHealth {
+  checkedAt: string;
+  api: { ok: boolean; version: string; commit: string | null; environment: string; startedAt: string };
+  database: { ok: boolean; latencyMs: number };
+  migrations: { applied: number | null; expected: number | null; pending: number | null; newestMigrationAt: string | null };
+  jobs: { runner: "enabled" | "disabled" };
+  email: { provider: string };
+  connectorEvents: { received24h: number; failed24h: number; waiting: number; oldestWaitingAt: string | null; lastProcessedAt: string | null };
+  outboundWebhooks: { sent24h: number; failed24h: number };
+  recentIntegrationErrors: { at: string; tenantId: string; tenantName: string; connector: string; error: string | null }[];
+}
+
+export interface PlatformSettingsValues {
+  defaultEdition: Edition;
+  defaultTimezone: string;
+  defaultLocale: string;
+  invitationExpiryHours: number;
+  supportSessionDefaultMinutes: number;
+  supportSessionMaxMinutes: number;
+  supportEditsMaxMinutes: number;
+  supportContact: string;
+}

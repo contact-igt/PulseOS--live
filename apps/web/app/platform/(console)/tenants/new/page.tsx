@@ -78,6 +78,14 @@ export default function CreateTenantPage() {
   const [admin, setAdmin] = useState({ name: "", email: "", role: "SUPER_ADMIN" as "SUPER_ADMIN" | "HOSPITAL_ADMIN" });
   const [touched, setTouched] = useState(false);
 
+  // Platform Settings decide the starting plan, time zone and locale (applied once, before anything is touched).
+  const settings = useQuery({ queryKey: ["platform", "settings"], queryFn: platformApi.settings, staleTime: 300_000 });
+  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  if (settings.data && !defaultsApplied) {
+    setDefaultsApplied(true);
+    setEdition(settings.data.settings.defaultEdition);
+    setOrg((o) => ({ ...o, timezone: settings.data!.settings.defaultTimezone, locale: settings.data!.settings.defaultLocale }));
+  }
   const deptTemplates = useQuery({ queryKey: ["platform", "department-templates"], queryFn: platformApi.departmentTemplates, staleTime: 3_600_000 });
   const effective = useMemo(() => resolveCapabilities(edition, overrides), [edition, overrides]);
   const problems = capabilityProblems(edition, overrides);
@@ -198,13 +206,14 @@ export default function CreateTenantPage() {
             </FormField>
             <FormField label="Time zone" hint="Every day and report is counted in this zone" htmlFor="t-tz">
               <select id="t-tz" className={CONTROL} value={org.timezone} onChange={(e) => setOrg((o) => ({ ...o, timezone: e.target.value }))}>
-                {TIMEZONES.map((tz) => (
+                {(TIMEZONES.includes(org.timezone) ? TIMEZONES : [org.timezone, ...TIMEZONES]).map((tz) => (
                   <option key={tz}>{tz}</option>
                 ))}
               </select>
             </FormField>
             <FormField label="Locale" htmlFor="t-locale">
               <select id="t-locale" className={CONTROL} value={org.locale} onChange={(e) => setOrg((o) => ({ ...o, locale: e.target.value }))}>
+                {!["en-IN", "en-GB", "en-US"].includes(org.locale) && <option value={org.locale}>{org.locale}</option>}
                 <option value="en-IN">English (India) · en-IN</option>
                 <option value="en-GB">English (UK) · en-GB</option>
                 <option value="en-US">English (US) · en-US</option>
