@@ -2,6 +2,10 @@
 
 The control plane Invictus Global Tech uses to run every PulseOS client tenant. Web: `/platform` (sign-in `/platform/login`). API: `/platform/*`. It is **not** part of any hospital's navigation and never shows Developer Access.
 
+Pages: Overview `/platform` · Tenants `/platform/tenants` (detail tabs: Overview, Users, Branches & Departments, Modules & Capabilities, Integrations, Branding & Login, Usage, Support, Audit) · Users `/platform/users` · Access & Invitations `/platform/access` · Plans & Capabilities `/platform/plans` · Integrations `/platform/integrations` · Support `/platform/support` · Audit & Security `/platform/audit` · Platform Health `/platform/health` · Platform Settings `/platform/settings`. Invitation and reset links open `/account/set-password`.
+
+Tenant roles are unchanged (`SUPER_ADMIN`, `HOSPITAL_ADMIN`, `FRONT_DESK`, `PATIENT_COORDINATOR`, `DOCTOR`) and govern only what someone can do *inside* a hospital; none of them grants anything in this console.
+
 ## Identity model
 
 | Concept | Where it lives | Notes |
@@ -85,10 +89,15 @@ Seed-guarantee tests (the demo's "today" story) build a fresh copy of the demo w
 - New environment variables are all optional: `PLATFORM_LOGIN_MAX_FAILURES`, `PLATFORM_LOGIN_MAX_FAILURES_PER_ADDRESS`, `PLATFORM_*_ACTIONS_PER_MINUTE`, `ACCOUNT_TOKEN_MAX_PER_MINUTE`, and `GIT_COMMIT` (or the platform's own build variable) for version display.
 - Cookies follow `COOKIE_SAMESITE` and are `secure` in production. Platform requests pass the same `WEB_ORIGIN` origin check as hospital requests.
 
+## Verification coverage
+
+API integration suites under `apps/api/src/__tests__/platform-*.integration.test.ts` cover auth and isolation, tenants and lifecycle, users, memberships, invitations and sessions, plans and capabilities, integrations, Support Mode, suspension (inbound vs outbound), audit, health and settings, and the full role matrix (5 platform roles × 17 capabilities; hospital roles refused everywhere). `ccs-call-flow.integration.test.ts` drives a CCS IVR call through the real webhook route end to end. `apps/web/e2e/platform-console.spec.ts` covers the console in a browser.
+
 ## Known gaps
 
 - No email provider: invitations and resets are created and audited, but not delivered in production until an `EmailProvider` is added.
 - The `/platform` web guard is client-side (like the hospital app). Data protection is the API, which refuses every platform request without a platform session and permission.
 - Creating the very first Platform Owner in a fresh production database isn't automated (deliberately: no account is ever seeded into production).
 - Plans are code-defined; there are no per-plan user, branch or integration limits because PulseOS has none to enforce.
+- 25 existing Playwright specs fail on untouched `main` with the same errors (proven against a separate `main` checkout and database). The largest group signs in again on a page that is already signed in, which `/login` now redirects. Others still expect CCS IVR to be "blocked", or match two "Name" fields in Edit Lead. They are not caused by the Platform Console and are left for a separate fix.
 - Web build commit and time appear in Platform Health only when the build provides `GIT_COMMIT` / `RAILWAY_GIT_COMMIT_SHA`.
