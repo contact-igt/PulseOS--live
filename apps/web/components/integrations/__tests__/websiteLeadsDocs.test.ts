@@ -7,7 +7,7 @@ const URL_ = "https://api.pulseos.example/forms/website/11111111-2222-4333-8444-
 describe("sample payload", () => {
   it("contains exactly the fields the intake endpoint supports, with the configured form id", () => {
     const p = samplePayload("cataract-page-1");
-    expect(Object.keys(p).sort()).toEqual(["clickIds", "email", "formId", "language", "message", "name", "pageUrl", "phone", "service", "submissionId", "utm"].sort());
+    expect(Object.keys(p).sort()).toEqual(["clickIds", "email", "formId", "language", "message", "name", "pageUrl", "phone", "referralCode", "service", "submissionId", "utm"].sort());
     expect(p.formId).toBe("cataract-page-1");
     expect(Object.keys(p.utm).sort()).toEqual(["campaign", "content", "medium", "source", "term"]);
     expect(Object.keys(p.clickIds).sort()).toEqual(["fbclid", "gbraid", "gclid", "wbraid"]);

@@ -16,6 +16,7 @@ export const API_FIELDS: ApiField[] = [
   { name: "phone", required: true, type: "string ≤ 20", note: "A valid phone number. International format (+91…) is safest; a number that cannot be normalised is refused." },
   { name: "email", required: false, type: "email ≤ 254", note: "Optional." },
   { name: "service", required: false, type: "string ≤ 120", note: "e.g. Cataract consultation. Required when \"Require service\" is on." },
+  { name: "referralCode", required: false, type: "string ≤ 40", note: "Shown on the patient's website-enquiry timeline entry." },
   { name: "message", required: false, type: "string ≤ 1000", note: "Shown on the patient's timeline entry." },
   { name: "language", required: false, type: "string ≤ 40", note: "Optional." },
   { name: "branchId", required: false, type: "UUID", note: "Optional PulseOS branch id." },
@@ -46,6 +47,7 @@ export interface SamplePayload {
   phone: string;
   email: string;
   service: string;
+  referralCode: string;
   message: string;
   language: string;
   pageUrl: string;
@@ -61,6 +63,7 @@ export function samplePayload(formId: string): SamplePayload {
     phone: "+919876543210",
     email: "asha@example.com",
     service: "Cataract consultation",
+    referralCode: "REFERRAL10",
     message: "Please call after 5 pm",
     language: "English",
     pageUrl: "https://clinic.example/contact",
@@ -92,6 +95,7 @@ const response = await fetch(process.env.PULSEOS_WEBSITE_INTAKE_URL, {
     phone: lead.phone,
     email: lead.email,
     service: lead.service,
+    referralCode: lead.referralCode,
     message: lead.message,
     pageUrl: lead.pageUrl,
     utm: lead.utm,
