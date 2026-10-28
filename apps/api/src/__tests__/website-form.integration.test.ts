@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { campaignTouchpoints, connectors } from "../db/schema.js";
+import { campaignTouchpoints, connectors, timelineEvents } from "../db/schema.js";
 import type { FastifyInstance } from "fastify";
 import type { ConnectorRow, PatientListRow } from "@pulseos/types";
 
@@ -25,6 +25,7 @@ function submission(overrides: Record<string, unknown> = {}) {
     phone: `+91 9${unique}`,
     email: "website.test@example.com",
     service: "IVF Consultation",
+    referralCode: "REFERRAL10",
     language: "English",
     pageUrl: "https://pulseoshospital.example/ivf",
     utm: { source: "google", medium: "cpc", campaign: "ivf-search-q3", content: "headline-a", term: "ivf cost bangalore" },
@@ -105,6 +106,8 @@ describe.skipIf(!DEMO_PASSWORD)("website form ingestion (Group AC) — integrati
     expect(touchpoint.utmCampaign).toBe("ivf-search-q3");
     expect(touchpoint.gclid).toBe("gclid-abc123");
     expect(touchpoint.touchType).toBe("first_touch");
+    const timeline = (await db.select().from(timelineEvents).where(eq(timelineEvents.journeyId, result.journeyId))).find((event) => event.eventType === "website_form_submitted");
+    expect(timeline?.description).toContain("Referral code: REFERRAL10");
 
     // The Attention Queue is the org-wide "needs an SLA-style call" view —
     // overdue/no-show/uncontacted/treatment-decision. A brand-new, not-yet-due

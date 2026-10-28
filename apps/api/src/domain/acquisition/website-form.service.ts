@@ -8,6 +8,7 @@ export interface WebsiteFormSubmissionInput {
   phone: string;
   email: string | null;
   service: string | null;
+  referralCode: string | null;
   /** What the person typed in the "I am interested" box (capped upstream). Shown on the Timeline entry. */
   message?: string | null;
   /** A hospital that records every website enquiry as "Website" regardless of the page's UTM tags. */
@@ -70,7 +71,7 @@ export async function processWebsiteFormSubmission(
     firstTouchTitle: "Website enquiry received",
     additionalTouchEventType: "website_form_resubmitted",
     additionalTouchTitle: "Website form resubmitted",
-    description: [input.message, input.pageUrl].filter((x): x is string => !!x).join(" · ") || null,
+    description: [input.message, input.referralCode ? `Referral code: ${input.referralCode}` : null, input.pageUrl].filter((x): x is string => !!x).join(" · ") || null,
   }));
 
   return { patientId: result.patientId, journeyId: result.journeyId, touchpointId: result.touchpointId, deduped: result.journeyReused };

@@ -28,6 +28,7 @@ import { LogCallSheet } from "@/components/calls/LogCallSheet";
 import { CallStatsStrip } from "@/components/calls/CallStatsStrip";
 import { useCallDetail } from "@/components/calls/useCallDetail";
 import { JourneyProgress } from "@/components/journey/JourneyProgress";
+import { websiteReferralCode } from "@/components/journey/websiteReferralCode";
 import { invalidateJourneyQueries } from "@/components/journey/invalidate";
 import { useCapability } from "@/lib/useEdition";
 
@@ -136,6 +137,7 @@ export default function JourneyDetailPage() {
 
   const { patient, journey, customFields, timeline, tasks, appointments, treatments, revenue }: JourneyDetailVm = detail.data;
   const stageTone = JOURNEY_STAGE_TONE[journey.stage] ?? "neutral";
+  const referralCode = journey.source === "website" ? websiteReferralCode(timeline) : null;
   const openTasks = tasks.filter((t) => t.status === "pending" || t.status === "in_progress");
   const doneTasks = tasks.length - openTasks.length;
   // "Not available for your role" is only true when revenue is on for the hospital but this role cannot see it.
@@ -222,6 +224,7 @@ export default function JourneyDetailPage() {
           </Fact>
           {multiDoctor && <Fact label="Doctor">{journey.doctorName ?? "—"}</Fact>}
           <Fact label="Enquiry created">{fmtDate(journey.createdAt)} <span className="text-xs text-ink-2">· {relativeTime(journey.createdAt)}</span></Fact>
+          {referralCode && <Fact label="Referral code" testId="journey-referral-code">{referralCode}</Fact>}
           <Fact label="Last interaction">{relativeTime(journey.lastInteractionAt)}</Fact>
         </dl>
 
