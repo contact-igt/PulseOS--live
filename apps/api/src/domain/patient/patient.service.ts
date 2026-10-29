@@ -227,7 +227,7 @@ export async function listPatients(db: Db, tenantId: string, filters: PatientLis
 
 export async function getPatient360(db: Db, tenantId: string, patientId: string, viewerRole: Role, timezone: string, revenueTracking = true): Promise<Patient360 | null> {
   const [patient] = await db
-    .select({ id: patients.id, name: patientNameSql, dateOfBirth: patients.dateOfBirth, reportedAge: patients.reportedAge, phone: patients.phone, preferredLanguage: patients.preferredLanguage, branchName: branches.name })
+    .select({ id: patients.id, name: patientNameSql, dateOfBirth: patients.dateOfBirth, reportedAge: patients.reportedAge, phone: patients.phone, email: patients.email, preferredLanguage: patients.preferredLanguage, branchName: branches.name })
     .from(patients)
     .leftJoin(branches, and(eq(patients.branchId, branches.id), eq(branches.tenantId, tenantId)))
     .where(and(eq(patients.tenantId, tenantId), eq(patients.id, patientId)))
@@ -367,7 +367,7 @@ export async function getPatient360(db: Db, tenantId: string, patientId: string,
   const calls = await listCallsForPatient(db, tenantId, patient.id, viewerRole);
 
   return {
-    patient: { id: patient.id, name: patient.name, age: displayAge(patient.dateOfBirth, patient.reportedAge, dayKeyIn(new Date(), timezone)), dateOfBirth: patient.dateOfBirth, phone: patient.phone, preferredLanguage: patient.preferredLanguage, branchName: patient.branchName },
+    patient: { id: patient.id, name: patient.name, age: displayAge(patient.dateOfBirth, patient.reportedAge, dayKeyIn(new Date(), timezone)), dateOfBirth: patient.dateOfBirth, phone: patient.phone, email: patient.email, preferredLanguage: patient.preferredLanguage, branchName: patient.branchName },
     journeys: journeyCards,
     calls,
     acquisition,

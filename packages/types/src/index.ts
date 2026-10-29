@@ -778,6 +778,7 @@ export interface Patient360 {
     age: number | null;
     dateOfBirth: string | null;
     phone: string;
+    email: string | null;
     preferredLanguage: string;
     branchName: string | null;
   };
