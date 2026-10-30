@@ -138,6 +138,7 @@ export default function JourneyDetailPage() {
   const { patient, journey, customFields, timeline, tasks, appointments, treatments, revenue }: JourneyDetailVm = detail.data;
   const stageTone = JOURNEY_STAGE_TONE[journey.stage] ?? "neutral";
   const referralCode = journey.source === "website" ? websiteReferralCode(timeline) : null;
+  const lastIvrCall = [...timeline].reverse().find((event) => event.call?.origin === "IVR")?.call ?? null;
   const openTasks = tasks.filter((t) => t.status === "pending" || t.status === "in_progress");
   const doneTasks = tasks.length - openTasks.length;
   // "Not available for your role" is only true when revenue is on for the hospital but this role cannot see it.
@@ -226,6 +227,8 @@ export default function JourneyDetailPage() {
           <Fact label="Enquiry created">{fmtDate(journey.createdAt)} <span className="text-xs text-ink-2">· {relativeTime(journey.createdAt)}</span></Fact>
           {referralCode && <Fact label="Referral code" testId="journey-referral-code">{referralCode}</Fact>}
           <Fact label="Last interaction">{relativeTime(journey.lastInteractionAt)}</Fact>
+          {lastIvrCall?.ivrNumber && <Fact label="IVR line" testId="journey-ivr-line">{lastIvrCall.ivrNumber}</Fact>}
+          {lastIvrCall?.agentName && <Fact label="IVR agent / routed to" testId="journey-ivr-agent">{lastIvrCall.agentName}</Fact>}
         </dl>
 
         <div className="mt-4 border-t border-line pt-3">

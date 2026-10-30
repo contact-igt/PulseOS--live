@@ -111,6 +111,7 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         data.dialWhomNumber ||
         ""
       ).trim() || null;
+      const ivrNumber = String(data.DestinationNumber || data.destination_number || data.destinationNumber || "").trim() || null;
 
       // Determine call direction
       const dirStr = String(data.direction || data.Direction || data.call_type || data.type || "inbound").toLowerCase();
@@ -182,6 +183,7 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         metadata: {
           ...data,
           provider: "ccs_ivr",
+          ivrNumber,
           customerName: data.customer_name || data.CustomerName || data.name || data.caller_name || null,
         },
       });
