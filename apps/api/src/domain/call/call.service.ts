@@ -108,6 +108,13 @@ export async function loadCallVms(db: Db | Tx, tenantId: string, where: ReturnTy
       hasRecording: !!c.recordingUrl,
       disposition: c.disposition,
       agentName: c.origin === "MANUAL" ? (r.loggedByName ?? c.agentName) : c.agentName,
+      ivrNumber: c.origin === "IVR"
+        ? typeof (c.metadata as Record<string, unknown> | null)?.ivrNumber === "string"
+          ? (c.metadata as Record<string, unknown>).ivrNumber as string
+          : typeof (c.metadata as Record<string, unknown> | null)?.DestinationNumber === "string"
+            ? (c.metadata as Record<string, unknown>).DestinationNumber as string
+            : null
+        : null,
       staffFeedback: c.staffFeedback,
       staffFeedbackBy: r.feedbackByName ?? null,
       outcomeLabel: r.outcomeLabel ?? null,

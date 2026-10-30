@@ -75,6 +75,7 @@ export function CallCard({ call, perms, onAddFeedback }: { call: CallVm; perms: 
         <Badge tone={call.connected ? "success" : "warning"}>{call.connected ? "Connected" : notConnectedLabel}</Badge>
         <span className="text-xs text-ink-2">
           {[duration || null, call.agentName ? `${call.origin === "IVR" ? "Agent" : "Logged by"} ${call.agentName}` : null].filter(Boolean).join(" · ")}
+          {call.ivrNumber ? <span> · IVR line: {call.ivrNumber}</span> : null}
         </span>
       </div>
 

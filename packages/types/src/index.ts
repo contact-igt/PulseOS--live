@@ -658,6 +658,7 @@ export interface CallVm {
   disposition: string | null;
   /** IVR: the provider's agent. Manual: the staff member who logged it. */
   agentName: string | null;
+  ivrNumber: string | null;
   /** HUMAN-authored feedback — never AI text. */
   staffFeedback: string | null;
   staffFeedbackBy: string | null;

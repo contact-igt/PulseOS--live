@@ -21,7 +21,7 @@ function sign(rawBody: string): string {
   return "sha256=" + createHmac("sha256", APP_SECRET).update(rawBody, "utf8").digest("hex");
 }
 
-function metaMessagePayload(opts: { wamid: string; from: string; body: string; name?: string; phoneNumberId: string }) {
+function metaMessagePayload(opts: { wamid: string; from: string; body: string; name?: string | null; phoneNumberId: string }) {
   return {
     object: "whatsapp_business_account",
     entry: [
@@ -32,7 +32,7 @@ function metaMessagePayload(opts: { wamid: string; from: string; body: string; n
             field: "messages",
             value: {
               metadata: { phone_number_id: opts.phoneNumberId },
-              contacts: [{ wa_id: opts.from, profile: { name: opts.name ?? "Test Contact" } }],
+              contacts: [{ wa_id: opts.from, profile: opts.name === null ? {} : { name: opts.name ?? "Test Contact" } }],
               messages: [{ id: opts.wamid, from: opts.from, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: opts.body } }],
             },
           },
@@ -55,6 +55,8 @@ describe.skipIf(!DEMO_PASSWORD)("Inbox conversation list — filter by communica
   let endpointBId: string;
   let convoAId: string;
   let convoBId: string;
+  let unknownConvoId: string;
+  let unknownPhone: string;
 
   const suffix = Date.now();
   const providerRefA = `FIXTURE_ENDPOINT_FILTER_A_${suffix}`;
@@ -113,6 +115,18 @@ describe.skipIf(!DEMO_PASSWORD)("Inbox conversation list — filter by communica
     const convoB = rows.find((c) => c.patientName === patientNameB);
     convoAId = convoA!.id;
     convoBId = convoB!.id;
+
+    unknownPhone = `918${String(Date.now() + 2).slice(-9)}`;
+    const unknownPayload = metaMessagePayload({ wamid: `wamid.FILTER_UNKNOWN_${suffix}`, from: unknownPhone, body: "hello from unknown", name: null, phoneNumberId: providerRefA });
+    const rawUnknownPayload = JSON.stringify(unknownPayload);
+    await app.inject({
+      method: "POST",
+      url: `/webhooks/whatsapp/${connectorId}`,
+      payload: rawUnknownPayload,
+      headers: { "content-type": "application/json", "x-hub-signature-256": sign(rawUnknownPayload) },
+    });
+    const unknownRows = (await app.inject({ method: "GET", url: "/conversations?channel=WHATSAPP", cookies: { pulseos_session: adminCookie } })).json() as ConversationRow[];
+    unknownConvoId = unknownRows.find((c) => c.lastMessage === "hello from unknown")!.id;
   });
 
   afterAll(async () => {
@@ -129,6 +143,11 @@ describe.skipIf(!DEMO_PASSWORD)("Inbox conversation list — filter by communica
     const convoB = rows.find((c) => c.id === convoBId);
     expect(convoA!.endpointLabel).toBe(`Filter Test Line A ${suffix}`);
     expect(convoB!.endpointLabel).toBe(`Filter Test Line B ${suffix}`);
+  });
+
+  it("shows an unnamed contact as Unknown with its phone number in brackets", async () => {
+    const rows = (await app.inject({ method: "GET", url: "/conversations?channel=WHATSAPP", cookies: { pulseos_session: adminCookie } })).json() as ConversationRow[];
+    expect(rows.find((c) => c.id === unknownConvoId)?.patientName).toBe(`Unknown (${unknownPhone})`);
   });
 
   it("filtering by endpoint A's id returns conversation A but not conversation B", async () => {

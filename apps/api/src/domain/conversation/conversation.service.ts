@@ -1,7 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { createHmac } from "node:crypto";
 import crypto from "node:crypto";
-import { patientNameSql } from "../../lib/patient-name.js";
 import type { Db } from "../../db/client.js";
 import { appointments, communicationEndpoints, conversationAutomationPreferences, conversations, journeys, messageAttachments, messages, patients, tasks, timelineEvents, users } from "../../db/schema.js";
 import { getConnectorById, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
@@ -20,12 +19,16 @@ export interface ConversationFilters {
   communicationEndpointId?: string;
 }
 
+// Inbox needs a usable distinction between unnamed contacts; elsewhere the
+// standard "Unknown patient" label remains unchanged.
+const inboxPatientNameSql = sql<string>`coalesce(nullif(btrim(${patients.name}), ''), concat('Unknown (', ${patients.phone}, ')'))`;
+
 export async function listConversations(db: Db, tenantId: string, filters: ConversationFilters): Promise<ConversationRow[]> {
   const rows = await db
     .select({
       id: conversations.id,
       patientId: conversations.patientId,
-      patientName: patientNameSql,
+      patientName: inboxPatientNameSql,
       channel: conversations.channel,
       ownershipState: conversations.ownershipState,
       ownerName: users.name,
@@ -82,7 +85,7 @@ export async function getConversationDetail(db: Db, tenantId: string, conversati
   const [conv] = await db.select().from(conversations).where(and(eq(conversations.tenantId, tenantId), eq(conversations.id, conversationId))).limit(1);
   if (!conv) return null;
 
-  const [patient] = await db.select({ name: patientNameSql }).from(patients).where(eq(patients.id, conv.patientId)).limit(1);
+  const [patient] = await db.select({ name: inboxPatientNameSql }).from(patients).where(eq(patients.id, conv.patientId)).limit(1);
   const [assignedUser] = conv.assignedTo
     ? await db.select({ name: users.name }).from(users).where(eq(users.id, conv.assignedTo)).limit(1)
     : [null];
