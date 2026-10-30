@@ -204,6 +204,8 @@ export default function JourneyDetailPage() {
 
         <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-4">
           <Fact label="Original source" testId="journey-original-source">{journey.sourceLabel ?? SOURCE_LABEL[journey.source] ?? journey.source}</Fact>
+          {lastIvrCall?.ivrNumber && <Fact label="IVR line" testId="journey-ivr-line">{lastIvrCall.ivrNumber}</Fact>}
+          {lastIvrCall?.agentName && <Fact label="IVR agent / routed to" testId="journey-ivr-agent">{lastIvrCall.agentName}</Fact>}
           {journey.departmentName && <Fact label="Department" testId="journey-department">{journey.departmentName}</Fact>}
           <Fact label="Campaign">{journey.campaign?.name ?? "Organic / no campaign"}</Fact>
           <Fact label="Assigned Team Member" testId="journey-owner">
@@ -227,8 +229,6 @@ export default function JourneyDetailPage() {
           <Fact label="Enquiry created">{fmtDate(journey.createdAt)} <span className="text-xs text-ink-2">· {relativeTime(journey.createdAt)}</span></Fact>
           {referralCode && <Fact label="Referral code" testId="journey-referral-code">{referralCode}</Fact>}
           <Fact label="Last interaction">{relativeTime(journey.lastInteractionAt)}</Fact>
-          {lastIvrCall?.ivrNumber && <Fact label="IVR line" testId="journey-ivr-line">{lastIvrCall.ivrNumber}</Fact>}
-          {lastIvrCall?.agentName && <Fact label="IVR agent / routed to" testId="journey-ivr-agent">{lastIvrCall.agentName}</Fact>}
         </dl>
 
         <div className="mt-4 border-t border-line pt-3">
