@@ -169,15 +169,16 @@ describe("row order — who needs attention first", () => {
     expect(order(run(fs, { view: "today" }))).toEqual(["overdue", "visit", "new-b", "new-a"]);
   });
 
-  it("every other view is newest enquiry first, with the id as a stable tie-break", () => {
+  it("every other view is most recently active first, with the id as a stable tie-break", () => {
     const fs = [
       fact("b", { row: { createdAt: "2026-09-30T05:00:00Z" } }),
       fact("a", { row: { createdAt: "2026-09-30T05:00:00Z" } }),
       fact("newest", { row: { createdAt: "2026-10-01T05:00:00Z" } }),
       fact("oldest", { row: { createdAt: "2026-09-01T05:00:00Z" } }),
+      fact("resubmitted", { row: { createdAt: "2026-09-01T05:00:00Z", lastInteractionAt: "2026-10-02T07:37:00Z" } }),
     ];
-    expect(order(run(fs, { view: "all" }))).toEqual(["newest", "a", "b", "oldest"]);
-    expect(order(run([...fs].reverse(), { view: "all" }))).toEqual(["newest", "a", "b", "oldest"]);
+    expect(order(run(fs, { view: "all" }))).toEqual(["resubmitted", "newest", "a", "b", "oldest"]);
+    expect(order(run([...fs].reverse(), { view: "all" }))).toEqual(["resubmitted", "newest", "a", "b", "oldest"]);
   });
 });
 
