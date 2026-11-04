@@ -94,10 +94,12 @@ const sharedFilters = (f: LeadFact, i: LeadsWorkspaceInput, skipOwner = false): 
 /**
  * Who needs attention first. Today / Follow-up Due / Appointments Today are attention lists, so they are ordered by what
  * is most urgent (earliest due follow-up, then earliest visit today, then the newest enquiries); every other view is the
- * newest enquiry first. The id is the tie-break, so the order never reshuffles between requests.
+ * most recently active journey first. This lets a repeat website submission surface its existing journey without
+ * creating a duplicate. The id is the tie-break, so the order never reshuffles between requests.
  */
 function attentionKey(f: LeadFact, view: LeadView, today: string): number[] {
   const created = Date.parse(f.row.createdAt);
+  const lastInteraction = Date.parse(f.row.lastInteractionAt ?? f.row.createdAt);
   const dueToday = f.openTaskDays.map((d, i) => ({ d, at: f.openTaskDueAts[i]! })).filter((x) => x.d <= today).map((x) => x.at);
   const task = dueToday.length > 0 ? Math.min(...dueToday) : Number.POSITIVE_INFINITY;
   const visitAt = f.row.nextAppointment && f.appointmentDays.includes(today) ? Date.parse(f.row.nextAppointment.at) : Number.POSITIVE_INFINITY;
@@ -109,7 +111,7 @@ function attentionKey(f: LeadFact, view: LeadView, today: string): number[] {
     if (visitAt !== Number.POSITIVE_INFINITY) return [1, visitAt];
     return [2, -created];
   }
-  return [-created];
+  return [-lastInteraction];
 }
 
 function compareKeys(a: number[], b: number[]): number {
