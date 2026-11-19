@@ -419,7 +419,7 @@ export const api = {
   callRecordingUrl: (callId: string, opts: { download?: boolean } = {}) => `${API_BASE}/calls/${callId}/recording${opts.download ? "?download=1" : ""}`,
   integrationHub: () => request<IntegrationCard[]>("/integrations/hub"),
   importRunoAllocations: (input: { date: string; processName: string }) =>
-    request<{ imported: number }>("/integrations/hub/runo/allocations/import", { method: "POST", body: JSON.stringify(input) }),
+    request<{ imported: number; expectedCount?: number }>("/integrations/hub/runo/allocations/import", { method: "POST", body: JSON.stringify(input) }),
   runoAllocations: (page: number) => request<{
     rows: { externalId: string; processName: string; createdAt: string; customerName: string | null; phone: string | null; status: string | null; assignee: string | null; source: string | null; branch: string | null }[];
     hasMore: boolean;

@@ -46,6 +46,7 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
   const signal = AbortSignal.timeout(25_000);
   let total = 0;
   let page = 1;
+  let shortfall = false;
   try {
     for (;; page += 1) {
       url.searchParams.set("pageNo", String(page));
@@ -56,6 +57,10 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
       const meta = result.metadata[0];
       if (!meta && page === 1 && result.data.length === 0) break;
       if (!meta || meta.page !== page) {
+        if (rows.size > 0) {
+          shortfall = true;
+          break;
+        }
         return { error: "runo_incomplete_pages", diagnostic: { page, receivedPage: meta?.page } } as const;
       }
       if (page === 1) total = meta.total;
@@ -75,8 +80,12 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
           source: row.source ?? field("source"), branch: row.branch ?? field("branch"),
         });
       }
-      if (rows.size === total) break;
-      if (rows.size === previousCount || rows.size > total) {
+      if (rows.size >= total) break;
+      if (rows.size === previousCount) {
+        if (rows.size > 0) {
+          shortfall = true;
+          break;
+        }
         return { error: "runo_incomplete_pages", diagnostic: { page, expectedCount: total, receivedCount: rows.size } } as const;
       }
     }
@@ -101,7 +110,7 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
       });
     }
   });
-  return { imported: rows.size };
+  return { imported: rows.size, ...(shortfall ? { expectedCount: total } : {}) };
 }
 
 export async function listRunoAllocations(db: Db, tenantId: string, page: number) {
