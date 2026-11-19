@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ShieldCheck } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, platformApi } from "@pulseos/api-client";
 import type { PlatformAuditEvent, PlatformHospital } from "@pulseos/types";
@@ -8,7 +9,7 @@ import type { PlatformAuditEvent, PlatformHospital } from "@pulseos/types";
 export const inputClass = "w-full rounded-control border border-neutral-300 px-3 py-2 text-sm";
 export const buttonClass = "inline-flex rounded-control bg-primary-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50";
 export const secondaryClass = "inline-flex rounded-control border border-neutral-300 px-3 py-2 text-sm font-semibold disabled:opacity-50";
-export const panelClass = "rounded-xl border border-neutral-200 bg-white p-5";
+export const panelClass = "rounded-xl border border-primary-100 bg-white p-5 shadow-sm shadow-primary-900/5";
 
 export function usePlatformAccount() {
   return useQuery({ queryKey: ["platform", "me"], queryFn: platformApi.me, retry: false, refetchOnWindowFocus: false });
@@ -51,7 +52,26 @@ export function Failure({ error }: { error: unknown }) {
 }
 
 export function PageTitle({ title, children }: { title: string; children?: React.ReactNode }) {
-  return <header className="mb-5 flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold">{title}</h1>{children}</header>;
+  const { data: account } = usePlatformAccount();
+  return (
+    <header className="mb-6 flex min-h-20 flex-wrap items-center justify-between gap-x-5 gap-y-3 rounded-shell border border-white/80 bg-white/95 px-4 py-4 shadow-sm shadow-primary-900/10 sm:px-6">
+      <h1 className="min-w-0 break-words text-xl font-semibold tracking-tight text-neutral-900 sm:text-2xl">{title}</h1>
+      <div className="flex min-w-0 flex-wrap items-center gap-3 lg:ml-auto">
+        {children}
+        {account && (
+          <div className="hidden max-w-52 items-center gap-2.5 rounded-control bg-primary-50 px-3 py-2 sm:flex">
+            <ShieldCheck size={18} className="shrink-0 text-primary-700" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-primary-800">
+                {account.role === "PLATFORM_SUPER_ADMIN" ? "Platform Super Admin" : "Platform Operations Admin"}
+              </p>
+              <p className="truncate text-xs text-neutral-600" title={account.email}>{account.email}</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </header>
+  );
 }
 
 export function PageControls({ page, hasMore, onPage }: { page: number; hasMore: boolean; onPage: (value: number) => void }) {

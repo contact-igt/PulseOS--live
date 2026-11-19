@@ -60,7 +60,7 @@ export default function PlatformConsole({ children }: { children: React.ReactNod
           </button>
         </div>
         <div id="platform-sidebar-content" className={`${menuOpen ? "flex" : "hidden"} flex-col lg:flex lg:min-h-0 lg:flex-1`}>
-          <nav aria-label="Platform" className="px-3 py-4 lg:flex-1 lg:overflow-y-auto">
+          <nav aria-label="Platform" className="px-3 py-5 lg:flex-1 lg:overflow-y-auto">
             <p className="nav-group-label px-3 pb-2 text-xs font-semibold uppercase tracking-wider">Platform</p>
             <ul className="space-y-1">
               {links.filter((link) => link.allowed).map(({ href, label, icon: Icon }) => {
@@ -76,7 +76,7 @@ export default function PlatformConsole({ children }: { children: React.ReactNod
             </ul>
           </nav>
           <div className="nav-divider shrink-0 space-y-3 border-t p-3">
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2.5 rounded-control border border-primary-100 bg-white/70 p-2.5">
               <span aria-hidden="true" className="nav-avatar flex size-9 shrink-0 items-center justify-center rounded-full">
                 <ShieldCheck size={18} />
               </span>

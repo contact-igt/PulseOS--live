@@ -1,12 +1,19 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { ChevronDown, KeyRound, ShieldCheck, UserPlus, Users } from "lucide-react";
 import { platformApi } from "@pulseos/api-client";
 import { PLATFORM_ONBOARDING_GRANTS, PLATFORM_ROLES, type PlatformRole } from "@pulseos/types";
 import { buttonClass, date, Failure, inputClass, label, Loading, PageControls, PageTitle, panelClass, secondaryClass, usePlatformAccount, usePlatformQuery } from "../platform-ui";
 
 type Member = Awaited<ReturnType<typeof platformApi.administrators>>["items"][number];
 type Change = Parameters<typeof platformApi.updateAdministrator>[1];
+
+const roleLabels: Record<PlatformRole, string> = {
+  PLATFORM_SUPER_ADMIN: "Platform Super Admin",
+  PLATFORM_OPERATIONS_ADMIN: "Platform Operations Admin",
+};
+const checkboxClass = "size-4 shrink-0 accent-primary-700";
 
 const grantLabels = {
   "hospital:create": "Create hospitals", "hospital:invite": "Issue hospital invitations",
@@ -18,14 +25,17 @@ function RoleFields({ member }: { member?: Member }) {
   return <>
     <label className="block text-sm font-medium">Platform role
       <select className={inputClass} name="role" value={role} onChange={(event) => setRole(event.target.value as PlatformRole)}>
-        {PLATFORM_ROLES.map((option) => <option key={option} value={option}>{label(option.toLowerCase())}</option>)}
+        {PLATFORM_ROLES.map((option) => <option key={option} value={option}>{roleLabels[option]}</option>)}
       </select>
     </label>
-    {role === "PLATFORM_OPERATIONS_ADMIN" && <fieldset className="flex flex-wrap gap-x-4 gap-y-2">
-      <legend className="mb-1 text-sm font-medium">Onboarding permissions</legend>
-      {PLATFORM_ONBOARDING_GRANTS.map((grant) => <label className="text-sm" key={grant}>
-        <input className="mr-1" type="checkbox" name="permission" value={grant} defaultChecked={member?.role === "PLATFORM_OPERATIONS_ADMIN" && member.permissions.includes(grant)} />{grantLabels[grant]}
-      </label>)}
+    {role === "PLATFORM_OPERATIONS_ADMIN" && <fieldset className="min-w-0">
+      <legend className="mb-2 text-sm font-medium">Onboarding permissions</legend>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {PLATFORM_ONBOARDING_GRANTS.map((grant) => <label className="flex cursor-pointer items-start gap-2.5 rounded-control border border-primary-100 bg-white px-3 py-2.5 text-sm hover:bg-primary-50" key={grant}>
+          <input className={checkboxClass} type="checkbox" name="permission" value={grant} defaultChecked={member?.role === "PLATFORM_OPERATIONS_ADMIN" && member.permissions.includes(grant)} />
+          {grantLabels[grant]}
+        </label>)}
+      </div>
     </fieldset>}
   </>;
 }
@@ -88,36 +98,49 @@ export default function Team() {
     }
   }
 
-  if (query.isError) return <Failure error={query.error} />;
   return <>
     <PageTitle title="Platform administrators" />
-    <form className={panelClass + " mb-4 space-y-3"} onSubmit={(event) => submit(event)}>
-      <h2 className="font-semibold">Invite an administrator</h2>
-      <label className="block text-sm font-medium">Platform email<input type="email" name="email" className={inputClass} maxLength={254} required /></label>
-      <RoleFields />
-      <button className={buttonClass} disabled={working}>Create setup token</button>
-    </form>
     {error !== undefined && <Failure error={error} />}
-    {notice && <p role="status">{notice}</p>}
-    {token && <section className={panelClass + " mb-4 space-y-3"}>
-      <p>Deliver this one-time token securely. {token.recovery ? "The administrator needs their current password and a new authenticator." : "The administrator sets a password and enrolls an authenticator."} {token.expiry && "Expires " + date(token.expiry) + "."}</p>
-      <label className="block text-sm">{token.recovery ? "Administrator recovery token" : "Administrator setup token"}<input readOnly value={token.value} className={inputClass} autoComplete="off" /></label>
-      <button className={secondaryClass} onClick={() => setToken(null)}>Hide token</button>
+    {notice && <p role="status" className="mb-4 rounded-control border border-primary-200 bg-primary-50 px-4 py-3 text-sm font-medium text-primary-900">{notice}</p>}
+    {token && <section className={panelClass + " mb-5 space-y-3 border-primary-200"}>
+      <h2 className="flex items-center gap-2 font-semibold"><KeyRound size={18} className="text-primary-700" aria-hidden="true" />{token.recovery ? "Recovery token ready" : "Setup token ready"}</h2>
+      <p className="text-sm text-neutral-600">Deliver this one-time token securely. {token.recovery ? "The administrator needs their current password and a new authenticator." : "The administrator sets a password and enrolls an authenticator."} {token.expiry && "Expires " + date(token.expiry) + "."}</p>
+      <label className="block text-sm font-medium">{token.recovery ? "Administrator recovery token" : "Administrator setup token"}<input readOnly value={token.value} className={inputClass + " mt-1 font-mono"} autoComplete="off" /></label>
+      <button type="button" className={secondaryClass} onClick={() => setToken(null)}>Hide token</button>
     </section>}
-    {query.isPending && <Loading />}
-    <div className="space-y-3">
-      {query.data?.items.map((member) => <details key={member.id} className={panelClass}>
-        <summary className="cursor-pointer break-all font-medium">{member.email} <span className="ml-2 text-sm text-neutral-600">{member.disabled ? "Disabled" : member.enrolled ? "MFA enrolled" : "Awaiting MFA setup"}</span></summary>
-        <form key={JSON.stringify(member)} className="mt-3 space-y-3" onSubmit={(event) => submit(event, member)}>
+    <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+      <section aria-labelledby="platform-accounts" className={panelClass + " min-w-0"}>
+        <h2 id="platform-accounts" className="mb-4 flex items-center gap-2.5 text-base font-semibold">
+          <span className="grid size-9 place-items-center rounded-control bg-primary-50 text-primary-700"><Users size={18} aria-hidden="true" /></span>
+          Administrator accounts
+        </h2>
+        {query.isPending && <Loading />}
+        {query.isError && <Failure error={query.error} />}
+        {query.data?.items.length === 0 && <p className="rounded-control bg-primary-50 p-4 text-sm text-neutral-600">No administrator accounts on this page.</p>}
+        <div className="space-y-2">
+      {query.data?.items.map((member) => <details key={member.id} className="group rounded-xl border border-primary-100 bg-white open:border-primary-200">
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-3 rounded-xl p-3.5 hover:bg-primary-50 [&::-webkit-details-marker]:hidden">
+          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary-50 text-primary-700"><ShieldCheck size={18} aria-hidden="true" /></span>
+          <span className="min-w-0 flex-1">
+            <span className="block break-words text-sm font-semibold">{member.email}</span>
+            <span className="block text-xs text-neutral-600">{roleLabels[member.role]}</span>
+          </span>
+          <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${member.disabled ? "bg-neutral-100 text-neutral-700" : member.enrolled ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
+            {member.disabled ? "Disabled" : member.enrolled ? "MFA enrolled" : "Awaiting MFA setup"}
+          </span>
+          <ChevronDown size={17} className="shrink-0 text-neutral-600 group-open:rotate-180" aria-hidden="true" />
+        </summary>
+        <div className="space-y-4 border-t border-primary-100 p-4">
+        <form key={JSON.stringify(member)} className="space-y-3" onSubmit={(event) => submit(event, member)}>
           <RoleFields member={member} />
-          <label className="block text-sm"><input className="mr-1" type="checkbox" name="disabled" defaultChecked={member.disabled} />Disable account</label>
+          <label className="flex items-center gap-2.5 text-sm"><input className={checkboxClass} type="checkbox" name="disabled" defaultChecked={member.disabled} />Disable account</label>
           <div className="flex flex-wrap gap-3">
             <button className={buttonClass} disabled={working}>Save changes</button>
             {!member.enrolled && !member.canRecover && <button className={secondaryClass} name="reissue" value="1" disabled={working}>Replace setup token</button>}
           </div>
         </form>
-        {member.canRecover && <section className="mt-4 space-y-2 border-t pt-3">
-          <h3 className="font-medium">MFA recovery</h3>
+        {member.canRecover && <section className="space-y-3 rounded-xl border border-primary-100 bg-primary-50/50 p-4">
+          <h3 className="flex items-center gap-2 text-sm font-semibold"><KeyRound size={16} className="text-primary-700" aria-hidden="true" />MFA recovery</h3>
           {member.recovery && <p className="text-sm">{label(member.recovery.status)} · Expires {date(member.recovery.expiresAt)}</p>}
           {!member.disabled && account.data?.id !== member.id && <form className="space-y-2" onSubmit={(event) => recover(event, member)}>
             {member.recovery?.status === "pending" ? <>
@@ -133,9 +156,21 @@ export default function Team() {
           <button type="button" className={secondaryClass} onClick={() => setAuditId(auditId === member.id ? null : member.id)}>Recovery history</button>
           {auditId === member.id && <RecoveryHistory id={member.id} />}
         </section>}
+        </div>
       </details>)}
+        </div>
+        {query.data && <PageControls page={page} hasMore={query.data.hasMore} onPage={setPage} />}
+      </section>
+      <form className={panelClass + " min-w-0 space-y-4"} onSubmit={(event) => submit(event)}>
+        <h2 className="flex items-center gap-2.5 text-base font-semibold">
+          <span className="grid size-9 place-items-center rounded-control bg-primary-50 text-primary-700"><UserPlus size={18} aria-hidden="true" /></span>
+          Invite an administrator
+        </h2>
+        <label className="block text-sm font-medium">Platform email<input type="email" name="email" className={inputClass + " mt-1"} maxLength={254} required /></label>
+        <RoleFields />
+        <button type="submit" className={buttonClass} disabled={working}>Create setup token</button>
+      </form>
     </div>
-    <PageControls page={page} hasMore={query.data?.hasMore ?? false} onPage={setPage} />
   </>;
 }
 

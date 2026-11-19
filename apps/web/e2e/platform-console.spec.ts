@@ -59,6 +59,8 @@ test("signs in as Super Admin with email and password and retries hospital creat
 
   await page.goto("/platform/login");
   await page.getByLabel("Platform email").fill(account.email);
+  await expect(page.getByText("Use an authenticator code", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Use a setup token", { exact: true })).toHaveCount(0);
   await page.getByLabel("Password").fill("Synthetic password only");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Platform dashboard" })).toBeVisible({ timeout: 20000 });
@@ -105,8 +107,7 @@ test("signs in as Super Admin with email and password and retries hospital creat
 test("enrolls MFA and signs out through the local platform API", async ({ page, context }) => {
   const invitation = process.env.PLATFORM_E2E_SETUP_TOKEN;
   test.skip(!invitation, "Requires a one-time setup token from an isolated synthetic database");
-  await page.goto("/platform/login");
-  await page.getByRole("button", { name: "Use a setup token" }).click();
+  await page.goto("/platform/login?mode=setup");
   await page.getByLabel("One-time setup token").fill(invitation!);
   await page.getByLabel("Password").fill("Synthetic browser enrollment password");
   await page.getByRole("button", { name: "Continue to MFA setup" }).click();
