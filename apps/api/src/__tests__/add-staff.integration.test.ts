@@ -2,13 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
-import { branches, scheduleResources, tenants, users } from "../db/schema.js";
+import { activityLog, branches, scheduleResources, tenants, users } from "../db/schema.js";
 import { db, queryClient } from "../db/client.js";
 import { addStaff } from "../ops/add-staff.js";
 import { createTestTenant, destroyTestTenant, type TestTenant } from "./helpers/edition-tenant.js";
 
-// The supported way to create the real pilot's accounts (the product has no staff screen yet). Local ops command: the password
-// comes from the environment, the tenant from its sign-in slug, and the branch is the hospital's only one.
+// Both the operator CLI and the hospital Team screen use the same account storage.
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
 
@@ -61,5 +60,37 @@ describe.skipIf(!DEMO_PASSWORD)("ops: add a staff account", () => {
     expect(await addStaff(db, { loginSlug: "no-such-hospital", role: "FRONT_DESK", name: "Xavier", email: email("x"), password: PW })).toMatchObject({ ok: false, reason: "unknown_hospital" });
     expect(await addStaff(db, { loginSlug: slug, role: "SUPER_ADMIN" as never, name: "Xavier", email: email("sa"), password: PW })).toMatchObject({ ok: false, reason: "role_not_allowed" });
     expect(await addStaff(db, { loginSlug: `${slug}-b`, role: "FRONT_DESK", name: "Xavier", email: email("multi"), password: PW })).toMatchObject({ ok: false, reason: "branch_ambiguous" });
+  });
+
+  it("creates scoped Team accounts and enforces role and branch boundaries through HTTP", async () => {
+    const list = (cookie?: string) => app.inject({ method: "GET", url: "/hospital-team",
+      ...(cookie ? { cookies: { pulseos_session: cookie } } : {}) });
+    const create = (cookie: string, overrides: Record<string, unknown> = {}) => app.inject({
+      method: "POST", url: "/hospital-team", cookies: { pulseos_session: cookie },
+      payload: { name: "Team fixture", email: email("team"), password: PW, role: "HOSPITAL_ADMIN", branchId: t.branchId, ...overrides },
+    });
+    const owner = t.cookie.SUPER_ADMIN!;
+    const admin = t.cookie.HOSPITAL_ADMIN!;
+    const receptionist = t.cookie.FRONT_DESK!;
+    expect((await list()).statusCode).toBe(401);
+    expect((await list(receptionist)).statusCode).toBe(403);
+    expect((await create(receptionist)).statusCode).toBe(403);
+    expect((await create(admin)).statusCode).toBe(403);
+    expect((await create(owner, { role: "SUPER_ADMIN" })).statusCode).toBe(400);
+    expect((await create(owner, { tenantId: two.tenantId })).statusCode).toBe(400);
+    expect((await create(owner, { branchId: two.branchId })).statusCode).toBe(400);
+    const results = await Promise.all([create(owner), create(owner, { email: email("team").toUpperCase() })]);
+    expect(results.map((response) => response.statusCode).sort()).toEqual([201, 409]);
+    const member = results.find((response) => response.statusCode === 201)!.json();
+    expect(member).toMatchObject({ role: "HOSPITAL_ADMIN", branchId: t.branchId });
+    expect(member).not.toHaveProperty("passwordHash");
+    expect((await list(two.cookie.SUPER_ADMIN!)).json().items).not.toContainEqual(expect.objectContaining({ id: member.id }));
+    expect((await list(admin)).json().items).toContainEqual(expect.objectContaining({ id: member.id }));
+    expect((await create(admin, { email: email("team-staff"), role: "DOCTOR" })).statusCode).toBe(201);
+    const login = await app.inject({ method: "POST", url: "/auth/login/tenant/" + slug, payload: { email: email("team"), password: PW } });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().user).toMatchObject({ tenantId: t.tenantId, role: "HOSPITAL_ADMIN", branchId: t.branchId });
+    const audit = await db.select().from(activityLog).where(eq(activityLog.entityKey, member.id));
+    expect(audit).toMatchObject([{ actorId: t.userIds.SUPER_ADMIN, tenantId: t.tenantId, action: "hospital_team.created", metadata: { role: "HOSPITAL_ADMIN", branchId: t.branchId } }]);
   });
 });

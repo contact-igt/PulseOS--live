@@ -1,4 +1,5 @@
 import { activityRoutes } from "./domain/activity/activity.routes.js";
+import { hospitalTeamRoutes } from "./domain/tenant/hospital-team.routes.js";
 import { notificationRoutes } from "./domain/notification/notification.routes.js";
 import { integrationHubRoutes } from "./domain/integration/hub.routes.js";
 import { registerNotificationConsumers } from "./domain/notification/consumers.js";
@@ -185,6 +186,7 @@ export async function buildApp() {
     await protectedApp.register(integrationHubRoutes);
     await protectedApp.register(notificationRoutes);
     await protectedApp.register(activityRoutes);
+    await protectedApp.register(hospitalTeamRoutes);
   });
 
   registerIntegrationConsumers(app.db);

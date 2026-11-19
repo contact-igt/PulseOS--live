@@ -58,7 +58,7 @@ const FULL_NAV: NavGroup[] = [
   {
     label: "Administration",
     items: [
-      { label: "Team", href: "/team", icon: "UsersRound", implemented: false },
+      { label: "Team", href: "/team", icon: "Users", implemented: true, permission: "MANAGE_HOSPITAL_TEAM" },
       { label: "Integrations", href: "/integrations", icon: "Plug", implemented: true, permission: "VIEW_INTEGRATIONS" },
       { label: "Connectors & Lines", href: "/connectors", icon: "Radio", implemented: true, permission: "VIEW_INTEGRATIONS" },
       { label: "Settings", href: "/settings", icon: "Settings", implemented: true },

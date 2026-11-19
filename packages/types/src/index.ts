@@ -1,5 +1,14 @@
 export type Role = "SUPER_ADMIN" | "HOSPITAL_ADMIN" | "FRONT_DESK" | "PATIENT_COORDINATOR" | "DOCTOR";
 
+export const HOSPITAL_TEAM_ROLES = ["HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR", "DOCTOR"] as const;
+export type HospitalTeamRole = (typeof HOSPITAL_TEAM_ROLES)[number];
+export type HospitalTeamMember = { id: string; name: string; email: string; role: Role; branchId: string | null; branchName: string | null };
+export type CreateHospitalTeamMember = { name: string; email: string; role: HospitalTeamRole; branchId: string; password: string };
+
+export function canCreateHospitalTeamRole(actor: Role, target: HospitalTeamRole) {
+  return actor === "SUPER_ADMIN" || (actor === "HOSPITAL_ADMIN" && target !== "HOSPITAL_ADMIN");
+}
+
 // ---------------------------------------------------------------------------
 // Editions — one codebase, one schema. A tenant's edition (tenants.edition) is the single source of truth
 // for which growth capabilities it has; the API enforces it per route and the UI mirrors it for navigation.
@@ -240,17 +249,20 @@ export type Permission =
   | "VIEW_COMMUNICATION_ENDPOINTS"
   | "MANAGE_LEADS"
   | "MANAGE_SPECIALTIES"
+  | "MANAGE_HOSPITAL_TEAM"
   /** Download report / row-level Excel workbooks (patient names and phones leave the system). */
   | "EXPORT_REPORTS";
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   SUPER_ADMIN: [
+    "MANAGE_HOSPITAL_TEAM",
     "VIEW_ADMIN_COMMAND_CENTRE", "VIEW_PATIENTS", "EDIT_PATIENTS", "VIEW_JOURNEYS", "MANAGE_JOURNEYS",
     "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "RECORD_CONSULTATION_OUTCOME", "VIEW_TREATMENT", "MANAGE_TREATMENT",
     "VIEW_REVENUE", "VIEW_MARKETING", "VIEW_INBOX", "MANAGE_INBOX", "VIEW_TASKS", "MANAGE_TASKS",
     "VIEW_INTEGRATIONS", "MANAGE_INTEGRATION_CONFIG", "MANAGE_INTEGRATION_SECRETS", "VIEW_CALL_RECORDING", "DOWNLOAD_CALL_RECORDING", "VIEW_CALL_TRANSCRIPT", "LOG_CALL", "VIEW_COMMUNICATION_ENDPOINTS", "MANAGE_LEADS", "MANAGE_SPECIALTIES", "EXPORT_REPORTS",
   ],
   HOSPITAL_ADMIN: [
+    "MANAGE_HOSPITAL_TEAM",
     "VIEW_ADMIN_COMMAND_CENTRE", "VIEW_PATIENTS", "EDIT_PATIENTS", "VIEW_JOURNEYS", "MANAGE_JOURNEYS",
     "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "VIEW_TREATMENT", "MANAGE_TREATMENT",
     "VIEW_REVENUE", "VIEW_MARKETING", "VIEW_INBOX", "MANAGE_INBOX", "VIEW_TASKS", "MANAGE_TASKS",

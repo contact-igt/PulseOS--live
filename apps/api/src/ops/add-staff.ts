@@ -1,9 +1,11 @@
 import "dotenv/config";
 import { fileURLToPath } from "node:url";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import { HOSPITAL_TEAM_ROLES as ROLES, type HospitalTeamRole as StaffRole } from "@pulseos/types";
 import type { Db } from "../db/client.js";
-import { branches, tenants, users } from "../db/schema.js";
+import { branches, tenants } from "../db/schema.js";
 import { hashPassword } from "../domain/auth/auth.service.js";
+import { insertStaffAccount } from "../domain/tenant/hospital-team.service.js";
 
 // Creates a staff sign-in for an existing hospital (the product has no staff screen yet). An operator runs it once per person:
 //
@@ -12,9 +14,6 @@ import { hashPassword } from "../domain/auth/auth.service.js";
 //
 // The hospital is named by its sign-in slug (never an id typed from a request), the password is read from the environment so it
 // never lands in shell history or a process list, and nothing is printed that could be reused as a credential.
-
-const ROLES = ["HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR", "DOCTOR"] as const;
-type StaffRole = (typeof ROLES)[number];
 
 export interface AddStaffInput { loginSlug: string; role: StaffRole; name: string; email: string; password: string }
 export type AddStaffResult = { ok: true; userId: string } | { ok: false; reason: "weak_password" | "role_not_allowed" | "invalid_input" | "unknown_hospital" | "branch_ambiguous" | "email_in_use" };
@@ -34,11 +33,9 @@ export async function addStaff(db: Db, input: AddStaffInput): Promise<AddStaffRe
 
   const passwordHash = await hashPassword(input.password);
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`signup:${email}`}))`); // the same lock sign-up takes
-    const [taken] = await tx.select({ id: users.id }).from(users).where(sql`lower(${users.email}) = ${email}`).limit(1);
-    if (taken) return { ok: false as const, reason: "email_in_use" as const };
-    const [u] = await tx.insert(users).values({ tenantId: tenant.id, branchId: hospitalBranches[0]!.id, name, email, passwordHash, role: input.role }).returning({ id: users.id });
-    return { ok: true as const, userId: u!.id };
+    const member = await insertStaffAccount(tx, { tenantId: tenant.id, branchId: hospitalBranches[0]!.id, name, email, passwordHash, role: input.role });
+    if (!member) return { ok: false as const, reason: "email_in_use" as const };
+    return { ok: true as const, userId: member.id };
   });
 }
 

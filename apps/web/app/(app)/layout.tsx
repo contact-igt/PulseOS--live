@@ -28,6 +28,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   "/campaigns": { title: "Campaigns / Sources", subtitle: "Where spend turns into treatment revenue" },
   "/analytics": { title: "Analytics", subtitle: "Historical trends, comparisons and drill-downs" },
   "/settings": { title: "Settings", subtitle: "CRM configuration: services, fields, outcomes and messaging" },
+  "/team": { title: "Team", subtitle: "Hospital staff and administrator access" },
 };
 
 function greeting() {

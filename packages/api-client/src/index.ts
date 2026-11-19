@@ -1,4 +1,6 @@
 import type {
+  CreateHospitalTeamMember,
+  HospitalTeamMember,
   ClinicHours,
   DisplayPreferences,
   SetupStatus,
@@ -272,6 +274,9 @@ export interface DashboardQuery {
 }
 
 export const api = {
+  hospitalTeam: () => request<{ items: HospitalTeamMember[] }>("/hospital-team"),
+  createHospitalTeamMember: (body: CreateHospitalTeamMember) =>
+    request<HospitalTeamMember>("/hospital-team", { method: "POST", body: JSON.stringify(body) }),
   login: (email: string, password: string, remember = false) =>
     request<{ user: SessionUser }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password, remember }) }),
   /** A hospital's dedicated sign-in page: the hospital is fixed by the slug; the body can name nothing else. */
