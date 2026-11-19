@@ -1,7 +1,8 @@
+import { activeHospital, submitWhileActive } from "../tenant/hospital-lifecycle.policy.js";
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, lte, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
-import { outboundWebhookDeliveries, outboundWebhooks } from "../../db/schema.js";
+import type { Db, Tx } from "../../db/client.js";
+import { outboundWebhookDeliveries, outboundWebhooks, tenants } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../security/encryption.js";
 import { redactLogText } from "../security/redact.js";
 import type { OutboundWebhookVm, TestWebhookInput, TestWebhookResult, WebhookCondition, WebhookEventType } from "@pulseos/types";
@@ -132,6 +133,15 @@ export function webhookEnvelope(event: IntegrationEvent) {
 
 /** Queue one delivery per matching enabled webhook. Idempotent: the same event never queues twice for one webhook. */
 export async function enqueueWebhookDeliveries(db: Db, event: IntegrationEvent): Promise<number> {
+  return db.transaction(async (tx) => {
+    const [tenant] = await tx.select({ id: tenants.id }).from(tenants)
+      .where(and(eq(tenants.id, event.tenantId), eq(tenants.loginEnabled, true), eq(tenants.lifecycleStatus, "ACTIVE"))).for("share");
+    if (!tenant) return 0;
+    return enqueueActiveDeliveries(tx, event);
+  });
+}
+
+async function enqueueActiveDeliveries(db: Tx, event: IntegrationEvent) {
   const hooks = await db.select().from(outboundWebhooks).where(and(eq(outboundWebhooks.tenantId, event.tenantId), eq(outboundWebhooks.enabled, true)));
   let queued = 0;
   for (const w of hooks) {
@@ -171,7 +181,7 @@ export async function deliverDueWebhooks(db: Db, now: Date, fetchImpl: WebhookFe
     .select({ d: outboundWebhookDeliveries, w: outboundWebhooks })
     .from(outboundWebhookDeliveries)
     .innerJoin(outboundWebhooks, eq(outboundWebhooks.id, outboundWebhookDeliveries.webhookId))
-    .where(and(eq(outboundWebhookDeliveries.status, "PENDING"), eq(outboundWebhooks.enabled, true), lte(outboundWebhookDeliveries.nextAttemptAt, now)))
+    .where(and(eq(outboundWebhookDeliveries.status, "PENDING"), activeHospital(outboundWebhookDeliveries.tenantId), eq(outboundWebhooks.enabled, true), lte(outboundWebhookDeliveries.nextAttemptAt, now)))
     .limit(50);
   const tally = { sent: 0, failed: 0, retrying: 0 };
   for (const { d, w } of due) {
@@ -179,7 +189,7 @@ export async function deliverDueWebhooks(db: Db, now: Date, fetchImpl: WebhookFe
     const claimed = await db
       .update(outboundWebhookDeliveries)
       .set({ attempts: sql`${outboundWebhookDeliveries.attempts} + 1`, nextAttemptAt: new Date(now.getTime() + 120_000) })
-      .where(and(eq(outboundWebhookDeliveries.id, d.id), eq(outboundWebhookDeliveries.status, "PENDING"), lte(outboundWebhookDeliveries.nextAttemptAt, now)))
+      .where(and(eq(outboundWebhookDeliveries.id, d.id), eq(outboundWebhookDeliveries.status, "PENDING"), activeHospital(outboundWebhookDeliveries.tenantId), lte(outboundWebhookDeliveries.nextAttemptAt, now)))
       .returning({ attempts: outboundWebhookDeliveries.attempts });
     if (claimed.length === 0) continue;
     const attempts = claimed[0]!.attempts;
@@ -205,7 +215,7 @@ export async function deliverDueWebhooks(db: Db, now: Date, fetchImpl: WebhookFe
         }
 
         const method = w.httpMethod || "POST";
-        const res = await fetchImpl(check.url, {
+        const submitted = await submitWhileActive(db, d.tenantId, () => fetchImpl(check.url, {
           method,
           headers: {
             "content-type": "application/json",
@@ -219,7 +229,13 @@ export async function deliverDueWebhooks(db: Db, now: Date, fetchImpl: WebhookFe
           signal: AbortSignal.timeout(10000),
           // A redirect is never followed: it could point anywhere, including this network.
           redirect: "manual",
-        });
+        }));
+        if (!submitted) {
+          await db.update(outboundWebhookDeliveries).set({ attempts: d.attempts, nextAttemptAt: d.nextAttemptAt })
+            .where(and(eq(outboundWebhookDeliveries.id, d.id), eq(outboundWebhookDeliveries.attempts, attempts)));
+          continue;
+        }
+        const res = submitted.value;
         status = res.status;
         if (res.status >= 300 && res.status < 400) error = "redirect_refused";
         else if (res.status < 200 || res.status >= 300) error = `HTTP ${res.status}`;
@@ -246,6 +262,7 @@ export async function deliverDueWebhooks(db: Db, now: Date, fetchImpl: WebhookFe
 }
 
 export async function testWebhookDelivery(
+  db: Db,
   tenantId: string,
   input: TestWebhookInput,
   fetchImpl: typeof fetch = fetch,
@@ -311,13 +328,15 @@ export async function testWebhookDelivery(
   const bodyStr = JSON.stringify(payload, null, 2);
   const startTime = Date.now();
   try {
-    const res = await fetchImpl(validated.url, {
+    const submitted = await submitWhileActive(db, tenantId, () => fetchImpl(validated.url, {
       method: input.httpMethod || "POST",
       headers: requestHeaders,
       body: bodyStr,
       signal: AbortSignal.timeout(10000),
       redirect: "manual",
-    });
+    }));
+    if (!submitted) throw new Error("HOSPITAL_UNAVAILABLE");
+    const res = submitted.value;
     const latencyMs = Date.now() - startTime;
     const text = await res.text();
     const isOk = res.status >= 200 && res.status < 300;

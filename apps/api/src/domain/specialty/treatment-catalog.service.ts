@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { TreatmentDefinitionVm } from "@pulseos/types";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { treatmentDefinitions } from "../../db/schema.js";
 
 // The tenant's treatment catalog: procedures a hospital offers, attached to a
@@ -50,7 +50,7 @@ export async function findActiveTreatmentDefinition(db: Db, tenantId: string, id
 }
 
 /** Idempotently installs catalog entries for a tenant (existing keys are left untouched). */
-export async function ensureTreatmentCatalog(db: Db, tenantId: string, definitions: TreatmentDefinitionSeed[]): Promise<void> {
+export async function ensureTreatmentCatalog(db: DbOrTx, tenantId: string, definitions: TreatmentDefinitionSeed[]): Promise<void> {
   if (definitions.length === 0) return;
   await db
     .insert(treatmentDefinitions)

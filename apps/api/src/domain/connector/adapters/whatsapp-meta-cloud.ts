@@ -61,6 +61,7 @@ export const whatsAppMetaCloudAdapter: MessagingProviderAdapter = {
           result.statuses.push({
             externalEventId: `${status.id}:${status.status}`,
             providerMessageId: status.id,
+            phoneNumberId: value.metadata?.phone_number_id ?? null,
             status: status.status,
             occurredAt: new Date(Number(status.timestamp) * 1000),
           });
@@ -94,6 +95,7 @@ export const whatsAppMetaCloudAdapter: MessagingProviderAdapter = {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body } }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {

@@ -1,3 +1,4 @@
+import { submitWhileActive } from "../tenant/hospital-lifecycle.policy.js";
 import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { createHmac } from "node:crypto";
 import crypto from "node:crypto";
@@ -462,9 +463,10 @@ async function deliverText(db: Db, existing: typeof conversations.$inferSelect, 
       const [endpoint] = await db.select({ providerRef: communicationEndpoints.providerRef }).from(communicationEndpoints).where(eq(communicationEndpoints.id, existing.communicationEndpointId)).limit(1);
       if (endpoint) config.phoneNumberId = endpoint.providerRef;
     }
-    const sent = await adapter.sendMessage(config, secrets, to, body);
+    const sent = await submitWhileActive(db, existing.tenantId, () => adapter.sendMessage(config, secrets, to, body));
+    if (!sent) return { providerMessageId: null, deliveryStatus: "failed", reason: "HOSPITAL_UNAVAILABLE" };
     await touchConnectorSuccess(db, connector.id);
-    return { providerMessageId: sent.providerMessageId, deliveryStatus: "sent", reason: null };
+    return { providerMessageId: sent.value.providerMessageId, deliveryStatus: "sent", reason: null };
   } catch (err) {
     const reason = redactLogText((err as Error).message) ?? "send failed";
     // A refused template or a closed window is about this message, not the connection.
@@ -556,7 +558,10 @@ export async function sendMediaMessage(
   let providerMessageId: string;
   try {
     const config: Record<string, unknown> = { ...((connector.configuration as Record<string, unknown>) ?? {}), mode: connector.mode.toLowerCase(), pulseosTenantId: tenantId };
-    providerMessageId = (await adapter.sendMedia(config, secrets, to, { ...media, idempotencyKey: crypto.randomUUID() })).providerMessageId;
+    const sendMedia = adapter.sendMedia;
+    const submitted = await submitWhileActive(db, tenantId, () => sendMedia(config, secrets, to, { ...media, idempotencyKey: crypto.randomUUID() }));
+    if (!submitted) return { ok: false, reason: "send_failed", detail: "HOSPITAL_UNAVAILABLE" };
+    providerMessageId = submitted.value.providerMessageId;
   } catch (err) {
     const code = (err as { code?: string }).code ?? "";
     if (code === "TEMPLATE_REQUIRED") return { ok: false, reason: "template_required" };

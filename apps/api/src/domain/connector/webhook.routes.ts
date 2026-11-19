@@ -1,14 +1,60 @@
+import { resolveEndpointByProviderRef } from "./communication-endpoint.service.js";
+import { eq } from "drizzle-orm";
+import type { Db, Tx } from "../../db/client.js";
+import { connectorEvents } from "../../db/schema.js";
+import { emitIntegrationEvent } from "../integration/domain-events.js";
+import type { InboundCallEvent } from "./types.js";
+import { admitMetaLead, fetchBoundMetaLead } from "../acquisition/suspended-meta-leads.service.js";
+import { lockActiveHospital } from "../tenant/hospital-lifecycle.policy.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getConnectorById, getConnectorByTenantAndProvider, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "./connector.service.js";
-import { markEventFailed, markEventProcessed, recordConnectorEvent } from "./connector-event.service.js";
+import { markEventFailed, markEventProcessed, recordConnectorEvent, type RecordEventInput } from "./connector-event.service.js";
 import { getAcquisitionAdapter, getMessagingAdapter, getTelephonyAdapter } from "./registry.js";
 import { processInboundWhatsAppMessage, processOutboundWhatsAppMessage, processWhatsAppStatusUpdate } from "./whatsapp-webhook.service.js";
-import { persistInboundCall } from "./call-webhook.service.js";
+import { storeInboundCall } from "./call-webhook.service.js";
 import { applyDeliveryStatus, applyWhatsNexusStatus, WHATSNEXUS_PROVIDER } from "../notification/notification.service.js";
 import { parseWhatsNexusCallback, verifyWhatsNexusCallback } from "./whatsnexus-callback.js";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
-import { processProviderLead } from "../acquisition/lead-webhook.service.js";
 import { ingestNormalizedLead } from "../acquisition/lead-ingestion.service.js";
+
+async function processConnectorDelivery<T>(db: Db, input: RecordEventInput, requiresActive: boolean, process: (tx: Tx) => Promise<T>, acknowledgedFailure?: (value: T) => string | undefined) {
+  try {
+    return await db.transaction(async (tx) => {
+      if (requiresActive && !(await lockActiveHospital(tx, input.tenantId))) return { kind: "unavailable" } as const;
+      const event = await recordConnectorEvent(tx, input);
+      if (event.duplicate) {
+        const [prior] = await tx.select({ status: connectorEvents.status }).from(connectorEvents).where(eq(connectorEvents.id, event.eventId));
+        return { kind: prior?.status === "processed" ? "duplicate" : "failed" } as const;
+      }
+      const value = await process(tx);
+      const failure = acknowledgedFailure?.(value);
+      if (failure) {
+        await markEventFailed(tx, event.eventId, failure);
+      } else {
+        await markEventProcessed(tx, event.eventId);
+        await touchConnectorSuccess(tx, input.connectorId);
+      }
+      return { kind: "processed", value } as const;
+    });
+  } catch {
+    return { kind: "failed" } as const;
+  }
+}
+
+async function processCallDeliveries(db: Db, tenantId: string, connectorId: string, calls: InboundCallEvent[], reply: FastifyReply) {
+  if (!calls.length && !(await db.transaction((tx) => lockActiveHospital(tx, tenantId)))) {
+    return reply.status(503).send({ error: "intake_unavailable" });
+  }
+  for (const call of calls) {
+    const outcome = await processConnectorDelivery(db, {
+      tenantId, connectorId, externalEventId: call.externalEventId, direction: "inbound", payload: { type: "call" },
+    }, true, (tx) => storeInboundCall(tx, tenantId, connectorId, call));
+    if (outcome.kind === "unavailable") return reply.status(503).send({ error: "intake_unavailable" });
+    if (outcome.kind === "failed") return reply.status(500).send({ error: "processing_failed" });
+    if (outcome.kind === "processed" && outcome.value) emitIntegrationEvent(outcome.value);
+  }
+  return reply.status(200).send({ ok: true });
+}
 
 interface RequestWithRawBody extends FastifyRequest {
   rawBody?: string;
@@ -67,7 +113,7 @@ export async function webhookRoutes(app: FastifyInstance) {
     if (!adapter) return reply.status(200).send({ ok: true });
 
     const secrets = await getConnectorSecrets(app.db, connectorId);
-    if (!secrets) return reply.status(200).send({ ok: true });
+    if (!secrets) return reply.status(401).send({ error: "unauthorized" });
 
     const rawBody = (request as RequestWithRawBody).rawBody ?? "";
     const signatureHeader = request.headers["x-hub-signature-256"] as string | undefined;
@@ -81,63 +127,59 @@ export async function webhookRoutes(app: FastifyInstance) {
     // Enabled is a tenant switch, independent of the connector: inbound conversations need the Inbox, delivery
     // statuses need either WhatsApp capability. A disabled capability is acknowledged and ignored (no retries).
     const caps = await tenantCapabilityMap(app.db, connector.tenantId);
+    let unavailable = false;
+    let failed = false;
+    let wrongBinding = false;
+    const configuredNumber = (connector.configuration as Record<string, unknown> | null)?.phoneNumberId;
+    const matchesNumber = async (number: string | null | undefined) =>
+      connector.mode === "FIXTURE" || Boolean(number && (configuredNumber === number ||
+        (await resolveEndpointByProviderRef(app.db, connector.tenantId, connectorId, number))?.isActive));
     if (!caps.WHATSAPP_INBOX) parsed.messages = [];
     if (!caps.WHATSAPP_INBOX && !caps.WHATSAPP_NOTIFICATIONS) parsed.statuses = [];
 
     for (const msg of parsed.messages) {
-      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
-        tenantId: connector.tenantId,
-        connectorId,
-        externalEventId: msg.externalEventId,
-        direction: "inbound",
-        payload: { type: "message" },
-      });
-      if (duplicate) continue;
-
-      try {
-        await processInboundWhatsAppMessage(app.db, connector.tenantId, connectorId, msg);
-        await markEventProcessed(app.db, eventId);
-        await touchConnectorSuccess(app.db, connectorId);
-      } catch (err) {
-        await markEventFailed(app.db, eventId, (err as Error).message);
-        await touchConnectorError(app.db, connectorId, (err as Error).message);
+      if (!(await matchesNumber(msg.phoneNumberId))) {
+        wrongBinding = true;
+        continue;
       }
+      const outcome = await processConnectorDelivery(app.db, {
+        tenantId: connector.tenantId, connectorId, externalEventId: msg.externalEventId,
+        direction: "inbound", payload: { type: "message" },
+      }, true, (tx) => processInboundWhatsAppMessage(tx, connector.tenantId, connectorId, msg));
+      unavailable ||= outcome.kind === "unavailable";
+      failed ||= outcome.kind === "failed";
     }
-
     for (const status of parsed.statuses) {
-      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
-        tenantId: connector.tenantId,
-        connectorId,
-        externalEventId: status.externalEventId,
-        direction: "inbound",
-        payload: { type: "status" },
-      });
-      if (duplicate) continue;
-
-      try {
-        await processWhatsAppStatusUpdate(app.db, connectorId, status);
-        // The same provider status also moves a reminder/follow-up message along (sent → delivered → read, or failed).
-        await applyDeliveryStatus(app.db, connector.tenantId, status.providerMessageId, status.status, status.occurredAt);
-        await markEventProcessed(app.db, eventId);
-        await touchConnectorSuccess(app.db, connectorId);
-      } catch (err) {
-        await markEventFailed(app.db, eventId, (err as Error).message);
+      if (!(await matchesNumber(status.phoneNumberId))) {
+        wrongBinding = true;
+        continue;
       }
+      const outcome = await processConnectorDelivery(app.db, {
+        tenantId: connector.tenantId, connectorId, externalEventId: status.externalEventId,
+        direction: "inbound", payload: { type: "status" },
+      }, false, async (tx) => {
+        await processWhatsAppStatusUpdate(tx, connectorId, status);
+        await applyDeliveryStatus(tx, connector.tenantId, status.providerMessageId, status.status, status.occurredAt);
+      });
+      failed ||= outcome.kind === "failed";
     }
 
+    if (failed) return reply.status(500).send({ error: "processing_failed" });
+    if (unavailable) return reply.status(503).send({ error: "intake_unavailable" });
+    if (wrongBinding) return reply.status(403).send({ error: "wrong_phone_binding" });
     return reply.status(200).send({ ok: true });
   });
 
   app.post("/webhooks/runo/:connectorId", async (request, reply) => {
     const { connectorId } = request.params as { connectorId: string };
     const connector = await getConnectorById(app.db, connectorId);
-    if (!connector || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
+    if (connector?.provider !== "runo" || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
 
     const adapter = getTelephonyAdapter(connector.provider);
     if (!adapter) return reply.status(200).send({ ok: true });
 
     const secrets = await getConnectorSecrets(app.db, connectorId);
-    if (!secrets) return reply.status(200).send({ ok: true });
+    if (!secrets) return reply.status(401).send({ error: "unauthorized" });
 
     if (!adapter.verifyWebhook(request.body, request.headers as Record<string, string | undefined>, secrets)) {
       app.log.warn({ connectorId }, "Runo webhook authentication rejected");
@@ -146,40 +188,19 @@ export async function webhookRoutes(app: FastifyInstance) {
 
     if (!(await tenantCapabilityMap(app.db, connector.tenantId)).RUNO_CALLING) return reply.status(200).send({ ok: true });
 
-    const calls = adapter.parseWebhookPayload(request.body);
-    for (const call of calls) {
-      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
-        tenantId: connector.tenantId,
-        connectorId,
-        externalEventId: call.externalEventId,
-        direction: "inbound",
-        payload: { type: "call" },
-      });
-      if (duplicate) continue;
-
-      try {
-        await persistInboundCall(app.db, connector.tenantId, connectorId, call);
-        await markEventProcessed(app.db, eventId);
-        await touchConnectorSuccess(app.db, connectorId);
-      } catch (err) {
-        await markEventFailed(app.db, eventId, (err as Error).message);
-        await touchConnectorError(app.db, connectorId, (err as Error).message);
-      }
-    }
-
-    return reply.status(200).send({ ok: true });
+    return processCallDeliveries(app.db, connector.tenantId, connectorId, adapter.parseWebhookPayload(request.body), reply);
   });
 
   async function handleCcsWebhook(request: FastifyRequest, reply: FastifyReply) {
     const { connectorId } = request.params as { connectorId: string };
     const connector = await getConnectorById(app.db, connectorId);
-    if (!connector || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
+    if (connector?.provider !== "ccs_ivr" || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
 
     const adapter = getTelephonyAdapter(connector.provider);
     if (!adapter) return reply.status(200).send({ ok: true });
 
     const secrets = await getConnectorSecrets(app.db, connectorId);
-    if (!secrets) return reply.status(200).send({ ok: true });
+    if (!secrets) return reply.status(401).send({ error: "unauthorized" });
 
     const rawPayload = {
       ...((request.query as Record<string, unknown>) || {}),
@@ -193,28 +214,7 @@ export async function webhookRoutes(app: FastifyInstance) {
 
     if (!(await tenantCapabilityMap(app.db, connector.tenantId)).CCS_IVR) return reply.status(200).send({ ok: true });
 
-    const calls = adapter.parseWebhookPayload(rawPayload);
-    for (const call of calls) {
-      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
-        tenantId: connector.tenantId,
-        connectorId,
-        externalEventId: call.externalEventId,
-        direction: "inbound",
-        payload: { type: "call", raw: rawPayload },
-      });
-      if (duplicate) continue;
-
-      try {
-        await persistInboundCall(app.db, connector.tenantId, connectorId, call);
-        await markEventProcessed(app.db, eventId);
-        await touchConnectorSuccess(app.db, connectorId);
-      } catch (err) {
-        await markEventFailed(app.db, eventId, (err as Error).message);
-        await touchConnectorError(app.db, connectorId, (err as Error).message);
-      }
-    }
-
-    return reply.status(200).send({ ok: true });
+    return processCallDeliveries(app.db, connector.tenantId, connectorId, adapter.parseWebhookPayload(rawPayload), reply);
   }
 
   app.post("/webhooks/ccs/:connectorId", handleCcsWebhook);
@@ -237,7 +237,7 @@ export async function webhookRoutes(app: FastifyInstance) {
     return reply.status(200).send(challenge);
   });
 
-  app.post("/webhooks/meta-lead-ads/:connectorId", async (request, reply) => {
+  app.post("/webhooks/meta-lead-ads/:connectorId", { bodyLimit: 256 * 1024 }, async (request, reply) => {
     const { connectorId } = request.params as { connectorId: string };
     const connector = await getConnectorById(app.db, connectorId);
     if (!connector || connector.status === "DISABLED") return reply.status(200).send({ ok: true });
@@ -246,48 +246,35 @@ export async function webhookRoutes(app: FastifyInstance) {
     if (!adapter?.parseWebhookLeadReferences || !adapter.fetchLead) return reply.status(200).send({ ok: true });
 
     const secrets = await getConnectorSecrets(app.db, connectorId);
-    if (!secrets) return reply.status(200).send({ ok: true });
+    if (!secrets) return reply.status(401).send({ error: "unauthorized" });
 
     const rawBody = (request as RequestWithRawBody).rawBody ?? "";
     const signatureHeader = request.headers["x-hub-signature-256"] as string | undefined;
-    if (adapter.verifyWebhookSignature && !adapter.verifyWebhookSignature(rawBody, signatureHeader, secrets)) {
+    if (!adapter.verifyWebhookSignature?.(rawBody, signatureHeader, secrets)) {
       app.log.warn({ connectorId }, "Meta Lead Ads webhook signature rejected");
       return reply.status(401).send({ error: "invalid_signature" });
     }
 
-    const config = { ...((connector.configuration as Record<string, unknown>) ?? {}), mode: connector.mode.toLowerCase() };
     const refs = adapter.parseWebhookLeadReferences(request.body);
-
+    if (refs.length > 50) return reply.status(413).send({ error: "batch_too_large" });
+    let unavailable = false;
     for (const ref of refs) {
-      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
-        tenantId: connector.tenantId,
-        connectorId,
-        externalEventId: ref.externalLeadId,
-        direction: "inbound",
-        payload: { type: "leadgen" },
-      });
-      if (duplicate) continue;
-
       try {
-        await processProviderLead(app.db, connector.tenantId, adapter, ref, config, secrets, {
-          journeyTypeFallback: "Meta Lead Ads Enquiry",
-          campaignNameFallback: "Meta Lead Ads Campaign",
-          sourceLabel: "Meta Lead Ads",
-          taskDueInHours: 2,
-          firstTouchEventType: "meta_lead_received",
-          firstTouchTitle: "Meta Lead Ads enquiry received",
-          additionalTouchEventType: "meta_lead_additional_touch",
-          additionalTouchTitle: "Additional Meta Lead Ads touch recorded",
-          connectorId,
-        });
-        await markEventProcessed(app.db, eventId);
-        await touchConnectorSuccess(app.db, connectorId);
-      } catch (err) {
-        await markEventFailed(app.db, eventId, (err as Error).message);
-        await touchConnectorError(app.db, connectorId, (err as Error).message);
+        const verify = (current: Record<string, unknown>) => adapter.verifyWebhookSignature?.(rawBody, signatureHeader, current) === true;
+        let admission = await admitMetaLead(app.db, connector.tenantId, connectorId, ref, verify);
+        if (admission === "fetch") {
+          const lead = await fetchBoundMetaLead(connector, secrets, ref).catch(() => null);
+          admission = await admitMetaLead(app.db, connector.tenantId, connectorId, ref, verify,
+            lead ? { connector, secrets, lead } : undefined);
+        }
+        if (admission === "unavailable" || admission === "fetch") unavailable = true;
+      } catch {
+        unavailable = true;
       }
     }
 
+    // Items commit independently. A rejected reference must not starve valid references in the same delivery.
+    if (unavailable) return reply.status(503).send({ error: "intake_unavailable" });
     return reply.status(200).send({ ok: true });
   });
 
@@ -305,7 +292,7 @@ export async function webhookRoutes(app: FastifyInstance) {
     if (!adapter?.verifyWebhookKey || !adapter.parseWebhookLead) return reply.status(200).send({});
 
     const secrets = await getConnectorSecrets(app.db, connectorId);
-    if (!secrets) return reply.status(200).send({});
+    if (!secrets) return reply.status(400).send({ message: "invalid_google_key" });
 
     if (!adapter.verifyWebhookKey(request.body, secrets)) {
       app.log.warn({ connectorId }, "Google Ads Lead Forms webhook key rejected");
@@ -313,37 +300,49 @@ export async function webhookRoutes(app: FastifyInstance) {
     }
 
     const leads = adapter.parseWebhookLead(request.body);
-    for (const lead of leads) {
-      const { duplicate, eventId } = await recordConnectorEvent(app.db, {
-        tenantId: connector.tenantId,
-        connectorId,
-        externalEventId: lead.externalLeadId,
-        direction: "inbound",
-        payload: { type: "lead_form" },
-      });
-      if (duplicate) continue;
-
-      try {
-        await ingestNormalizedLead(app.db, connector.tenantId, lead, {
-          journeyTypeFallback: "Google Ads Lead Enquiry",
-          campaignNameFallback: "Google Ads Lead Forms Campaign",
-          sourceLabel: "Google Ads Lead Forms",
-          taskDueInHours: 2,
-          firstTouchEventType: "google_lead_received",
-          firstTouchTitle: "Google Ads lead enquiry received",
-          additionalTouchEventType: "google_lead_additional_touch",
-          additionalTouchTitle: "Additional Google Ads lead touch recorded",
+    if (!leads.length) return reply.status(400).send({ message: "invalid_lead" });
+    const outcome = await app.db.transaction(async (tx) => {
+      if (!(await lockActiveHospital(tx, connector.tenantId))) return "unavailable";
+      for (const lead of leads) {
+        const { duplicate, eventId } = await recordConnectorEvent(tx, {
+          tenantId: connector.tenantId,
           connectorId,
+          externalEventId: lead.externalLeadId,
+          direction: "inbound",
+          payload: { type: "lead_form" },
         });
-        await markEventProcessed(app.db, eventId);
-        await touchConnectorSuccess(app.db, connectorId);
-      } catch (err) {
-        await markEventFailed(app.db, eventId, (err as Error).message);
-        await touchConnectorError(app.db, connectorId, (err as Error).message);
-        return reply.status(500).send({ message: "processing_failed" });
+        if (duplicate) {
+          const [prior] = await tx.select({ status: connectorEvents.status }).from(connectorEvents).where(eq(connectorEvents.id, eventId));
+          if (prior?.status !== "processed") return "failed";
+          continue;
+        }
+        try {
+          await tx.transaction(async (work) => {
+            await ingestNormalizedLead(work, connector.tenantId, lead, {
+              journeyTypeFallback: "Google Ads Lead Enquiry",
+              campaignNameFallback: "Google Ads Lead Forms Campaign",
+              sourceLabel: "Google Ads Lead Forms",
+              taskDueInHours: 2,
+              firstTouchEventType: "google_lead_received",
+              firstTouchTitle: "Google Ads lead enquiry received",
+              additionalTouchEventType: "google_lead_additional_touch",
+              additionalTouchTitle: "Additional Google Ads lead touch recorded",
+              connectorId,
+            });
+            await markEventProcessed(work, eventId);
+            await touchConnectorSuccess(work, connectorId);
+          });
+        } catch {
+          await markEventFailed(tx, eventId, "google_lead_processing_failed");
+          await touchConnectorError(tx, connectorId, "google_lead_processing_failed");
+          return "failed";
+        }
       }
-    }
+      return "accepted";
+    });
 
+    if (outcome === "unavailable") return reply.status(503).send({ message: "intake_unavailable" });
+    if (outcome === "failed") return reply.status(500).send({ message: "processing_failed" });
     return reply.status(200).send({});
   });
 
@@ -384,72 +383,45 @@ async function handleWhatsNexusCallback(app: FastifyInstance, request: FastifyRe
   const caps = await tenantCapabilityMap(db, tenantId);
   if (event.kind === "outbound") {
     if (!caps.WHATSAPP_INBOX) return reply.status(200).send({ ok: true, ignored: true });
-    const { duplicate, eventId } = await recordConnectorEvent(db, {
-      tenantId,
-      connectorId: connector.id,
-      externalEventId: `whatsnexus:${event.eventId}`,
-      direction: "inbound",
-      payload: { type: "whatsnexus_outbound", sender: event.sender, attachmentCount: event.attachments.length },
-    });
-    if (duplicate) return reply.status(200).send({ ok: true, duplicate: true });
-    try {
-      const result = await processOutboundWhatsAppMessage(db, tenantId, connector.id, event);
-      await markEventProcessed(db, eventId);
-      await touchConnectorSuccess(db, connector.id);
-      // An unknown thread is acknowledged (so WhatsNexus does not retry) and kept in the event log; nothing was created.
-      return reply.status(200).send(result === "applied" ? { ok: true, applied: true } : result === "duplicate" ? { ok: true, duplicate: true } : { ok: true, applied: false, reason: result });
-    } catch (err) {
-      await markEventFailed(db, eventId, (err as Error).message);
-      return reply.status(500).send({ error: "processing_failed" });
+    const outcome = await processConnectorDelivery(db, {
+      tenantId, connectorId: connector.id, externalEventId: `whatsnexus:${event.eventId}`,
+      direction: "inbound", payload: { type: "whatsnexus_outbound", sender: event.sender, attachmentCount: event.attachments.length },
+    }, false, (tx) => processOutboundWhatsAppMessage(tx, tenantId, connector.id, event));
+    if (outcome.kind === "failed") return reply.status(500).send({ error: "processing_failed" });
+    if (outcome.kind === "duplicate") return reply.status(200).send({ ok: true, duplicate: true });
+    if (outcome.kind === "processed" && outcome.value === "unknown_thread") {
+      return reply.status(200).send({ ok: true, applied: false, reason: outcome.value });
     }
+    return reply.status(200).send(outcome.kind === "processed" && outcome.value === "duplicate"
+      ? { ok: true, duplicate: true } : { ok: true, applied: true });
   }
   if (event.kind === "inbound") {
-    if (!caps.WHATSAPP_INBOX) return reply.status(200).send({ ok: true, ignored: true });
-    const { duplicate, eventId } = await recordConnectorEvent(db, {
-      tenantId,
-      connectorId: connector.id,
-      externalEventId: `whatsnexus:${event.eventId}`,
-      direction: "inbound",
-      payload: { type: "whatsnexus_inbound", attachmentCount: event.attachments.length },
-    });
-    if (duplicate) return reply.status(200).send({ ok: true, duplicate: true });
-    try {
-      await processInboundWhatsAppMessage(db, tenantId, connector.id, event);
-      await markEventProcessed(db, eventId);
-      await touchConnectorSuccess(db, connector.id);
-      return reply.status(200).send({ ok: true, applied: true });
-    } catch (err) {
-      await markEventFailed(db, eventId, (err as Error).message);
-      return reply.status(500).send({ error: "processing_failed" });
+    if (!caps.WHATSAPP_INBOX) {
+      const active = await db.transaction((tx) => lockActiveHospital(tx, tenantId));
+      return active ? reply.status(200).send({ ok: true, ignored: true }) : reply.status(503).send({ error: "intake_unavailable" });
     }
+    const outcome = await processConnectorDelivery(db, {
+      tenantId, connectorId: connector.id, externalEventId: `whatsnexus:${event.eventId}`,
+      direction: "inbound", payload: { type: "whatsnexus_inbound", attachmentCount: event.attachments.length },
+    }, true, (tx) => processInboundWhatsAppMessage(tx, tenantId, connector.id, event));
+    if (outcome.kind === "unavailable") return reply.status(503).send({ error: "intake_unavailable" });
+    if (outcome.kind === "failed") return reply.status(500).send({ error: "processing_failed" });
+    if (outcome.kind === "duplicate") return reply.status(200).send({ ok: true, duplicate: true });
+    return reply.status(200).send({ ok: true, applied: true });
   }
 
   if (!caps.WHATSAPP_NOTIFICATIONS) return reply.status(200).send({ ok: true, ignored: true });
 
-  // Replay / duplicate protection: the event id is unique per connector.
-  const { duplicate, eventId } = await recordConnectorEvent(db, {
-    tenantId,
-    connectorId: connector.id,
-    externalEventId: `whatsnexus:${event.eventId}`,
-    direction: "inbound",
-    payload: { type: "whatsnexus_status", status: event.status },
-  });
-  if (duplicate) return reply.status(200).send({ ok: true, duplicate: true });
-
-  try {
-    const result = await applyWhatsNexusStatus(db, tenantId, { notificationId: event.externalId, wamid: event.wamid, status: event.status, at: event.occurredAt });
-    if (result === "applied") {
-      await markEventProcessed(db, eventId);
-      await touchConnectorSuccess(db, connector.id);
-      return reply.status(200).send({ ok: true, applied: true });
-    }
-    // Authenticated but not applicable (unknown notification, another provider's notification, a different wamid): acknowledged
-    // so WhatsNexus does not retry forever, and kept in the event log for support.
-    await markEventFailed(db, eventId, result);
-    return reply.status(200).send({ ok: true, applied: false, reason: result });
-  } catch (err) {
-    await markEventFailed(db, eventId, (err as Error).message);
-    // A real processing error: let WhatsNexus retry.
-    return reply.status(500).send({ error: "processing_failed" });
+  const outcome = await processConnectorDelivery(db, {
+    tenantId, connectorId: connector.id, externalEventId: `whatsnexus:${event.eventId}`,
+    direction: "inbound", payload: { type: "whatsnexus_status", status: event.status },
+  }, false, (tx) => applyWhatsNexusStatus(tx, tenantId, {
+    notificationId: event.externalId, wamid: event.wamid, status: event.status, at: event.occurredAt,
+  }), (result) => result === "applied" ? undefined : result);
+  if (outcome.kind === "failed") return reply.status(500).send({ error: "processing_failed" });
+  if (outcome.kind === "duplicate") return reply.status(200).send({ ok: true, duplicate: true });
+  if (outcome.kind === "processed" && outcome.value !== "applied") {
+    return reply.status(200).send({ ok: true, applied: false, reason: outcome.value });
   }
+  return reply.status(200).send({ ok: true, applied: true });
 }

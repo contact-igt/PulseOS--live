@@ -268,7 +268,7 @@ export default function LoginPage() {
               className="mt-2 flex h-11 w-full items-center justify-center rounded-control border border-primary-200 bg-primary-50/60 px-3 text-sm font-semibold text-primary-700 transition hover:border-primary-300 hover:bg-primary-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
               data-testid="signup-link"
             >
-              Create account
+              Hospital onboarding
             </Link>
           </div>
 

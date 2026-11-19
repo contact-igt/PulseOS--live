@@ -1,3 +1,4 @@
+import { activeHospital, allowsHospitalWork } from "../tenant/hospital-lifecycle.policy.js";
 import { and, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { adsDailyFacts, adsSyncRuns, connectors } from "../../db/schema.js";
@@ -64,6 +65,7 @@ export interface SyncOptions {
 export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, opts: SyncOptions): Promise<Result<{ run: AdsSyncRunVm }>> {
   const now = opts.now ?? new Date();
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  if (!(await allowsHospitalWork(db, tenantId))) return { ok: false, reason: "hospital_unavailable" };
   const caps = await tenantCapabilityMap(db, tenantId);
   if (!caps[CAPABILITY_FOR[provider]]) return { ok: false, reason: "feature_not_available" };
   const adapter = opts.adapter === undefined ? getAdsProvider(provider) : opts.adapter;
@@ -134,7 +136,7 @@ export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, o
 
 /** Scheduled tick: every configured, enabled ads connector that has not synced successfully in the last 6 hours. */
 export async function syncDueAds(db: Db, now: Date, opts: { adapterFor?: (p: AdsProvider) => AdsReportingProvider | null } = {}): Promise<{ synced: number; skipped: number }> {
-  const rows = await db.select({ tenantId: connectors.tenantId, provider: connectors.provider }).from(connectors).where(inArray(connectors.provider, [...ADS_PROVIDERS]));
+  const rows = await db.select({ tenantId: connectors.tenantId, provider: connectors.provider }).from(connectors).where(and(inArray(connectors.provider, [...ADS_PROVIDERS]), activeHospital(connectors.tenantId)));
   let synced = 0;
   let skipped = 0;
   for (const { tenantId, provider } of rows) {

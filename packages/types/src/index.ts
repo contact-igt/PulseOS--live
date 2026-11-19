@@ -3641,3 +3641,154 @@ export interface TenantLoginBranding {
   badgeLabel: string | null;
   supportText: string;
 }
+
+export const PLATFORM_ROLES = ["PLATFORM_SUPER_ADMIN", "PLATFORM_OPERATIONS_ADMIN"] as const;
+export type PlatformRole = (typeof PLATFORM_ROLES)[number];
+export const PLATFORM_ONBOARDING_GRANTS = ["hospital:create", "hospital:invite", "hospital:retry", "hospital:activate"] as const;
+export type PlatformPermission = (typeof PLATFORM_ONBOARDING_GRANTS)[number] | "hospital:read" | "dashboard:read" | "team:manage" | "audit:read" | "hospital:lifecycle:read" | "hospital:suspend" | "hospital:restore" | "hospital:archive";
+export type PlatformAccount = { id: string; email: string; role: PlatformRole; permissions: PlatformPermission[] };
+
+export type HospitalArchivalAssessment = {
+  assessedAt: string;
+  lifecycle: { state: "PROVISIONING" | "ACTIVE" | "SUSPENDED" | "ARCHIVED"; version: number };
+  onboarding: { invitation: string; delivery: string | null; template: string | null };
+  evidence: {
+    appointments: number; futureAppointments: number; pendingTasks: number; pendingNotifications: number;
+    unknownDispatches: number; pendingWebhooks: number; pendingCommands: number; recordedFailedCommands: number;
+    openConnectorEvents: number; heldMetaLeads: number; runningAdsSyncs: number; pendingOrRunningCallWork: number;
+  };
+  recordedRevenue: boolean;
+  whatsNexus: {
+    binding: string | null;
+    observation: { state: "ACTIVE" | "PAUSING" | "PAUSED"; observedAt: string;
+      alignment: "matching" | "historical"; unresolvedPermits: number | null } | null;
+  };
+  findings: {
+    classification: "BLOCKED_BY_STATE" | "BLOCKED_BY_OPEN_WORK" | "BLOCKED_BY_INTEGRATION"
+      | "BLOCKED_BY_CLINICAL_REVIEW" | "BLOCKED_BY_FINANCE_REVIEW" | "POLICY_NOT_APPROVED" | "EVIDENCE_UNAVAILABLE";
+    basis: "record" | "policy";
+    reason: string;
+  }[];
+};
+export type HospitalCreationInput = Omit<SignupInput, "password">;
+export type PlatformHospital = {
+  invitationDelivery?: {
+    enabled: boolean;
+    status: "not_queued" | "pending" | "accepted" | "failed" | "expired" | "superseded";
+    expiresAt: string | null;
+    attempts?: number;
+    lastAttemptAt?: string | null;
+    failure?: string | null;
+  };
+  id: string;
+  tenantId: string | null;
+  name: string | null;
+  slug: string | null;
+  edition: Edition | null;
+  createdAt: string | null;
+  onboardingId: string | null;
+  loginPath: string | null;
+  provisioning: "created" | "failed";
+  provisioningError?: string | null;
+  template: "none" | "pending" | "installed" | "failed";
+  invitation: "not_issued" | "pending" | "expired" | "accepted" | "not_applicable";
+  active: boolean;
+  ready?: boolean;
+  readinessFailures?: string[];
+  lifecycleStatus?: HospitalLifecycleStatus;
+};
+
+export interface PlatformAuditEvent {
+  id: string;
+  actorId: string | null;
+  subjectId: string | null;
+  category: string;
+  action: string;
+  reason: string | null;
+  createdAt: string;
+}
+
+export interface PlatformDashboard {
+  total: number;
+  active: number;
+  loginDisabled: number;
+  suspended: number;
+  provisioning: number;
+  failedOnboarding: number;
+  pendingCommands: number;
+  failedCommands: number;
+  agedCommands: number;
+  integrationProblems: number;
+  pending: number;
+  templateFailures: number;
+  pendingInvitations: number;
+  recentHospitals: PlatformHospital[];
+  recentAudit: PlatformAuditEvent[];
+}
+
+export type HospitalLifecycleStatus = "PROVISIONING" | "ACTIVE" | "SUSPENDED" | "ARCHIVED";
+export interface HospitalLifecycle {
+  status: HospitalLifecycleStatus;
+  version: number;
+  loginEnabled: boolean;
+  changedAt: string | null;
+  suspension: { reason: string; explanation: string | null } | null;
+}
+export interface HospitalLifecycleEvent {
+  id: string;
+  actorId: string | null;
+  action: string;
+  previousState: HospitalLifecycleStatus | null;
+  requestedState: HospitalLifecycleStatus;
+  outcome: string;
+  reason: string | null;
+  explanation: string | null;
+  createdAt: string;
+}
+
+export interface HospitalLifecycleOperations {
+  connector?: { status: string; mode: string; remoteTenantId: string | null; lastSyncAt: string | null } | null;
+  recentAudit?: PlatformAuditEvent[];
+  lifecycleStatus?: HospitalLifecycleStatus | null;
+  lifecycleVersion?: number | null;
+  oldestHeldMetaLeadAt?: string | null;
+  expiringMetaLeads?: number;
+  exhaustedMetaLeads?: number;
+  pendingNotifications?: number;
+  providerCoordination: "external_pause_unverified" | "no_whatsnexus_connector";
+  messaging?: { enabled: boolean; bindingCurrent: boolean; latest: HospitalMessagingCommand | null; history: HospitalMessagingCommand[] };
+  heldInbound: number;
+  queuedOutbound: number;
+  unresolvedDispatches: number;
+  oldestPendingAt: string | null;
+  lastVerifiedProviderHealthAt: string | null;
+  restorationReconciliation: "awaiting_review" | "held" | "no_held_references";
+}
+
+export interface PlatformMessagingException {
+  id: string;
+  tenantId: string;
+  hospitalName: string;
+  onboardingId: string | null;
+  action: "pause" | "resume";
+  status: "pending" | "failed";
+  classification: string | null;
+  createdAt: string;
+  verifiedAt: string | null;
+  attempts: number;
+  pendingMinutes: number | null;
+}
+
+export interface HospitalMessagingCommand {
+  id: string;
+  action: "pause" | "resume";
+  actor: string;
+  status: "pending" | "confirmed" | "failed" | "superseded";
+  error: string | null;
+  lifecycleVersion: number;
+  expectedVersion: number | null;
+  attempts: number;
+  observation: { state: "ACTIVE" | "PAUSING" | "PAUSED"; version: number; lastCommand: string | null; unresolvedPermits: number } | null;
+  verifiedAt: string | null;
+  createdAt: string;
+}

@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { branchBelongsToTenant } from "../patient/identity.service.js";
 import { branches, communicationEndpoints, connectors } from "../../db/schema.js";
 import type { CommunicationEndpointVm, CreateCommunicationEndpointInput, UpdateCommunicationEndpointInput } from "@pulseos/types";
@@ -143,7 +143,7 @@ export async function updateCommunicationEndpoint(
 }
 
 export async function resolveEndpointByProviderRef(
-  db: Db,
+  db: DbOrTx,
   tenantId: string,
   connectorId: string,
   providerRef: string,
@@ -175,7 +175,7 @@ export async function resolveEndpointByProviderRef(
 // exactly one active one configured — that's a real default, not a guess.
 // Two or more candidates means it's genuinely unknown which was used, so
 // this returns null rather than picking one arbitrarily.
-export async function getSoleActiveEndpointForConnector(db: Db, tenantId: string, connectorId: string): Promise<CommunicationEndpointVm | null> {
+export async function getSoleActiveEndpointForConnector(db: DbOrTx, tenantId: string, connectorId: string): Promise<CommunicationEndpointVm | null> {
   const rows = await db
     .select({
       endpoint: communicationEndpoints,

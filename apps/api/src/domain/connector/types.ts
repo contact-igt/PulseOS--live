@@ -22,6 +22,7 @@ export interface InboundMessageEvent {
 }
 
 export interface MessageStatusEvent {
+  phoneNumberId?: string | null;
   externalEventId: string;
   providerMessageId: string;
   status: "sent" | "delivered" | "read" | "failed";

@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { departments, specialtyTemplates } from "../../db/schema.js";
 import { ensureLeadSources } from "../lead/lead-source.service.js";
 import { ensureFollowUpTypes } from "../task/followup-type.service.js";
@@ -38,7 +38,7 @@ export async function listDepartmentTemplates(db: Db, tenantId: string): Promise
  * TEMPLATE) and its treatment catalogue become tenant-owned rows. Safe to run repeatedly and concurrently — it
  * only adds what is missing and never overwrites or un-archives what the hospital has changed.
  */
-export async function installDepartmentTemplate(db: Db, tenantId: string, templateKey: string): Promise<Result<{ departmentId: string; created: boolean }>> {
+export async function installDepartmentTemplate(db: DbOrTx, tenantId: string, templateKey: string): Promise<Result<{ departmentId: string; created: boolean }>> {
   const template = findDepartmentTemplate(templateKey);
   if (!template) return { ok: false, reason: "template_not_found" };
 

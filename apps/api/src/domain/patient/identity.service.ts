@@ -1,10 +1,10 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbOrTx } from "../../db/client.js";
 import { branches, journeys, patients } from "../../db/schema.js";
 import { normalizePhone, resolveDefaultPhoneRegion } from "./phone.js";
 
 /** True when `branchId` is a branch of this hospital. Every client-supplied branch is checked with this before it is stored. */
-export async function branchBelongsToTenant(db: Db, tenantId: string, branchId: string): Promise<boolean> {
+export async function branchBelongsToTenant(db: DbOrTx, tenantId: string, branchId: string): Promise<boolean> {
   const [b] = await db.select({ id: branches.id }).from(branches).where(and(eq(branches.tenantId, tenantId), eq(branches.id, branchId))).limit(1);
   return !!b;
 }
@@ -39,7 +39,7 @@ const cleanName = (name: string | null | undefined): string | null => {
  * A later contact may learn what an earlier one did not (the caller's name, their age). Missing details are filled
  * in; a detail the hospital already holds is never overwritten by whoever happens to contact next.
  */
-async function fillMissingDetails(db: Db, existing: PatientRow, input: ResolveOrCreatePatientInput): Promise<PatientRow> {
+async function fillMissingDetails(db: DbOrTx, existing: PatientRow, input: ResolveOrCreatePatientInput): Promise<PatientRow> {
   const name = cleanName(input.name);
   const patch: Partial<typeof patients.$inferInsert> = {};
   if (!cleanName(existing.name) && name) patch.name = name;
@@ -65,7 +65,7 @@ async function fillMissingDetails(db: Db, existing: PatientRow, input: ResolveOr
  * Callers own their own post-creation side effects (Timeline events differ by source, Journey creation only
  * happens for acquisition-first flows) — this function only ever touches the Patient row itself.
  */
-export async function resolveOrCreatePatient(db: Db, input: ResolveOrCreatePatientInput): Promise<ResolveOrCreatePatientResult> {
+export async function resolveOrCreatePatient(db: DbOrTx, input: ResolveOrCreatePatientInput): Promise<ResolveOrCreatePatientResult> {
   const defaultRegion = await resolveDefaultPhoneRegion(db, input.tenantId);
   const normalized = normalizePhone(input.phone, defaultRegion);
 
@@ -115,7 +115,7 @@ export async function resolveOrCreatePatient(db: Db, input: ResolveOrCreatePatie
  * Thin compatibility wrapper for the inbound-connector call sites (WhatsApp/Runo webhooks), which only ever have
  * a phone and, sometimes, a display name. An unknown name stays unknown (NULL) — no invented "Unknown caller".
  */
-export async function findOrCreatePatientByPhone(db: Db, tenantId: string, phone: string, name: string | null) {
+export async function findOrCreatePatientByPhone(db: DbOrTx, tenantId: string, phone: string, name: string | null) {
   const { patient } = await resolveOrCreatePatient(db, { tenantId, phone, name });
   return patient;
 }
@@ -123,7 +123,7 @@ export async function findOrCreatePatientByPhone(db: Db, tenantId: string, phone
 // "Resolve Journey where possible" — the patient's most recently created
 // journey that hasn't already reached a terminal stage. No journey is
 // created here; a call/message never fabricates a journey on its own.
-export async function findMostRecentActiveJourney(db: Db, tenantId: string, patientId: string) {
+export async function findMostRecentActiveJourney(db: DbOrTx, tenantId: string, patientId: string) {
   const [journey] = await db
     .select()
     .from(journeys)

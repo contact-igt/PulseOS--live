@@ -26,6 +26,7 @@ describe("metaLeadAdsAdapter.parseWebhookLeadReferences", () => {
     expect(refs).toHaveLength(1);
     expect(refs[0]).toEqual({
       externalLeadId: "123123123123",
+      externalPageId: "FIXTURE_PAGE_ID",
       externalFormId: "FORM_1",
       externalAdGroupId: "ADSET_1",
       externalAdId: "AD_1",
@@ -102,9 +103,10 @@ describe("metaLeadAdsAdapter.fetchLead", () => {
       expect(calledUrl).not.toContain("v20.0"); // not the sunset version
     });
 
-    it("throws a descriptive error when the Graph API call fails", async () => {
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => "Invalid OAuth access token" }));
-      await expect(metaLeadAdsAdapter.fetchLead!(ref, { mode: "live" }, { pageAccessToken: "BAD_TOKEN" })).rejects.toThrow(/400/);
+    it("reports the Graph API status without including the provider response body", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Invalid OAuth access token BAD_TOKEN", { status: 400 })));
+      await expect(metaLeadAdsAdapter.fetchLead!(ref, { mode: "live" }, { pageAccessToken: "BAD_TOKEN" }))
+        .rejects.toThrow(/^Meta lead fetch failed: 400$/);
     });
   });
 });

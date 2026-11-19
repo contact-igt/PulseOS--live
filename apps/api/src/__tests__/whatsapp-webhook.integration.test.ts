@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { connectors, conversations, journeys, messages } from "../db/schema.js";
+import { connectors, conversations, journeys, messages, tenants } from "../db/schema.js";
 import { findOrCreatePatientByPhone } from "../domain/patient/identity.service.js";
 import type { FastifyInstance } from "fastify";
 import type { ConnectorRow, ConversationRow } from "@pulseos/types";
@@ -107,6 +107,34 @@ describe.skipIf(!DEMO_PASSWORD)("WhatsApp webhook (integration, fixture mode)", 
   afterAll(async () => {
     await app.close();
     await queryClient.end();
+  });
+
+  it("checks live phone binding and commits valid receipts from a suspended mixed batch", async () => {
+    const [original] = await db.select().from(connectors).where(eq(connectors.id, connectorId));
+    const wamid = "wamid.live-bound." + Date.now();
+    const blocked = wamid + ".blocked";
+    const from = "919177770056";
+    const send = (body: object) => {
+      const raw = JSON.stringify(body);
+      return app.inject({ method: "POST", url: `/webhooks/whatsapp/${connectorId}`, payload: raw,
+        headers: { "content-type": "application/json", "x-hub-signature-256": sign(raw) } });
+    };
+    await db.update(connectors).set({ mode: "LIVE", configuration: { phoneNumberId: "FIXTURE_PHONE_NUMBER_ID" } })
+      .where(eq(connectors.id, connectorId));
+    try {
+      expect((await send(metaMessagePayload({ wamid, from, body: "Wrong line", phoneNumberId: "UNBOUND_NUMBER" }))).statusCode).toBe(403);
+      expect((await send(metaMessagePayload({ wamid, from, body: "Bound line" }))).statusCode).toBe(200);
+      await db.update(tenants).set({ lifecycleStatus: "SUSPENDED", loginEnabled: false }).where(eq(tenants.id, tenantId));
+      const batch = metaMessagePayload({ wamid: blocked, from, body: "Blocked intake" });
+      const status = metaStatusPayload({ wamid, status: "read" });
+      expect((await send({ ...batch, entry: [...batch.entry, ...status.entry] })).statusCode).toBe(503);
+      const [stored] = await db.select().from(messages).where(and(eq(messages.tenantId, tenantId), eq(messages.providerMessageId, wamid)));
+      expect(stored?.deliveryStatus).toBe("read");
+      expect(await db.select().from(messages).where(and(eq(messages.tenantId, tenantId), eq(messages.providerMessageId, blocked)))).toHaveLength(0);
+    } finally {
+      await db.update(tenants).set({ lifecycleStatus: "ACTIVE", loginEnabled: true }).where(eq(tenants.id, tenantId));
+      await db.update(connectors).set({ mode: original!.mode, configuration: original!.configuration }).where(eq(connectors.id, connectorId));
+    }
   });
 
   it("GET verification returns the challenge when the token matches", async () => {

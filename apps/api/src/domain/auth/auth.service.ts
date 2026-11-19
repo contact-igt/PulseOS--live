@@ -1,8 +1,9 @@
+import { hospitalIsActive } from "../tenant/hospital-lifecycle.policy.js";
 import { resolveTenantCapabilities } from "../capability/capability.service.js";
 import { hash, verify } from "@node-rs/argon2";
-import { and, eq } from "drizzle-orm";
+import { and, eq, notExists } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { users, sessions, tenants, branches, tenantLoginConfigs, tenantProfiles } from "../../db/schema.js";
+import { users, sessions, tenants, branches, tenantLoginConfigs, tenantProfiles, hospitalOnboardings } from "../../db/schema.js";
 import { DEFAULT_EDITION, DEFAULT_INTERFACE_SIZE, DEFAULT_SURFACE_STYLE, DEFAULT_TEXT_SIZE, INTERFACE_SIZES, SURFACE_STYLES, TEXT_SIZES, type InterfaceSize, type SurfaceStyle, type TextSize, DEFAULT_LOGIN_SUPPORT_TEXT, DEFAULT_LOGIN_TAGLINE, LOGIN_LOGO_PATH_PATTERN, type DevEnvironment, type Role, type TenantLoginBranding } from "@pulseos/types";
 import { DEFAULT_DEMO_ENVIRONMENT, DEMO_ENVIRONMENTS, DEMO_LOGIN_ROLES, demoEmailForRole, type DemoEnvironmentKey } from "./demo-environments.js";
 
@@ -38,12 +39,17 @@ export async function verifyPassword(hashValue: string, plain: string): Promise<
 // `users` row is settled on, session creation is identical, so both go
 // through one path rather than a parallel/weaker one for Dev Login.
 async function createSessionFor(db: Db, user: typeof users.$inferSelect, remember = false) {
-  const [session] = await db
-    .insert(sessions)
-    .values({ userId: user.id, expiresAt: new Date(Date.now() + (remember ? REMEMBER_TTL_MS : SESSION_TTL_MS)) })
-    .returning();
+  const signedIn = await db.transaction(async (tx) => {
+    const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, user.tenantId)).for("share");
+    if (!tenant || !hospitalIsActive(tenant)) return null;
+    const [session] = await tx.insert(sessions)
+      .values({ userId: user.id, expiresAt: new Date(Date.now() + (remember ? REMEMBER_TTL_MS : SESSION_TTL_MS)) })
+      .returning();
+    return { tenant, session: session! };
+  });
+  if (!signedIn) return { ok: false as const, reason: "invalid_credentials" as const };
+  const { tenant, session } = signedIn;
 
-  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
   const branch = user.branchId ? (await db.select().from(branches).where(eq(branches.id, user.branchId)).limit(1))[0] : undefined;
   const capabilities = await resolveTenantCapabilities(db, user.tenantId, tenant?.edition ?? DEFAULT_EDITION);
 
@@ -120,7 +126,7 @@ export async function getTenantBranding(db: Db, slug: string): Promise<TenantLog
     .select({ name: tenants.name, c: tenantLoginConfigs })
     .from(tenants)
     .leftJoin(tenantLoginConfigs, eq(tenantLoginConfigs.tenantId, tenants.id))
-    .where(eq(tenants.loginSlug, slug))
+    .where(and(eq(tenants.loginSlug, slug), eq(tenants.loginEnabled, true), eq(tenants.lifecycleStatus, "ACTIVE")))
     .limit(1);
   if (!row) return null;
   const c = row.c;
@@ -154,22 +160,19 @@ export async function loginByRole(db: Db, role: Role, environment: string = DEFA
     .select({ user: users })
     .from(users)
     .innerJoin(tenants, eq(users.tenantId, tenants.id))
-    .where(and(eq(users.email, email), eq(tenants.name, tenantName)))
+    .where(and(eq(users.email, email), eq(tenants.name, tenantName), legacyDevTenant(db)))
     .limit(1);
   const user = row?.user;
   if (!user) return { ok: false as const, reason: "no_seeded_user_for_role" as const };
   return createSessionFor(db, user);
 }
 
-/** Sign-in as a user who was just created by the server (sign-up). Standard session length; no password check by design. */
-export async function createSessionForUserId(db: Db, userId: string, remember = false) {
-  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-  if (!user) throw new Error("createSessionForUserId: unknown user");
-  return createSessionFor(db, user, remember);
-}
-
 export const DEV_TENANT_PREFIX = "tenant:";
 const TENANT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function legacyDevTenant(db: Db) {
+  return notExists(db.select({ id: hospitalOnboardings.id }).from(hospitalOnboardings).where(eq(hospitalOnboardings.tenantId, tenants.id)));
+}
+
 const ROLE_LABEL = new Map(DEMO_LOGIN_ROLES.map((r) => [r.role, r.label]));
 const ROLE_ORDER = DEMO_LOGIN_ROLES.map((r) => r.role);
 
@@ -190,7 +193,7 @@ async function rolesInTenant(db: Db, tenantId: string): Promise<{ role: Role; la
 export async function listDevEnvironments(db: Db): Promise<DevEnvironment[]> {
   const out: DevEnvironment[] = [];
   for (const env of DEMO_ENVIRONMENTS) {
-    const [tenant] = await db.select({ id: tenants.id }).from(tenants).where(eq(tenants.name, env.tenantName)).limit(1);
+    const [tenant] = await db.select({ id: tenants.id }).from(tenants).where(and(eq(tenants.name, env.tenantName), legacyDevTenant(db))).limit(1);
     if (!tenant) continue;
     out.push({ key: env.key, label: env.label, roles: await rolesInTenant(db, tenant.id) });
   }
@@ -216,7 +219,7 @@ async function loginToDevTenant(db: Db, role: Role, tenantId: string) {
 export async function resolveSession(db: Db, sessionId: string) {
   if (!SESSION_ID.test(sessionId)) return null;
   const [row] = await db
-    .select({ session: sessions, user: users, branch: branches, tenantName: tenants.name, loginSlug: tenants.loginSlug, timezone: tenants.timezone, edition: tenants.edition, surfaceStyle: tenants.surfaceStyle })
+    .select({ session: sessions, user: users, branch: branches, tenantName: tenants.name, loginSlug: tenants.loginSlug, timezone: tenants.timezone, edition: tenants.edition, surfaceStyle: tenants.surfaceStyle, loginEnabled: tenants.loginEnabled, lifecycleStatus: tenants.lifecycleStatus })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
     .innerJoin(tenants, eq(users.tenantId, tenants.id))
@@ -224,7 +227,7 @@ export async function resolveSession(db: Db, sessionId: string) {
     .where(eq(sessions.id, sessionId))
     .limit(1);
 
-  if (!row) return null;
+  if (!row || !hospitalIsActive(row)) return null;
   if (row.session.expiresAt.getTime() < Date.now()) return null;
 
   return {

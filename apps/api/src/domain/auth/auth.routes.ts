@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { createSessionForUserId, DEV_TENANT_PREFIX, getTenantBranding, listDevEnvironments, loginByRole, loginToTenant, loginWithPassword, revokeSession } from "./auth.service.js";
-import { signUpHospital, signupSchema } from "./signup.service.js";
+import { DEV_TENANT_PREFIX, getTenantBranding, listDevEnvironments, loginByRole, loginToTenant, loginWithPassword, revokeSession } from "./auth.service.js";
 import { LoginThrottle } from "./login-throttle.js";
 import { DEFAULT_DEMO_ENVIRONMENT, DEMO_ENVIRONMENTS, DEMO_LOGIN_ROLES } from "./demo-environments.js";
 
@@ -36,22 +35,6 @@ const devLoginBody = z.object({
 });
 
 const DEV_TENANT_ENV = new RegExp("^" + DEV_TENANT_PREFIX + "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" + String.fromCharCode(36), "i");
-
-/** In-memory sign-up throttle per address: a public form must not be a free tenant factory. */
-class SignupLimiter {
-  private hits = new Map<string, number[]>();
-  constructor(private readonly max: number, private readonly windowMs = 60 * 60 * 1000) {}
-  allow(ip: string, now = Date.now()): boolean {
-    const recent = (this.hits.get(ip) ?? []).filter((t) => now - t < this.windowMs);
-    if (recent.length >= this.max) {
-      this.hits.set(ip, recent);
-      return false;
-    }
-    recent.push(now);
-    this.hits.set(ip, recent);
-    return true;
-  }
-}
 
 function setSessionCookie(reply: import("fastify").FastifyReply, sessionId: string, expiresAt: Date, persistent = true) {
   const sameSite = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
@@ -126,20 +109,8 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ user: result.user });
   });
 
-  // Public hospital sign-up. The server creates the tenant and its first Super Admin; the body can never name a tenant.
-  const signupLimiter = new SignupLimiter(num(process.env.SIGNUP_MAX_PER_HOUR) ?? 10);
-  app.post("/auth/signup", async (request, reply) => {
-    if (!signupLimiter.allow(request.ip)) return reply.header("Retry-After", "3600").status(429).send({ error: "too_many_signups", message: "Too many sign-ups from this address. Please try again later." });
-    const parsed = signupSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: "invalid_request", issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })) });
-    }
-    const result = await signUpHospital(app.db, parsed.data, { devVisible: devLoginEnabled() });
-    if (!result.ok) return reply.status(result.reason === "email_in_use" ? 409 : 400).send({ error: result.reason });
-    const session = await createSessionForUserId(app.db, result.userId, false);
-    setSessionCookie(reply, session.sessionId, session.expiresAt, false);
-    return reply.status(201).send({ user: session.user, workspace: { template: result.template, loginPath: `/login/${result.loginSlug}` } });
-  });
+  app.post("/auth/signup", async (_request, reply) =>
+    reply.status(410).send({ error: "public_signup_closed" }));
 
   // Development-only convenience — see devLoginEnabled() above. Registered
   // conditionally so these two routes simply don't exist unless explicitly

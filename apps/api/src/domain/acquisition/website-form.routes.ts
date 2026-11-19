@@ -1,4 +1,7 @@
+import { allowsHospitalWork } from "../tenant/hospital-lifecycle.policy.js";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { connectorEvents } from "../../db/schema.js";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getConnectorById, getConnectorSecrets, touchConnectorError, touchConnectorSuccess } from "../connector/connector.service.js";
@@ -6,7 +9,7 @@ import { markEventFailed, markEventProcessed, recordConnectorEvent } from "../co
 import { throttleAddress } from "../auth/login-throttle.js";
 import { normalizePhone, resolveDefaultPhoneRegion } from "../patient/phone.js";
 import { SlidingWindowLimiter } from "../../lib/rate-limiter.js";
-import { processWebsiteFormSubmission } from "./website-form.service.js";
+import { processWebsiteFormSubmission, WebsiteIntakeUnavailable } from "./website-form.service.js";
 import { noteRejectedSubmission } from "./website-intake-rejections.js";
 
 // Every field has a ceiling: this endpoint is public, so nothing a stranger sends may be unbounded.
@@ -129,6 +132,7 @@ export async function websiteFormRoutes(app: FastifyInstance) {
       await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "validation");
       return reply.status(422).send({ error: "invalid_request" });
     }
+    if (!(await allowsHospitalWork(app.db, connector.tenantId))) return reply.status(503).send({ error: "intake_unavailable" });
     const region = await resolveDefaultPhoneRegion(app.db, connector.tenantId);
     if (!normalizePhone(data.phone, region).e164) {
       await noteRejectedSubmission(app.db, connector.tenantId, connectorId, "validation");
@@ -143,6 +147,8 @@ export async function websiteFormRoutes(app: FastifyInstance) {
       payload: { type: "website_form", formId: data.formId },
     });
     if (duplicate) {
+      const [event] = await app.db.select({ status: connectorEvents.status }).from(connectorEvents).where(eq(connectorEvents.id, eventId));
+      if (event?.status !== "processed") return reply.status(503).send({ error: "intake_unavailable" });
       return reply.status(200).send({ ok: true, duplicate: true });
     }
 
@@ -180,6 +186,10 @@ export async function websiteFormRoutes(app: FastifyInstance) {
       // A closed (token-protected) intake tells the caller only what it needs; internal ids stay inside.
       return reply.status(200).send(expectedToken ? { ok: true, duplicate: false, deduped: result.deduped } : { ok: true, duplicate: false, ...result });
     } catch (err) {
+      if (err instanceof WebsiteIntakeUnavailable) {
+        await markEventFailed(app.db, eventId, "intake_unavailable");
+        return reply.status(503).send({ error: "intake_unavailable" });
+      }
       // A category, never the error text: database errors quote the request (name, phone), and this text is shown in the Hub.
       request.log.error({ connectorId, errorName: (err as Error).name }, "website intake processing failed");
       await markEventFailed(app.db, eventId, "processing_failed");

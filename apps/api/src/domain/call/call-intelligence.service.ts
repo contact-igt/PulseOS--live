@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import { activeHospital, allowsHospitalWork } from "../tenant/hospital-lifecycle.policy.js";
 import type { Db } from "../../db/client.js";
 import { callIntelligence, calls, connectors } from "../../db/schema.js";
 import type { ConnectorMode, CallTranscriptVm } from "@pulseos/types";
@@ -72,6 +73,7 @@ async function claim(db: Db, stage: "transcript" | "summary", now: Date, limit: 
     where id in (
       select id from call_intelligence
       where ((${col} = 'PENDING' and next_attempt_at <= ${now.toISOString()}::timestamptz) or (${col} = 'PROCESSING' and claimed_at < ${stale.toISOString()}::timestamptz)) ${gate} ${only}
+      and ${activeHospital(sql`call_intelligence.tenant_id`)}
       order by next_attempt_at limit ${limit} for update skip locked)
     returning id, call_id, tenant_id, attempts`);
   return [...rows] as unknown as Claimed[];
@@ -101,6 +103,10 @@ export async function processDueCallIntelligence(db: Db, now: Date, deps: Intell
         await db.update(callIntelligence).set({ transcriptStatus: "NOT_CONFIGURED", summaryStatus: "NOT_CONFIGURED", claimedAt: null }).where(eq(callIntelligence.id, row.id));
         continue;
       }
+      if (!(await allowsHospitalWork(db, row.tenant_id))) {
+        await db.update(callIntelligence).set({ transcriptStatus: "PENDING", claimedAt: null }).where(eq(callIntelligence.id, row.id));
+        continue;
+      }
       const text = await transcriber.transcribe({ callId: row.call_id, recordingRef: call.recordingUrl, metadata: (call.metadata as Record<string, unknown> | null) ?? {} });
       if (!text) {
         await db.update(callIntelligence).set({ transcriptStatus: "NOT_CONFIGURED", summaryStatus: "NOT_CONFIGURED", claimedAt: null }).where(eq(callIntelligence.id, row.id));
@@ -124,6 +130,10 @@ export async function processDueCallIntelligence(db: Db, now: Date, deps: Intell
       const [intel] = await db.select({ transcript: callIntelligence.transcript }).from(callIntelligence).where(eq(callIntelligence.id, row.id)).limit(1);
       const messages = transcriptToMessages(intel?.transcript ?? "", now);
       if (messages.length === 0) throw new Error("empty transcript");
+      if (!(await allowsHospitalWork(db, row.tenant_id))) {
+        await db.update(callIntelligence).set({ summaryStatus: "PENDING", claimedAt: null }).where(eq(callIntelligence.id, row.id));
+        continue;
+      }
       const draft = await deps.summarizer.summarize(messages, { medium: "call" });
       await db
         .update(callIntelligence)

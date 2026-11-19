@@ -10,6 +10,10 @@ import { db } from "./db/client.js";
 import { parseTrustProxy } from "./lib/trust-proxy.js";
 import { matchWebOrigin, parseWebOrigins } from "./lib/web-origins.js";
 import { resolveSession } from "./domain/auth/auth.service.js";
+import { hospitalOnboardingRoutes } from "./domain/tenant/hospital-onboarding.routes.js";
+import { platformOrigin } from "./domain/platform/platform-access.js";
+import { platformRoutes } from "./domain/platform/platform.routes.js";
+import { hospitalLifecycleRoutes } from "./domain/tenant/hospital-lifecycle.routes.js";
 import { authRoutes, SESSION_COOKIE } from "./domain/auth/auth.routes.js";
 import { dashboardRoutes } from "./domain/dashboard/dashboard.routes.js";
 import { doctorDashboardRoutes } from "./domain/dashboard/doctor.routes.js";
@@ -47,7 +51,7 @@ export async function buildApp() {
   // sign-in throttle keys on it. Unset trusts no proxy: all clients then share the proxy's address.
   const options: FastifyServerOptions = {
     // shortcut: redact the whole URL rather than parse sensitive query keys; use a tested path-only serializer if endpoint-level request logging is needed.
-    logger: { redact: ["req.url"] },
+    logger: { redact: ["req.url", "req.headers.authorization", "req.headers.cookie"] },
     // Base64 media is capped again at the route boundary; allow the largest supported document plus encoding overhead.
     bodyLimit: 35 * 1024 * 1024,
     // Fastify accepts a hop count at runtime (proxy-addr); its type declaration omits `number`.
@@ -61,6 +65,10 @@ export async function buildApp() {
   // their specific, non-sensitive Fastify codes/messages.
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const status = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+    if (isPlatformPath(request.url)) {
+      if (status >= 500) request.log.error({ code: error.code }, "platform request failed");
+      return reply.status(status).send({ error: status >= 500 ? "internal_error" : "invalid_request" });
+    }
     if (status >= 500) {
       request.log.error({ err: error }, "unhandled error");
       return reply.status(status).send({ error: "internal_error" });
@@ -73,8 +81,11 @@ export async function buildApp() {
   await app.register(cookie);
 
   app.decorateRequest("sessionUser", null);
+  app.decorateRequest("platformActor", null);
+  app.decorateRequest("platformAccount", null);
 
   app.addHook("onRequest", async (request) => {
+    if (isPlatformPath(request.url)) return;
     const sessionId = request.cookies[SESSION_COOKIE];
     if (!sessionId) return;
     request.sessionUser = await resolveSession(app.db, sessionId);
@@ -93,7 +104,8 @@ export async function buildApp() {
     if (path.startsWith("/webhooks/") || path.startsWith("/forms/website/")) return;
     const origin = request.headers.origin;
     const fetchSite = request.headers["sec-fetch-site"];
-    const foreign = origin !== undefined ? matchWebOrigin(webOrigins, origin) === null : fetchSite === "cross-site" || fetchSite === "same-site";
+    const allowed = isPlatformPath(path) ? platformOrigin(origin) : matchWebOrigin(webOrigins, origin);
+    const foreign = origin !== undefined ? allowed === null : fetchSite === "cross-site" || fetchSite === "same-site";
     if (foreign) return reply.status(403).send({ error: "cross_origin_request_blocked" });
   });
 
@@ -105,6 +117,7 @@ export async function buildApp() {
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+    if (isPlatformPath(request.url)) reply.header("Cache-Control", "no-store");
     if (request.sessionUser && !reply.hasHeader("Cache-Control")) reply.header("Cache-Control", "private, no-store");
     return payload;
   });
@@ -112,10 +125,11 @@ export async function buildApp() {
   app.addHook("onRequest", async (request, reply) => {
     // CORS allows one origin per response, so name the caller when it is a listed web origin and nobody otherwise.
     reply.header("Vary", "Origin");
-    const allowedOrigin = matchWebOrigin(webOrigins, request.headers.origin);
+    const platform = isPlatformPath(request.url);
+    const allowedOrigin = platform ? platformOrigin(request.headers.origin) : matchWebOrigin(webOrigins, request.headers.origin);
     if (allowedOrigin) reply.header("Access-Control-Allow-Origin", allowedOrigin);
     reply.header("Access-Control-Allow-Credentials", "true");
-    reply.header("Access-Control-Allow-Headers", "content-type");
+    reply.header("Access-Control-Allow-Headers", platform ? "content-type, idempotency-key, x-pulseos-platform" : "content-type");
     reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     if (request.method === "OPTIONS") {
       reply.status(204).send();
@@ -131,6 +145,9 @@ export async function buildApp() {
   }
 
   await app.register(authRoutes);
+  await app.register(hospitalOnboardingRoutes);
+  await app.register(platformRoutes, { prefix: "/platform" });
+  await app.register(hospitalLifecycleRoutes, { prefix: "/platform" });
   await app.register(webhookRoutes);
   await app.register(websiteFormRoutes);
   await app.register(async (protectedApp) => {
@@ -176,4 +193,9 @@ export async function buildApp() {
   app.get("/health", async () => ({ ok: true }));
 
   return app;
+}
+
+function isPlatformPath(url: string) {
+  const path = url.split("?")[0];
+  return path === "/platform" || path?.startsWith("/platform/") === true;
 }

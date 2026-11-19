@@ -10,15 +10,31 @@ import { processDueNotifications, reconcileWhatsNexusOutcomes } from "./domain/n
 import { RECONCILE_DEFAULT_INTERVAL_MS, reconcileJob } from "./domain/notification/reconcile.js";
 import { syncDueAds } from "./domain/ads/ads-sync.service.js";
 import { getSummarizer } from "./domain/conversation/summary/index.js";
+import { purgeExpiredMetaLeads } from "./domain/acquisition/suspended-meta-leads.service.js";
+import { processHospitalInvitationDeliveries } from "./domain/tenant/hospital-invitation-delivery.service.js";
+import { countAgedHospitalMessagingCommands, HOSPITAL_MESSAGING_ALERT_AGE_MS, processHospitalMessagingCommands, sampleAgedHospitalMessagingCommands } from "./domain/tenant/hospital-messaging.service.js";
 
 const port = Number(process.env.PORT ?? 4000);
 
 const app = await buildApp();
+let lastMessagingAlertCheck = 0;
 
 // Due-time work runs from the database, not from timers held in memory: summaries of idle conversations
 // now; appointment reminders next. Set JOBS_DISABLED=true to turn the runner off (e.g. a second API
 // instance that should only serve requests).
 const jobs: DueJob[] = [
+  { name: "hospital-invitation-delivery", run: (now) => processHospitalInvitationDeliveries(db, now) },
+  { name: "expired-held-meta-leads", run: (now) => purgeExpiredMetaLeads(db, now) },
+  { name: "hospital-messaging-coordination", run: (now) => processHospitalMessagingCommands(db, now, fetch,
+    (event) => app.log.warn(event, "Hospital messaging coordination exception")) },
+  { name: "hospital-messaging-monitor", run: async (now) => {
+    if (+now - lastMessagingAlertCheck < 5 * 60_000) return;
+    const pending = await countAgedHospitalMessagingCommands(db, now);
+    lastMessagingAlertCheck = +now;
+    if (pending > 0) app.log.warn({
+      pending, ageMs: HOSPITAL_MESSAGING_ALERT_AGE_MS, examples: await sampleAgedHospitalMessagingCommands(db, now),
+    }, "Aged pending hospital messaging commands");
+  } },
   { name: "conversation-summaries", run: (now) => processDueConversationSummaries(db, now, getSummarizer()) },
   { name: "call-intelligence", run: (now) => processDueCallIntelligence(db, now, { transcriberFor: (mode) => getTranscriber(mode), summarizer: getSummarizer() }) },
   { name: "notifications", run: (now) => processDueNotifications(db, now) },

@@ -1,4 +1,4 @@
-import { emitIntegrationEvent } from "../integration/domain-events.js";
+import { emitIntegrationEvent, type IntegrationEvent } from "../integration/domain-events.js";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { calls, connectors, journeys, tasks, timelineEvents } from "../../db/schema.js";
@@ -95,6 +95,11 @@ async function applyDispositionMapping(
  * call is a no-op: no second Call, no second Task.
  */
 export async function persistInboundCall(db: Db, tenantId: string, connectorId: string, event: InboundCallEvent, mapping: DispositionMapping = DEFAULT_DISPOSITION_MAPPING): Promise<void> {
+  const fact = await db.transaction((tx) => storeInboundCall(tx, tenantId, connectorId, event, mapping));
+  if (fact) emitIntegrationEvent(fact);
+}
+
+export async function storeInboundCall(db: Tx, tenantId: string, connectorId: string, event: InboundCallEvent, mapping: DispositionMapping = DEFAULT_DISPOSITION_MAPPING): Promise<IntegrationEvent | undefined> {
   const customerName = (event.metadata.customerName as string | null | undefined) ?? null;
   const patient = await findOrCreatePatientByPhone(db, tenantId, event.phone, customerName);
   const existingJourney = await findMostRecentActiveJourney(db, tenantId, patient.id);
@@ -105,7 +110,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
   const endpoint = await getSoleActiveEndpointForConnector(db, tenantId, connectorId);
   const [connector] = await db.select({ mode: connectors.mode }).from(connectors).where(eq(connectors.id, connectorId)).limit(1);
 
-  // Reads that may advance state outside the transaction: the owner for a brand-new enquiry (round-robin cursor).
+  // Reads that may advance state within the event transaction: the owner for a brand-new enquiry (round-robin cursor).
   const openNew = !existingJourney && event.direction === "inbound";
   const phoneSource = openNew ? await resolveLeadSource(db, tenantId, "phone", { allowArchived: true }) : null;
   const allocated = openNew ? await pickOwnerForNewJourney(db, tenantId, { source: "phone", journeyType: PHONE_ENQUIRY, branchId: endpoint?.branchId ?? null }) : null;
@@ -187,7 +192,7 @@ export async function persistInboundCall(db: Db, tenantId: string, connectorId: 
   });
   const call = stored as { id: string; journeyId: string | null } | null;
   if (call && (event.status === "completed" || event.status === "missed")) {
-    emitIntegrationEvent({ type: event.status === "completed" ? "call.completed" : "call.missed", tenantId, eventId: `call.${event.status}:${call.id}`, occurredAt: event.endedAt ?? event.startedAt ?? new Date(), data: { callId: call.id, journeyId: call.journeyId, direction: event.direction } });
+    return { type: event.status === "completed" ? "call.completed" : "call.missed", tenantId, eventId: `call.${event.status}:${call.id}`, occurredAt: event.endedAt ?? event.startedAt ?? new Date(), data: { callId: call.id, journeyId: call.journeyId, direction: event.direction } };
   }
 }
 

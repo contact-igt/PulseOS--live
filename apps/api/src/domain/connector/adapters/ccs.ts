@@ -2,12 +2,14 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { InboundCallEvent, TelephonyProviderAdapter } from "../types.js";
 import { parseInstant } from "../../../lib/hospital-time.js";
 
-function timingSafeCompare(actual: string | undefined, expected: string): boolean {
-  if (!actual) return false;
+function timingSafeCompare(actual: unknown, expected: string): boolean {
+  if (typeof actual !== "string" || !actual) return false;
   const actualHash = createHash("sha256").update(actual).digest();
   const expectedHash = createHash("sha256").update(expected).digest();
   return timingSafeEqual(actualHash, expectedHash);
 }
+
+const credentialFields = new Set(["apiKey", "api_key", "key", "secretKey", "secret_key", "secret", "integrationKey", "integration_key"]);
 
 export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
   capabilities: ["RECEIVE_CALL_EVENT", "RECEIVE_RECORDING"],
@@ -17,29 +19,18 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
     const expectedSecret = typeof secrets.secretKey === "string" && secrets.secretKey.trim() ? secrets.secretKey.trim() : null;
     const expectedIntegration = typeof secrets.integrationKey === "string" && secrets.integrationKey.trim() ? secrets.integrationKey.trim() : null;
 
-    // If no secret has been configured in PulseOS yet, accept the webhook for setup verification
-    if (!expectedKey && !expectedSecret && !expectedIntegration) {
-      return true;
-    }
-
     const p = (typeof payload === "object" && payload !== null ? payload : {}) as Record<string, unknown>;
 
     // Look in headers or payload/query
-    const providedKey = (headers["x-api-key"] || headers["api-key"] || headers["apikey"] || p.apiKey || p.api_key || p.key) as string | undefined;
-    const providedSecret = (headers["secret-key"] || headers["x-secret-key"] || headers["secretkey"] || p.secretKey || p.secret_key || p.secret) as string | undefined;
-    const providedIntegration = (headers["integration-key"] || headers["x-integration-key"] || p.integrationKey || p.integration_key) as string | undefined;
+    const providedKey = headers["x-api-key"] || headers["api-key"] || headers["apikey"] || p.apiKey || p.api_key || p.key;
+    const providedSecret = headers["secret-key"] || headers["x-secret-key"] || headers["secretkey"] || p.secretKey || p.secret_key || p.secret;
+    const providedIntegration = headers["integration-key"] || headers["x-integration-key"] || p.integrationKey || p.integration_key;
 
     if (expectedKey && providedKey && timingSafeCompare(providedKey, expectedKey)) return true;
     if (expectedSecret && providedSecret && timingSafeCompare(providedSecret, expectedSecret)) return true;
     if (expectedIntegration && providedIntegration && timingSafeCompare(providedIntegration, expectedIntegration)) return true;
 
-    // If secrets were expected and provided ones failed to match
-    if (providedKey || providedSecret || providedIntegration) {
-      return false;
-    }
-
-    // Default to true if webhook caller didn't provide auth parameters but URL is connector-specific
-    return true;
+    return false;
   },
 
   parseWebhookPayload(payload: unknown): InboundCallEvent[] {
@@ -50,7 +41,7 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
 
     for (const item of rawList) {
       if (!item || typeof item !== "object") continue;
-      const data = item as Record<string, any>;
+      const data = item as Record<string, unknown>;
 
       // Extract phone / caller number from any standard field
       const rawPhone = String(
@@ -181,7 +172,7 @@ export const ccsTelephonyAdapter: TelephonyProviderAdapter = {
         startedAt,
         endedAt,
         metadata: {
-          ...data,
+          ...Object.fromEntries(Object.entries(data).filter(([key]) => !credentialFields.has(key))),
           provider: "ccs_ivr",
           ivrNumber,
           customerName: data.customer_name || data.CustomerName || data.name || data.caller_name || null,

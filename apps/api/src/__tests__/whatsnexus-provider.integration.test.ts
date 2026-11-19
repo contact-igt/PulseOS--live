@@ -4,11 +4,11 @@ import type { FastifyInstance } from "fastify";
 import type { Role } from "@pulseos/types";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { connectors, connectorSecrets, notifications, outboundWebhookDeliveries } from "../db/schema.js";
+import { connectorEvents, connectors, connectorSecrets, messages, notifications, outboundWebhookDeliveries, tenants } from "../db/schema.js";
 import { getMessagingAdapter } from "../domain/connector/registry.js";
 import { createWhatsNexusAdapter } from "../domain/connector/adapters/whatsnexus.js";
 import { AmbiguousSendError, PermanentSendError, type MessagingProviderAdapter } from "../domain/connector/types.js";
-import { reconcileWhatsNexusOutcomes, sendFollowUpMessage } from "../domain/notification/notification.service.js";
+import { processDueNotifications, reconcileWhatsNexusOutcomes, sendFollowUpMessage } from "../domain/notification/notification.service.js";
 import { signWebhookBody } from "../domain/integration/webhook-rules.js";
 import { createTestTenant, destroyTestTenant, type TestTenant } from "./helpers/edition-tenant.js";
 
@@ -245,17 +245,28 @@ describe.skipIf(!DEMO_PASSWORD)("WhatsNexus provider: selection, sending, callba
     expect((await row(r.notificationId)).reason).toMatch(/^OUTCOME_UNKNOWN/);
     expect(d.posts()).toHaveLength(1);
 
-    // WhatsNexus still unsure → left alone.
-    const still = await reconcileWhatsNexusOutcomes(db, new Date(), d.deps);
-    expect(still.pending).toBeGreaterThanOrEqual(1);
-    expect((await row(r.notificationId)).reason).toMatch(/^OUTCOME_UNKNOWN/);
+    await db.update(tenants).set({ lifecycleStatus: "SUSPENDED", loginEnabled: false }).where(eq(tenants.id, t.tenantId));
+    try {
+      // Reconciliation stays available while suspended. An unresolved outcome is never re-sent.
+      const still = await reconcileWhatsNexusOutcomes(db, new Date(), d.deps);
+      expect(still.pending).toBeGreaterThanOrEqual(1);
+      expect((await row(r.notificationId)).reason).toMatch(/^OUTCOME_UNKNOWN/);
 
-    // WhatsNexus proves it accepted the send → SENT with the real wamid, reason cleared. Still one POST ever.
-    const found = wnDouble(accept, () => json(200, { success: true, dispatch: { status: "accepted", wamid: "wamid.RECONCILED" } }));
-    const done = await reconcileWhatsNexusOutcomes(db, new Date(), found.deps);
-    expect(done.accepted).toBeGreaterThanOrEqual(1);
-    expect(await row(r.notificationId)).toMatchObject({ status: "SENT", providerMessageId: "wamid.RECONCILED", reason: null });
-    expect(found.posts()).toHaveLength(0);
+      // Also model a worker that stopped after handing off the dispatch and before persisting the response.
+      await db.update(notifications).set({ status: "PROCESSING", processingStartedAt: new Date(0), reason: null })
+        .where(eq(notifications.id, r.notificationId));
+      await processDueNotifications(db, new Date(), d.deps);
+      expect(await row(r.notificationId)).toMatchObject({ status: "FAILED", reason: "OUTCOME_UNKNOWN: SEND_INTERRUPTED" });
+      expect(d.posts()).toHaveLength(1);
+
+      const found = wnDouble(accept, () => json(200, { success: true, dispatch: { status: "accepted", wamid: "wamid.RECONCILED" } }));
+      const done = await reconcileWhatsNexusOutcomes(db, new Date(), found.deps);
+      expect(done.accepted).toBeGreaterThanOrEqual(1);
+      expect(await row(r.notificationId)).toMatchObject({ status: "SENT", providerMessageId: "wamid.RECONCILED", reason: null });
+      expect(found.posts()).toHaveLength(0);
+    } finally {
+      await db.update(tenants).set({ lifecycleStatus: "ACTIVE", loginEnabled: true }).where(eq(tenants.id, t.tenantId));
+    }
   });
 
   it("an ambiguous send that WhatsNexus never received is resolved as NOT_SENT (and nothing was posted twice)", async () => {
@@ -282,6 +293,86 @@ describe.skipIf(!DEMO_PASSWORD)("WhatsNexus provider: selection, sending, callba
     const r = (await sendFollowUpMessage(db, t.tenantId, t.userIds.FRONT_DESK!, journeyId, `wn-${Date.now()}-${++n}xyz`, d.deps)) as { notificationId: string };
     return { id: r.notificationId, wamid: (await row(r.notificationId)).providerMessageId! };
   }
+
+  it("waits for suspension and restoration, then commits concurrent redeliveries once", async () => {
+    const tenantId = t.tenantId;
+    const fromPhone = phone();
+    const eventId = "wn-inbound-lifecycle-race";
+    const body = { type: "inbound_message", eventId, externalThreadId: fromPhone,
+      fromPhone, body: "Synthetic enquiry", occurredAt: new Date().toISOString() };
+    await configureWn(t, CB_SECRET);
+    await db.update(tenants).set({ edition: "BETA_V2_GROWTH" }).where(eq(tenants.id, tenantId));
+    const deliver = () => callback(tenantId, CB_SECRET, body).then((response) => response);
+    const deliveries = () => db.select().from(connectorEvents).where(and(
+      eq(connectorEvents.tenantId, tenantId), eq(connectorEvents.externalEventId, "whatsnexus:" + eventId)));
+    async function switchDuringDelivery(active: boolean) {
+      const { pending } = await db.transaction(async (tx) => {
+        await tx.update(tenants).set({ lifecycleStatus: active ? "ACTIVE" : "SUSPENDED", loginEnabled: active })
+          .where(eq(tenants.id, tenantId));
+        const pending = deliver();
+        await vi.waitFor(async () => {
+          const [row] = await queryClient`select exists (select 1 from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+            and query like '%from "tenants"%for share') as waiting`;
+          expect(row?.waiting).toBe(true);
+        }, { timeout: 5000 });
+        return { pending };
+      });
+      return pending;
+    }
+    try {
+      expect((await switchDuringDelivery(false)).statusCode).toBe(503);
+      expect(await deliveries()).toHaveLength(0);
+      expect((await switchDuringDelivery(true)).statusCode).toBe(200);
+      const responses = await Promise.all([deliver(), deliver()]);
+      expect(responses.map((response) => response.json())).toEqual([
+        { ok: true, duplicate: true }, { ok: true, duplicate: true },
+      ]);
+      expect(await deliveries()).toHaveLength(1);
+      expect(await db.select().from(messages).where(and(
+        eq(messages.tenantId, tenantId), eq(messages.providerMessageId, eventId)))).toHaveLength(1);
+    } finally {
+      await db.update(tenants).set({ lifecycleStatus: "ACTIVE", loginEnabled: true, edition: "BETA_V1_CORE" }).where(eq(tenants.id, tenantId));
+    }
+  }, 15_000);
+
+  it("refuses journal failures and rolls back ingestion when the completion marker fails", async () => {
+    const tenantId = t.tenantId;
+    const eventId = "wn-inbound-journal-failure";
+    const fromPhone = phone();
+    const deliver = () => callback(tenantId, CB_SECRET, {
+      type: "inbound_message", eventId, externalThreadId: fromPhone, fromPhone,
+      body: "Synthetic enquiry", occurredAt: new Date().toISOString(),
+    });
+    const storedMessages = () => db.select().from(messages).where(and(
+      eq(messages.tenantId, tenantId), eq(messages.providerMessageId, eventId)));
+    await db.update(tenants).set({ edition: "BETA_V2_GROWTH" }).where(eq(tenants.id, tenantId));
+    try {
+      await queryClient`alter table connector_events add constraint test_inbound_journal_insert
+        check (external_event_id <> 'whatsnexus:wn-inbound-journal-failure') not valid`;
+      try {
+        expect((await deliver()).statusCode).toBe(500);
+        expect(await storedMessages()).toHaveLength(0);
+      } finally {
+        await queryClient`alter table connector_events drop constraint test_inbound_journal_insert`;
+      }
+      await queryClient`alter table connector_events add constraint test_inbound_journal_completion
+        check (external_event_id <> 'whatsnexus:wn-inbound-journal-failure' or status <> 'processed') not valid`;
+      try {
+        expect((await deliver()).statusCode).toBe(500);
+        expect(await storedMessages()).toHaveLength(0);
+        expect(await db.select().from(connectorEvents).where(and(eq(connectorEvents.tenantId, tenantId),
+          eq(connectorEvents.externalEventId, "whatsnexus:" + eventId)))).toHaveLength(0);
+      } finally {
+        await queryClient`alter table connector_events drop constraint test_inbound_journal_completion`;
+      }
+      const redeliveries = await Promise.all([deliver(), deliver()]);
+      expect(redeliveries.map((response) => response.statusCode)).toEqual([200, 200]);
+      expect(await storedMessages()).toHaveLength(1);
+    } finally {
+      await db.update(tenants).set({ edition: "BETA_V1_CORE" }).where(eq(tenants.id, tenantId));
+    }
+  });
 
   it("a signed callback advances SENT → DELIVERED → READ; duplicates, regressions and failed-after-delivered change nothing", async () => {
     const { id, wamid } = await sentNotification();

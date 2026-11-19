@@ -351,6 +351,62 @@
       "when": 1792281600000,
       "tag": "0049_lead_edit_versions",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792368000000,
+      "tag": "0050_platform_hospital_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792454400000,
+      "tag": "0051_platform_browser_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792540800000,
+      "tag": "0052_hospital_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1792627200000,
+      "tag": "0053_suspended_meta_leads",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1792713600000,
+      "tag": "0054_hospital_messaging_coordination",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792800000000,
+      "tag": "0055_hospital_invitation_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1792886400000,
+      "tag": "0056_platform_mfa_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1792972800000,
+      "tag": "0057_platform_mfa_recovery_requester",
+      "breakpoints": true
     }
   ]
 }

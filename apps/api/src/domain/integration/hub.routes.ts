@@ -198,7 +198,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
         })
         .safeParse(request.body);
       if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
-      return testWebhookDelivery(u.tenantId, parsed.data);
+      return testWebhookDelivery(app.db, u.tenantId, parsed.data);
     });
 
     hooks.delete("/integrations/webhooks/:id", async (request, reply) => {

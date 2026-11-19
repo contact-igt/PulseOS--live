@@ -1,12 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
-import { purgeSignupTenants, sql } from "./support/fixtures";
+import { sql } from "./support/fixtures";
 
 // ONE approved PulseOS tenant sign-in for every hospital: /login/<slug>, resolved on the server from the slug alone; only safe
 // structured branding differs. These specs prove it is a shared system (not a Namokar one-off) and that its boundaries hold.
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD ?? "";
 const API = "http://localhost:4310";
-const RUN = `${Date.now()}`.slice(-6);
 
 const open = async (page: Page, slug: string) => {
   const res = await page.goto(`/login/${slug}`);
@@ -17,7 +16,6 @@ test.describe("Tenant-branded login (shared PulseOS system)", () => {
   test.skip(!DEMO_PASSWORD, "DEMO_PASSWORD must be set to run this suite");
   test.afterAll(() => {
     sql(`UPDATE tenant_login_configs SET logo_path = NULL WHERE tenant_id IN (SELECT id FROM tenants WHERE login_slug = 'eye-v1-demo')`);
-    purgeSignupTenants();
   });
 
   test("1+2+3. Namokar and another seeded hospital use the SAME component with different words; no logo = typographic name", async ({ page }) => {
@@ -114,36 +112,6 @@ test.describe("Tenant-branded login (shared PulseOS system)", () => {
       expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toMatch(/session|token|password|pulseos_session/i);
       await context.close();
     }
-  });
-
-  test("10. a hospital that signs up gets its branded login immediately, discovered by Developer access, with no engineering step", async ({ page }) => {
-    const org = `E2E Signup Login ${RUN}`;
-    const email = `e2e.login.${RUN}@example.test`;
-    await page.goto("/login");
-    const res = await page.evaluate(
-      async ({ api, org, email }) => {
-        const r = await fetch(`${api}/auth/signup`, {
-          method: "POST", credentials: "include", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ fullName: "E2E Owner", email, phone: "+91 98765 43210", password: "Correct-Horse-9", organizationName: org, industry: "Healthcare", organizationType: "Eye Hospital", department: "Ophthalmology", addressLine: "12 MG Road", city: "Bengaluru", state: "Karnataka", pinCode: "560038", country: "India", discoverySource: "Google", edition: "V1" }),
-        });
-        return { status: r.status, body: await r.json() };
-      },
-      { api: API, org, email },
-    );
-    expect(res.status).toBe(201);
-    const loginPath = res.body.workspace.loginPath as string;
-    expect(loginPath).toMatch(/^\/login\/e2e-signup-login-\d+$/);
-    await page.context().clearCookies();
-    expect(await open(page, loginPath.replace("/login/", ""))).toBe(200);
-    await expect(page.getByTestId("login-headline")).toHaveText(org);
-    await expect(page.getByTestId("tenant-login-pilot")).toHaveCount(0); // no badge unless the configuration says so
-    await page.getByLabel("Email address").fill(email);
-    await page.getByLabel("Password", { exact: true }).fill("Correct-Horse-9");
-    await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForURL(/command-centre/);
-    // Developer access (development only) lists it by itself.
-    const envs = await page.evaluate(async (api) => (await fetch(`${api}/auth/dev-login/environments`, { credentials: "include" })).json(), API);
-    expect((envs as { label: string }[]).some((e) => e.label === org)).toBe(true);
   });
 
   test("11. the public configuration exposes display words only: no ids, secrets, users, edition or integrations", async ({ page }) => {

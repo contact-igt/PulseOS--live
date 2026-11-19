@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, gte, inArray, lte, or } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
-import { appointments, timelineEvents } from "../../db/schema.js";
+import { appointments, tenants, timelineEvents } from "../../db/schema.js";
 import type { DueJob } from "../../jobs/runner.js";
 import { planForSubject } from "./notification.service.js";
 
@@ -58,10 +58,13 @@ export async function reconcileAppointmentNotifications(
 
   for (;;) {
     const visits = await db
-      .select({ id: appointments.id, tenantId: appointments.tenantId, at: appointments.scheduledAt })
+      .select({ id: appointments.id, tenantId: appointments.tenantId, at: appointments.scheduledAt, lifecycleChangedAt: tenants.lifecycleChangedAt })
       .from(appointments)
+      .innerJoin(tenants, eq(tenants.id, appointments.tenantId))
       .where(and(
         eq(appointments.status, "confirmed"),
+        eq(tenants.lifecycleStatus, "ACTIVE"),
+        eq(tenants.loginEnabled, true),
         gt(appointments.scheduledAt, now),
         lte(appointments.scheduledAt, horizon),
         ...(opts.tenantIds ? [inArray(appointments.tenantId, opts.tenantIds)] : []),
@@ -72,18 +75,21 @@ export async function reconcileAppointmentNotifications(
     if (visits.length === 0) return result;
 
     const since = new Date(now.getTime() - RECONCILE_CONFIRMATION_WINDOW_HOURS * 3_600_000);
-    const recentlyConfirmed = new Set(
+    const recentlyConfirmed = new Map(
       (await db
-        .select({ id: timelineEvents.relatedEntityId })
+        .select({ id: timelineEvents.relatedEntityId, at: timelineEvents.occurredAt })
         .from(timelineEvents)
-        .where(and(eq(timelineEvents.eventType, "appointment_confirmed"), gte(timelineEvents.occurredAt, since), inArray(timelineEvents.relatedEntityId, visits.map((v) => v.id)))))
-        .map((r) => r.id),
+        .where(and(eq(timelineEvents.eventType, "appointment_confirmed"), gte(timelineEvents.occurredAt, since), inArray(timelineEvents.relatedEntityId, visits.map((v) => v.id))))
+        .orderBy(asc(timelineEvents.occurredAt)))
+        .map((r) => [r.id, r.at.getTime()]),
     );
 
     for (const v of visits) {
       result.inspected++;
       try {
-        result.recovered += (await planForSubject(db, v.tenantId, "APPOINTMENT", v.id, now, { onlyGaps: true, confirmations: recentlyConfirmed.has(v.id) })).planned;
+        const confirmedAt = recentlyConfirmed.get(v.id);
+        const confirmations = confirmedAt !== undefined && confirmedAt >= (v.lifecycleChangedAt?.getTime() ?? 0);
+        result.recovered += (await planForSubject(db, v.tenantId, "APPOINTMENT", v.id, now, { onlyGaps: true, confirmations })).planned;
       } catch (err) {
         result.errors++;
         if (result.errorSamples.length < 3) result.errorSamples.push({ visitId: v.id, message: err instanceof Error ? err.message.slice(0, 200) : "error" });

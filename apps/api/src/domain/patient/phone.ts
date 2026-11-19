@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
-import type { Db } from "../../db/client.js";
+import type { DbOrTx } from "../../db/client.js";
 import { tenants } from "../../db/schema.js";
 
 export interface NormalizedPhone {
@@ -34,7 +34,7 @@ export function normalizePhone(raw: string, defaultRegion: string): NormalizedPh
 // Shared by every entry point that needs to normalize a phone without
 // already knowing the tenant's region (manual Add Lead/Add Patient,
 // website/Meta/Google ingestion, WhatsApp/Runo webhook identity resolution).
-export async function resolveDefaultPhoneRegion(db: Db, tenantId: string): Promise<string> {
+export async function resolveDefaultPhoneRegion(db: DbOrTx, tenantId: string): Promise<string> {
   const [tenant] = await db.select({ defaultPhoneRegion: tenants.defaultPhoneRegion }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   return tenant?.defaultPhoneRegion ?? "IN";
 }

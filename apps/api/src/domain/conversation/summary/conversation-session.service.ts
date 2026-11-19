@@ -1,6 +1,7 @@
+import { activeHospital, allowsHospitalWork } from "../../tenant/hospital-lifecycle.policy.js";
 import { tenantCapabilityMap } from "../../capability/capability.service.js";
 import { and, asc, desc, eq, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
-import type { Db } from "../../../db/client.js";
+import type { Db, DbOrTx } from "../../../db/client.js";
 import { conversationSummaries, conversations, messages, patients, tenantSettings, timelineEvents } from "../../../db/schema.js";
 import { tenantTimezone } from "../../../lib/hospital-time.js";
 import { CONVERSATION_IDLE_RANGE, type ConversationSettings, type ConversationSummaryState, type ConversationSummaryVm, type SummaryMode } from "@pulseos/types";
@@ -21,7 +22,7 @@ type Sender = "patient" | "staff" | "ai" | "system";
 
 // --- settings ---------------------------------------------------------------
 
-export async function getConversationSettings(db: Db, tenantId: string): Promise<ConversationSettings> {
+export async function getConversationSettings(db: DbOrTx, tenantId: string): Promise<ConversationSettings> {
   const [row] = await db.select({ m: tenantSettings.conversationIdleMinutes }).from(tenantSettings).where(eq(tenantSettings.tenantId, tenantId));
   return { idleMinutes: clampIdleMinutes(row?.m) };
 }
@@ -42,7 +43,7 @@ export async function updateConversationSettings(db: Db, tenantId: string, idleM
  * "this message + the idle window" (debounce), remembers the last patient message (the WhatsApp service window)
  * and keeps the one concise Timeline line for the current session up to date.
  */
-export async function recordConversationActivity(db: Db, tenantId: string, conversationId: string, activity: { at: Date; sender: Sender }): Promise<void> {
+export async function recordConversationActivity(db: DbOrTx, tenantId: string, conversationId: string, activity: { at: Date; sender: Sender }): Promise<void> {
   // Conversation Intelligence off: no summary deadline, no session line, no summarizer cost for this hospital.
   if (!(await tenantCapabilityMap(db, tenantId)).CONVERSATION_INTELLIGENCE) return;
   const { idleMinutes } = await getConversationSettings(db, tenantId);
@@ -62,13 +63,13 @@ export async function recordConversationActivity(db: Db, tenantId: string, conve
 }
 
 /** The latest summary of a conversation, with the message it ended on. */
-async function lastSummaryOf(db: Db, conversationId: string) {
+async function lastSummaryOf(db: DbOrTx, conversationId: string) {
   const [row] = await db.select().from(conversationSummaries).where(eq(conversationSummaries.conversationId, conversationId)).orderBy(desc(conversationSummaries.segmentNo)).limit(1);
   return row ?? null;
 }
 
 /** Messages not yet covered by a summary, in (sentAt, id) order. */
-async function unsummarizedMessages(db: Db, conversationId: string, last: { lastMessageAt: Date; lastMessageId: string } | null) {
+async function unsummarizedMessages(db: DbOrTx, conversationId: string, last: { lastMessageAt: Date; lastMessageId: string } | null) {
   return db
     .select({ id: messages.id, senderType: messages.senderType, body: messages.body, sentAt: messages.sentAt })
     .from(messages)
@@ -77,7 +78,7 @@ async function unsummarizedMessages(db: Db, conversationId: string, last: { last
 }
 
 /** One Timeline line per conversation session: "WhatsApp conversation · 12 messages · 3:42 pm – 4:11 pm". */
-export async function syncSessionTimelineEvent(db: Db, tenantId: string, conversationId: string): Promise<void> {
+export async function syncSessionTimelineEvent(db: DbOrTx, tenantId: string, conversationId: string): Promise<void> {
   const [conv] = await db.select().from(conversations).where(and(eq(conversations.id, conversationId), eq(conversations.tenantId, tenantId)));
   if (!conv) return;
   const last = await lastSummaryOf(db, conversationId);
@@ -158,6 +159,10 @@ async function summarizeClaimed(db: Db, conv: ConvRow, now: Date, summarizer: Co
     return { kind: "nothing_new" };
   }
   const input: SummarizerMessage[] = open.map((m) => ({ sender: m.senderType, body: m.body, at: m.sentAt }));
+  if (!(await allowsHospitalWork(db, conv.tenantId))) {
+    await releaseClaim(db, conv.id, {});
+    return { kind: "nothing_new" };
+  }
   const draft = sanitize(await summarizer.summarize(input));
   const first = open[0]!;
   const final = open[open.length - 1]!;
@@ -219,6 +224,7 @@ async function claim(db: Db, conversationId: string, now: Date, opts: { requireD
     .where(
       and(
         eq(conversations.id, conversationId),
+        activeHospital(conversations.tenantId),
         opts.requireDue ? and(isNotNull(conversations.summaryDueAt), lte(conversations.summaryDueAt, now)) : undefined,
         or(eq(conversations.summaryState, "idle"), sql`${conversations.summaryClaimedAt} < ${staleBefore}::timestamptz`),
       ),
@@ -238,6 +244,7 @@ export async function processDueConversationSummaries(db: Db, now: Date, summari
     .from(conversations)
     .where(
       and(
+        activeHospital(conversations.tenantId),
         isNotNull(conversations.summaryDueAt),
         lte(conversations.summaryDueAt, now),
         or(eq(conversations.summaryState, "idle"), sql`${conversations.summaryClaimedAt} < ${staleBefore}::timestamptz`),
@@ -251,6 +258,7 @@ export async function processDueConversationSummaries(db: Db, now: Date, summari
   let failed = 0;
   const capByTenant = new Map<string, boolean>();
   for (const { id, tenantId } of due) {
+    if (!(await allowsHospitalWork(db, tenantId))) continue;
     if (!capByTenant.has(tenantId)) capByTenant.set(tenantId, (await tenantCapabilityMap(db, tenantId)).CONVERSATION_INTELLIGENCE);
     if (!capByTenant.get(tenantId)) {
       // Switched off since the deadline was set: drop the deadline instead of summarizing.

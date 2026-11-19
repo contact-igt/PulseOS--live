@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch --clear-screen=false --ignore '**/node_modules/**' --ignore '**/src/db/migrations/**' src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node --import tsx dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
@@ -14,7 +14,10 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/seed/seed.ts",
     "audit:website-intake": "tsx src/scripts/audit-website-intake.ts",
-    "staff:add": "tsx src/ops/add-staff.ts"
+    "staff:add": "tsx src/ops/add-staff.ts",
+    "platform:credential": "tsx src/ops/platform-credential.ts",
+    "platform:bootstrap": "tsx src/ops/platform-bootstrap.ts",
+    "platform:recover-last-admin": "tsx src/ops/platform-recover-last-admin.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
@@ -26,14 +29,16 @@
     "exceljs": "4.4.0",
     "fastify": "5.12.5",
     "libphonenumber-js": "^1.13.13",
+    "nodemailer": "10.4.1",
     "postgres": "3.4.9",
+    "tsx": "4.23.13",
     "zod": "3.24.1"
   },
   "devDependencies": {
     "@types/node": "22.20.2",
+    "@types/nodemailer": "^8.0.2",
     "drizzle-kit": "0.31.10",
     "eslint": "^9.39.5",
-    "tsx": "4.23.13",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.70.0",
     "vitest": "3.2.4"
