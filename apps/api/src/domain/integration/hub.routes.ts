@@ -68,7 +68,10 @@ export async function integrationHubRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "runo_date_or_process_invalid" });
     }
     const result = await importRunoAllocations(app.db, u.tenantId, parsed.data);
-    if ("error" in result) return reply.status(result.error === "runo_key_unavailable" ? 409 : 502).send(result);
+    if ("error" in result) {
+      if (result.diagnostic) request.log.warn({ date: parsed.data.date, errorCode: result.error, ...result.diagnostic }, "Runo allocation import failed");
+      return reply.status(result.error === "runo_key_unavailable" ? 409 : 502).send({ error: result.error });
+    }
     await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "integration.runo_allocations_imported", entityType: "integration", entityKey: "runo", metadata: { date: parsed.data.date, imported: result.imported } });
     return result;
   });

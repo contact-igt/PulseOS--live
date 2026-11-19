@@ -11,7 +11,8 @@ const messages: Record<string, string> = {
   runo_key_rejected: "Runo rejected the API key. Check the key in Credentials.",
   runo_date_or_process_invalid: "Use past dates and the exact Runo process name.",
   runo_process_mismatch: "Runo returned a different process. Check the process name in Runo.",
-  runo_unexpected_response: "Runo returned an incomplete or unexpected allocation list. Try the import again.",
+  runo_unexpected_response: "Runo returned allocation data in an unexpected format. Check the PulseOS API logs for the affected fields.",
+  runo_incomplete_pages: "Runo did not return all the allocations it reported for this date. Try again.",
 };
 
 export function RunoAllocationImport() {

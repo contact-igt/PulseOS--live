@@ -47,11 +47,12 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
       const url = new URL(String(input));
       expect(url.searchParams.get("processName")).toBe("Default process");
       const page = Number(url.searchParams.get("pageNo"));
-      const records = Array.from({ length: page === 1 ? 100 : 1 }, (_, index) => ({
+      const records = Array.from({ length: [60, 40, 1][page - 1] ?? 0 }, (_, index) => ({
         _id: `runo-${page}-${index}`,
         processName: "Default process",
         createdAt: 1600486640,
         customer: { name: "Runo test allocation", phoneNumber: "+919000555555" },
+        userFields: [null, { name: "status", value: "Allocation" }],
       }));
       return Response.json({ statusCode: 0, data: { metadata: [{ total: 101, page }], data: records } });
     });
@@ -63,7 +64,7 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
         expect(result.statusCode).toBe(200);
         expect(result.json()).toEqual({ imported: 101 });
       }
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
     } finally {
       fetchMock.mockRestore();
     }

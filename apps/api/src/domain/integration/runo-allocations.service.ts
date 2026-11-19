@@ -4,17 +4,17 @@ import type { Db } from "../../db/client.js";
 import { connectors, connectorSecrets, runoAllocations } from "../../db/schema.js";
 import { decryptSecret } from "../security/encryption.js";
 
-const optionalText = z.string().nullish();
+const optionalText = z.string().nullish().catch(null);
 const allocation = z.object({
   _id: z.string().min(1),
   processName: z.string().min(1),
   createdAt: z.number().int().nonnegative().max(253402300799),
-  customer: z.object({ name: optionalText, phoneNumber: optionalText }).nullish(),
-  assigned: z.object({ to: optionalText }).nullish(),
+  customer: z.object({ name: optionalText, phoneNumber: optionalText }).nullish().catch(null),
+  assigned: z.object({ to: optionalText }).nullish().catch(null),
   status: optionalText,
   source: optionalText,
   branch: optionalText,
-  userFields: z.array(z.object({ name: z.string(), value: z.unknown() })).nullish(),
+  userFields: z.array(z.object({ name: z.string(), value: z.unknown() }).catch({ name: "", value: null })).nullish().catch(null),
 });
 
 const pageSchema = z.object({
@@ -45,9 +45,9 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
   url.searchParams.set("processName", input.processName);
   const signal = AbortSignal.timeout(25_000);
   let total = 0;
-  let pages = 1;
+  let page = 1;
   try {
-    for (let page = 1; page <= pages; page += 1) {
+    for (;; page += 1) {
       url.searchParams.set("pageNo", String(page));
       const response = await fetch(url, { headers: { "Auth-Key": apiKey }, redirect: "error", signal });
       if (response.status === 401 || response.status === 403) return { error: "runo_key_rejected" } as const;
@@ -55,11 +55,11 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
       const result = pageSchema.parse(await response.json()).data;
       const meta = result.metadata[0];
       if (!meta && page === 1 && result.data.length === 0) break;
-      if (!meta || meta.page !== page) return { error: "runo_unexpected_response" } as const;
-      if (page === 1) {
-        total = meta.total;
-        pages = Math.ceil(total / 100);
+      if (!meta || meta.page !== page) {
+        return { error: "runo_incomplete_pages", diagnostic: { page, receivedPage: meta?.page } } as const;
       }
+      if (page === 1) total = meta.total;
+      const previousCount = rows.size;
       for (const row of result.data) {
         if (row.processName.toLowerCase() !== input.processName.toLowerCase()) return { error: "runo_process_mismatch" } as const;
         const fields = new Map(row.userFields?.map(({ name, value }) => [name.trim().toLowerCase(), value]));
@@ -75,11 +75,18 @@ export async function importRunoAllocations(db: Db, tenantId: string, input: { d
           source: row.source ?? field("source"), branch: row.branch ?? field("branch"),
         });
       }
+      if (rows.size === total) break;
+      if (rows.size === previousCount || rows.size > total) {
+        return { error: "runo_incomplete_pages", diagnostic: { page, expectedCount: total, receivedCount: rows.size } } as const;
+      }
     }
   } catch (error) {
-    return { error: error instanceof z.ZodError || error instanceof SyntaxError ? "runo_unexpected_response" : "runo_unavailable" } as const;
+    if (error instanceof z.ZodError) {
+      return { error: "runo_unexpected_response", diagnostic: { page, fields: error.issues.slice(0, 8).map((issue) => issue.path.join(".")) } } as const;
+    }
+    if (error instanceof SyntaxError) return { error: "runo_unexpected_response", diagnostic: { page } } as const;
+    return { error: "runo_unavailable", diagnostic: { page } } as const;
   }
-  if (rows.size !== total) return { error: "runo_unexpected_response" } as const;
 
   const records = [...rows.values()].sort((a, b) => a.externalId.localeCompare(b.externalId));
   await db.transaction(async (tx) => {
