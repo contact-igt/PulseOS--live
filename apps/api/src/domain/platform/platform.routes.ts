@@ -44,7 +44,7 @@ export async function platformRoutes(app: FastifyInstance) {
   const throttle = new LoginThrottle();
   const authOptions = { bodyLimit, onRequest: browserGuard };
   app.post("/login", authOptions, async (request, reply) => {
-    const parsed = z.object({ email: platformEmail, password, code }).strict().safeParse(request.body);
+    const parsed = z.object({ email: platformEmail, password, code: code.optional() }).strict().safeParse(request.body);
     if (!parsed.success) return authenticationFailed(reply);
     const key = platformMfaKey();
     if (!key) return reply.status(503).send({ error: "platform_auth_unavailable" });

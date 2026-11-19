@@ -611,7 +611,7 @@ export const platformApi = {
   changeLifecycle: (id: string, legacy: boolean, action: "suspend" | "restore", body: { version: number; reason: string; explanation?: string }) =>
     platformWrite<{ lifecycle: import("@pulseos/types").HospitalLifecycle }>(
       "/hospitals/" + encodeURIComponent(id) + "/" + action + (legacy ? "?legacy=1" : ""), "POST", body),
-  login: (body: { email: string; password: string; code: string }) => platformWrite("/login", "POST", body),
+  login: (body: { email: string; password: string; code?: string }) => platformWrite("/login", "POST", body),
   enroll: (body: { invitation: string; password: string }) => platformWrite<{ setupKey: string; email: string }>("/enroll", "POST", body),
   verifyEnrollment: (code: string) => platformWrite("/enroll/verify", "POST", { code }),
   logout: () => platformWrite("/logout", "POST"),

@@ -399,12 +399,14 @@ describe.skipIf(process.env.PLATFORM_TEST_DATABASE !== "1")("platform browser au
 
   it("expires idle and absolute sessions and revokes logout server-side", async () => {
     const [administrator] = await queryClient`select email from platform_accounts where id = ${adminId}`;
-    const login = async (offset: number) => {
-      const result = await send("POST", "/platform/login", { email: administrator!.email, password, code: totp(adminSecret, offset) });
+    expect((await send("POST", "/platform/login", { email: administrator!.email, password: "Incorrect synthetic password" })).statusCode).toBe(401);
+    expect((await send("POST", "/platform/login", { email: operatorEmail, password })).statusCode).toBe(401);
+    const login = async () => {
+      const result = await send("POST", "/platform/login", { email: administrator!.email, password });
       expect(result.statusCode).toBe(200);
       return session(result.cookies.find((candidate) => candidate.name === "pulseos_platform_session")!.value);
     };
-    const absoluteSession = await login(1);
+    const absoluteSession = await login();
     const { digest } = await import("../domain/tenant/hospital-onboarding.service.js");
     const hash = (cookie: string) => digest(cookie.split("=")[1]!);
     await queryClient`update platform_sessions set expires_at = now() - interval '1 second' where token_hash = ${hash(absoluteSession)}`;

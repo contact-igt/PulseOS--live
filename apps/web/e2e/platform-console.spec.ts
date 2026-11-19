@@ -7,7 +7,7 @@ const account: PlatformAccount = {
   permissions: ["dashboard:read", "hospital:read", "hospital:create", "hospital:invite", "hospital:retry", "hospital:activate", "team:manage", "audit:read"],
 };
 
-test("signs in with an authenticator code and retries hospital creation with the identical request", async ({ page }) => {
+test("signs in as Super Admin with email and password and retries hospital creation with the identical request", async ({ page }) => {
   let loggedIn = false;
   let created: PlatformHospital | undefined;
   let request: { key: string; body: unknown } | undefined;
@@ -28,7 +28,7 @@ test("signs in with an authenticator code and retries hospital creation with the
 
     if (pathname === "/platform/login") {
       expect(call.headers()["x-pulseos-platform"]).toBe("1");
-      expect(call.postDataJSON()).toEqual({ email: account.email, password: "Synthetic password only", code: "123456" });
+      expect(call.postDataJSON()).toEqual({ email: account.email, password: "Synthetic password only" });
       loggedIn = true;
       return send(200, { authenticated: true });
     }
@@ -60,7 +60,6 @@ test("signs in with an authenticator code and retries hospital creation with the
   await page.goto("/platform/login");
   await page.getByLabel("Platform email").fill(account.email);
   await page.getByLabel("Password").fill("Synthetic password only");
-  await page.getByLabel("Authenticator code").fill("123456");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Platform dashboard" })).toBeVisible({ timeout: 20000 });
 
@@ -98,6 +97,9 @@ test("signs in with an authenticator code and retries hospital creation with the
   await page.getByRole("button", { name: "Hide link" }).click();
   await expect(page.getByLabel("Hospital administrator invitation link")).toHaveCount(0);
   expect(writes).toBe(2);
+  await page.goto("/platform/login");
+  await expect(page).toHaveURL(/\/platform$/);
+  await expect(page.getByRole("heading", { name: "Platform dashboard" })).toBeVisible();
 });
 
 test("enrolls MFA and signs out through the local platform API", async ({ page, context }) => {

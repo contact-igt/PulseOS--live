@@ -65,7 +65,7 @@ export async function logoutPlatform(db: Db, value: string, actorId: string) {
 
 let decoyHash: Promise<string> | undefined;
 
-export async function loginPlatform(db: Db, key: Buffer, email: string, password: string, code: string) {
+export async function loginPlatform(db: Db, key: Buffer, email: string, password: string, code?: string) {
   const [candidate] = await db.select().from(accounts).where(eq(accounts.email, email));
   const hash = candidate?.passwordHash ?? await (decoyHash ??= hashPassword(token()));
   if (!(await verifyPassword(hash, password)) || !candidate?.mfaSecret || candidate.disabledAt) {
@@ -74,7 +74,9 @@ export async function loginPlatform(db: Db, key: Buffer, email: string, password
   }
   return db.transaction(async (tx) => {
     const [row] = await tx.select().from(accounts).where(eq(accounts.id, candidate.id)).for("update");
-    const step = row?.mfaSecret && !row.disabledAt && row.passwordHash === hash
+    const eligible = row?.mfaSecret && !row.disabledAt && row.passwordHash === hash;
+    if (eligible && row.role === SUPER && code === undefined) return issueSession(tx, row.id);
+    const step = row?.mfaSecret && eligible && code !== undefined
       ? verifyMfa(key, row.mfaSecret, code, row.lastMfaStep) : null;
     if (step === null) {
       await securityAudit(tx, "login_failed", undefined, candidate.id);
