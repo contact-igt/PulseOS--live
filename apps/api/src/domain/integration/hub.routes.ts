@@ -11,6 +11,8 @@ import { configureIntegration, pairWhatsNexus, getHubDetail, listHub, listIntegr
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
+import { dayKeyIn, isRealDate } from "../../lib/hospital-time.js";
+import { importRunoAllocations } from "./runo-allocations.service.js";
 
 const REASON_STATUS: Record<string, number> = {
   unknown_integration: 404,
@@ -54,6 +56,22 @@ const logQuerySchema = z
 
 export async function integrationHubRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requirePermission("VIEW_INTEGRATIONS"));
+
+  app.post("/integrations/hub/runo/allocations/import", { preHandler: requirePermission("MANAGE_INTEGRATION_CONFIG") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    if (!u.capabilities.RUNO_CALLING) return reply.status(403).send({ error: "feature_not_available" });
+    const parsed = z.object({
+      date: z.string().refine(isRealDate),
+      processName: z.string().trim().min(1).max(300).refine((value) => value.toLowerCase() !== "all"),
+    }).strict().safeParse(request.body);
+    if (!parsed.success || parsed.data.date >= dayKeyIn(new Date(), "Asia/Kolkata")) {
+      return reply.status(400).send({ error: "runo_date_or_process_invalid" });
+    }
+    const result = await importRunoAllocations(app.db, u.tenantId, parsed.data);
+    if ("error" in result) return reply.status(result.error === "runo_key_unavailable" ? 409 : 502).send(result);
+    await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "integration.runo_allocations_imported", entityType: "integration", entityKey: "runo", metadata: { date: parsed.data.date, imported: result.imported } });
+    return result;
+  });
 
   app.get("/integrations/hub", async (request) => {
     const u = request.sessionUser!;

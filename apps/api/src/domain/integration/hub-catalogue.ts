@@ -100,7 +100,10 @@ export const INTEGRATION_CATALOGUE: CatalogueEntry[] = [
     connectorCapabilities: ["RECEIVE_CALL_EVENT", "FETCH_RECORDING", "RECEIVE_RECORDING", "RECEIVE_TRANSCRIPT"],
     blockedReason: null,
     configurationFields: [],
-    secretFields: [{ key: "webhookSharedSecret", label: "Webhook shared secret" }],
+    secretFields: [
+      { key: "webhookSharedSecret", label: "Webhook shared secret" },
+      { key: "allocationsApiKey", label: "Runo API Key" },
+    ],
     mappingNotes: "Runo dispositions map to PulseOS next actions in the connector's disposition mappings.",
     requiredConfig: [],
     requiredSecrets: ["webhookSharedSecret"],

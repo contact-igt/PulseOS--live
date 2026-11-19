@@ -269,8 +269,8 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   if (input.secrets) {
     secretsNow = { ...secretsNow };
     for (const [k, v] of Object.entries(input.secrets)) {
-      // The one secret that must be removable: the previous callback secret kept only while WhatsNexus rotates over ("-" clears it).
-      if (key === "whatsnexus" && k === "previousCallbackSecret" && v.trim() === "-") delete secretsNow[k];
+      const removable = (key === "whatsnexus" && k === "previousCallbackSecret") || (key === "runo" && k === "webhookSharedSecret");
+      if (removable && v.trim() === "-") delete secretsNow[k];
       else if (v.trim() !== "") secretsNow[k] = v.trim();
     }
     const encryptedPayload = encryptSecret(secretsNow);

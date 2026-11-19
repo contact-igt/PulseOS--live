@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import type { IntegrationCard, IntegrationDetail, IntegrationLogRow, Role } from "@pulseos/types";
@@ -33,6 +33,46 @@ describe.skipIf(!DEMO_PASSWORD)("integration hub (integration)", () => {
     for (const t of [v1, other]) await destroyTestTenant(db, t);
     await app.close();
     await queryClient.end();
+  });
+
+  it("imports each Runo allocation once per hospital, including allocations on later pages", async () => {
+    const credentials = await call(v1, "SUPER_ADMIN", "PUT", "/integrations/hub/runo/configuration", {
+      secrets: { allocationsApiKey: "test-runo-allocations-key" },
+    });
+    expect(credentials.statusCode).toBe(200);
+    expect(credentials.body).not.toContain("test-runo-allocations-key");
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      expect(init?.headers).toEqual({ "Auth-Key": "test-runo-allocations-key" });
+      const url = new URL(String(input));
+      expect(url.searchParams.get("processName")).toBe("Default process");
+      const page = Number(url.searchParams.get("pageNo"));
+      const records = Array.from({ length: page === 1 ? 100 : 1 }, (_, index) => ({
+        _id: `runo-${page}-${index}`,
+        processName: "Default process",
+        createdAt: 1600486640,
+        customer: { name: "Runo test allocation", phoneNumber: "+919000555555" },
+      }));
+      return Response.json({ statusCode: 0, data: { metadata: [{ total: 101, page }], data: records } });
+    });
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await call(v1, "SUPER_ADMIN", "POST", "/integrations/hub/runo/allocations/import", {
+          date: "2020-09-19", processName: "Default process",
+        });
+        expect(result.statusCode).toBe(200);
+        expect(result.json()).toEqual({ imported: 101 });
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const lastPage = await call(v1, "SUPER_ADMIN", "GET", "/leads/runo-allocations?page=3");
+    expect(lastPage.statusCode).toBe(200);
+    expect(lastPage.json()).toMatchObject({ rows: [{ externalId: "runo-1-0" }], hasMore: false });
+    const otherHospital = await call(other, "SUPER_ADMIN", "GET", "/leads/runo-allocations");
+    expect(otherHospital.statusCode).toBe(200);
+    expect(otherHospital.json()).toEqual({ rows: [], hasMore: false });
   });
 
   it("lists the catalogue by category with enabled, configuration, health and mode as separate facts", async () => {

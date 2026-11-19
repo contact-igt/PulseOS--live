@@ -418,6 +418,12 @@ export const api = {
   /** URL of the authenticated recording stream (play in an <audio> tag, or download). The provider URL is never exposed. */
   callRecordingUrl: (callId: string, opts: { download?: boolean } = {}) => `${API_BASE}/calls/${callId}/recording${opts.download ? "?download=1" : ""}`,
   integrationHub: () => request<IntegrationCard[]>("/integrations/hub"),
+  importRunoAllocations: (input: { date: string; processName: string }) =>
+    request<{ imported: number }>("/integrations/hub/runo/allocations/import", { method: "POST", body: JSON.stringify(input) }),
+  runoAllocations: (page: number) => request<{
+    rows: { externalId: string; processName: string; createdAt: string; customerName: string | null; phone: string | null; status: string | null; assignee: string | null; source: string | null; branch: string | null }[];
+    hasMore: boolean;
+  }>(`/leads/runo-allocations?page=${page}`),
   integrationDetail: (key: string) => request<IntegrationDetail>(`/integrations/hub/${key}`),
   /** "Connect with code": redeem a WhatsNexus pairing code; the server stores the credentials it returns. Nothing secret comes back. */
   pairIntegration: (key: string, body: { baseUrl: string; code: string }) =>

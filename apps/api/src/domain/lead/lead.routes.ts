@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requirePermission } from "../auth/permission.middleware.js";
+import { listRunoAllocations } from "../integration/runo-allocations.service.js";
 import { parseOwnerFilter } from "../journey/journey.service.js";
 import { createLead, getLeadsSummary, getLeadsWorkspace, LeadRangeError, listLeads, lookupPatientByPhone } from "./lead.service.js";
 import { getLeadEditModel, updateLead } from "./lead-edit.service.js";
@@ -113,6 +114,15 @@ const updateLeadBody = z.object({
 
 export async function leadRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requirePermission("MANAGE_LEADS"));
+
+  app.get("/leads/runo-allocations", async (request, reply) => {
+    const u = request.sessionUser!;
+    if (!u.capabilities.RUNO_CALLING) return reply.status(403).send({ error: "feature_not_available" });
+    const parsed = z.object({ page: z.coerce.number().int().min(1).max(1_000_000).default(1) }).safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
+    reply.header("Cache-Control", "no-store");
+    return listRunoAllocations(app.db, u.tenantId, parsed.data.page);
+  });
 
   app.get("/leads", async (request, reply) => {
     const tenantId = request.sessionUser!.tenantId;

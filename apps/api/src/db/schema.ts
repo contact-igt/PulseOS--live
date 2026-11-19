@@ -5,6 +5,22 @@ import { pgTable, uuid, text, timestamp, integer, boolean, jsonb, pgEnum, index,
 
 export const roleEnum = pgEnum("role", ["SUPER_ADMIN", "HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR", "DOCTOR"]);
 
+export const runoAllocations = pgTable("runo_allocations", {
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  externalId: text("external_id").notNull(),
+  processName: text("process_name").notNull(),
+  customerName: text("customer_name"),
+  phone: text("phone"),
+  status: text("status"),
+  assignee: text("assignee"),
+  source: text("source"),
+  branch: text("branch"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.tenantId, t.externalId] }),
+  byDate: index("runo_allocations_tenant_created_idx").on(t.tenantId, t.createdAt, t.externalId),
+}));
+
 // One codebase, one schema: the edition is a tenant property read by the API (see domain/auth/edition.ts) and mirrored in the UI.
 export const tenantEditionEnum = pgEnum("tenant_edition", ["BETA_V1_CORE", "BETA_V2_GROWTH"]);
 
