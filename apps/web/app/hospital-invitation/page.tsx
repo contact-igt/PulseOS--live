@@ -2,12 +2,30 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
+import { Eye, EyeOff } from "lucide-react";
 import { ApiError, api } from "@pulseos/api-client";
 import { PulseLockup } from "@pulseos/ui";
 
+function PasswordField({ name, label, describedBy }: { name: string; label: string; describedBy?: string }) {
+  const [visible, setVisible] = useState(false);
+  const Icon = visible ? EyeOff : Eye;
+  return <div>
+    <label htmlFor={name} className="block text-sm font-medium text-neutral-900">{label}</label>
+    <div className="relative mt-1">
+      <input id={name} name={name} type={visible ? "text" : "password"} autoComplete="new-password"
+        required minLength={12} maxLength={128} aria-describedby={describedBy}
+        className="block w-full rounded-control border border-neutral-300 py-2 pl-3 pr-11" />
+      <button type="button" onClick={() => setVisible(!visible)} aria-controls={name}
+        aria-label={`${visible ? "Hide" : "Show"} ${label.toLowerCase()}`}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-control text-neutral-600 hover:text-primary-700">
+        <Icon size={16} aria-hidden="true" />
+      </button>
+    </div>
+  </div>;
+}
+
 export default function HospitalInvitationPage() {
   const [token, setToken] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState("");
@@ -24,12 +42,17 @@ export default function HospitalInvitationPage() {
     event.preventDefault();
     if (!token || submitting) return;
     setError("");
+    const form = new FormData(event.currentTarget);
+    const password = String(form.get("password") ?? "");
+    if (password !== form.get("confirm-password")) {
+      setError("Passwords do not match.");
+      return;
+    }
     setSubmitting(true);
     try {
       await api.redeemHospitalInvitation(token, password);
       setAccepted(true);
       setToken("");
-      setPassword("");
     } catch (failure) {
       setError(failure instanceof ApiError && failure.status === 400
         ? "This invitation or password could not be accepted. Use a password different from your email, or request a fresh invitation."
@@ -53,21 +76,9 @@ export default function HospitalInvitationPage() {
           </>
         ) : token ? (
           <form onSubmit={accept} className="mt-5 space-y-4">
-            <label className="block text-sm font-medium text-neutral-900">
-              New password
-              <input
-                type="password"
-                autoComplete="new-password"
-                required
-                minLength={12}
-                maxLength={128}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                aria-describedby="password-requirements"
-                className="mt-1 block w-full rounded-control border border-neutral-300 px-3 py-2"
-              />
-            </label>
+            <PasswordField name="password" label="New password" describedBy="password-requirements" />
             <p id="password-requirements" className="text-sm text-neutral-600">Use at least 12 characters and a password different from your email.</p>
+            <PasswordField name="confirm-password" label="Confirm password" />
             {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
             <button type="submit" disabled={submitting} className="rounded-control bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-60">
               {submitting ? "Accepting invitation…" : "Accept invitation"}

@@ -64,8 +64,17 @@ test("signs in with an authenticator code and retries hospital creation with the
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Platform dashboard" })).toBeVisible({ timeout: 20000 });
 
-  await page.getByRole("link", { name: "Hospitals", exact: true }).click();
+  const navigation = page.getByRole("navigation", { name: "Platform" });
+  await expect(navigation.getByRole("link", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const menu = page.getByRole("button", { name: "Open Platform menu" });
+  await expect(navigation).toBeHidden();
+  await menu.click();
+  await navigation.getByRole("link", { name: "Hospitals" }).click();
+  await expect(navigation).toBeHidden();
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("link", { name: "Create hospital" }).click();
+  await expect(navigation.getByRole("link", { name: "Hospitals" })).toHaveAttribute("aria-current", "page");
   await page.getByLabel("Organization type").selectOption("Eye Hospital");
   await page.getByLabel("Department", { exact: true }).selectOption("Ophthalmology");
   await page.getByLabel("First administrator name").fill("Asha Verma");
