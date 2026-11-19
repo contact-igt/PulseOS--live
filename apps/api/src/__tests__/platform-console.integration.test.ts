@@ -232,8 +232,15 @@ describe.skipIf(process.env.PLATFORM_TEST_DATABASE !== "1")("platform browser au
       expect(mails).toHaveLength(3);
       expect(mails[2]!.token).not.toBe(mails[0]!.token);
       expect((await redeem(mails[0]!.token)).statusCode).toBe(400);
-      expect((await redeem(mails[2]!.token)).statusCode).toBe(200);
-      expect((await redeem(mails[2]!.token)).statusCode).toBe(400);
+      const redemption = await Promise.all([redeem(mails[2]!.token), redeem(mails[2]!.token)]);
+      expect(redemption.map((response) => response.statusCode).sort()).toEqual([200, 400]);
+      const winner = redemption.find((response) => response.statusCode === 200)!;
+      expect(winner.json()).toEqual({ accepted: true, signedIn: true });
+      const cookie = winner.cookies.find(({ name }) => name === "pulseos_session");
+      expect(cookie).toMatchObject({ httpOnly: true });
+      const me = await send("GET", "/auth/session", undefined, "pulseos_session=" + cookie!.value);
+      expect(me.json()).toMatchObject({ user: { tenantId: created.json().tenantId, email: body.email, role: "SUPER_ADMIN" } });
+      expect(await read()).toMatchObject({ invitation: "accepted", active: true, lifecycleStatus: "ACTIVE" });
       expect((await resend(randomUUID())).statusCode).toBe(409);
       const audit = await queryClient`select action, reason from platform_audit_log where onboarding_id=${id}`;
       expect(audit.map((entry) => entry.action)).toEqual(expect.arrayContaining([

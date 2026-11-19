@@ -295,7 +295,7 @@ export const api = {
   /** Hospitals listed in Developer Access (development only), each with the roles that exist in it. */
   devLoginEnvironments: () => request<DevEnvironment[]>("/auth/dev-login/environments"),
   /** Public hospital sign-up: the server creates the workspace and signs the owner in. */
-  redeemHospitalInvitation: (token: string, password: string) => request<{ accepted: true }>("/auth/hospital-invitations/redeem", { method: "POST", body: JSON.stringify({ token, password }) }),
+  redeemHospitalInvitation: (token: string, password: string) => request<{ accepted: true; signedIn?: boolean }>("/auth/hospital-invitations/redeem", { method: "POST", body: JSON.stringify({ token, password }) }),
   devLogin: (role: Role, environment?: string) =>
     request<{ user: SessionUser }>("/auth/dev-login", { method: "POST", body: JSON.stringify({ role, environment }) }),
   branches: () => request<Branch[]>("/branches"),

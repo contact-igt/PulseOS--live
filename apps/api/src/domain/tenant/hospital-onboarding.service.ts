@@ -5,7 +5,7 @@ import {
   branches, hospitalInvitationDeliveries as deliveries, hospitalOnboardings as onboardings, platformAuditLog, platformIdentities,
   tenantLoginConfigs, tenantProfiles, tenants, users,
 } from "../../db/schema.js";
-import { hashPassword } from "../auth/auth.service.js";
+import { hashPassword, insertHospitalSession } from "../auth/auth.service.js";
 import { installDepartmentTemplate } from "../specialty/department.service.js";
 import { hospitalTemplateKey, provisionHospital, type HospitalProvisioningInput } from "./hospital-provisioning.service.js";
 import type { PlatformActor } from "../platform/platform-access.js";
@@ -249,27 +249,40 @@ export async function redeemHospitalInvitation(db: Db, token: string, password: 
   // Lock and recheck at redemption. Reissue, concurrent acceptance, and activation serialize on this row.
   return db.transaction(async (tx) => {
     const [row] = await tx.select().from(onboardings).where(eq(onboardings.invitationHash, invitationHash)).for("update");
-    if (!row?.tenantId || !row.adminId || row.invitationRedeemedAt || !row.invitationExpiresAt) return false;
+    if (!row?.tenantId || !row.adminId || row.invitationRedeemedAt || !row.invitationExpiresAt) return null;
     const reject = async (reason: string) => {
       await audit(tx, row.id, null, "invitation_redemption_failed", reason);
-      return false;
+      return null;
     };
-    if (row.invitationExpiresAt.getTime() <= Date.now()) return false;
+    if (row.invitationExpiresAt.getTime() <= Date.now()) return null;
+    const [hospital] = await tx.select({ state: tenants.lifecycleStatus }).from(tenants)
+      .where(eq(tenants.id, row.tenantId)).for("update");
+    if (hospital?.state !== "PROVISIONING") return reject("invalid_lifecycle_transition");
     const [owner] = await tx.select({ email: users.email }).from(users)
       .where(and(eq(users.id, row.adminId), eq(users.tenantId, row.tenantId), eq(users.role, "SUPER_ADMIN")))
       .for("update");
     if (!owner) return reject("owner_unavailable");
-    if (password.toLowerCase() === owner.email.toLowerCase()) return false;
+    if (password.toLowerCase() === owner.email.toLowerCase()) return null;
     const passwordHash = await hashPassword(password);
     if (row.invitationExpiresAt.getTime() <= Date.now()) return reject("invitation_expired");
     await tx.update(users).set({ passwordHash }).where(and(eq(users.id, row.adminId), eq(users.tenantId, row.tenantId)));
-    await update(tx, row.id, { invitationHash: null, invitationRedeemedAt: new Date() });
+    const redeemed = await update(tx, row.id, { invitationHash: null, invitationRedeemedAt: new Date() });
     await tx.update(deliveries).set({ encryptedToken: null, status: "superseded" }).where(and(
       eq(deliveries.onboardingId, row.id), eq(deliveries.status, "pending"),
     ));
     await audit(tx, row.id, null, "invitation_redeemed");
-    return true;
+    const current = await status(tx, redeemed);
+    if (!current.ready || !(await enableProvisionedHospital(tx, row.tenantId))) return { session: null };
+    await audit(tx, row.id, null, "hospital_activated", "invitation_redemption");
+    return { session: await insertHospitalSession(tx, row.adminId) };
   });
+}
+
+async function enableProvisionedHospital(tx: Tx, tenantId: string) {
+  const [activated] = await tx.update(tenants).set({
+    loginEnabled: true, lifecycleStatus: "ACTIVE", lifecycleVersion: sql`${tenants.lifecycleVersion} + 1`, lifecycleChangedAt: new Date(),
+  }).where(and(eq(tenants.id, tenantId), eq(tenants.lifecycleStatus, "PROVISIONING"))).returning({ id: tenants.id });
+  return activated;
 }
 
 export async function activateHospital(db: Db, id: string, actor: PlatformActor) {
@@ -286,11 +299,9 @@ export async function activateHospital(db: Db, id: string, actor: PlatformActor)
       await audit(tx, id, actor, "activation_failed", "hospital_not_ready");
       return { error: "hospital_not_ready", hospital: current } as const;
     }
-    const [activated] = await tx.update(tenants).set({
-      loginEnabled: true, lifecycleStatus: "ACTIVE", lifecycleVersion: sql`${tenants.lifecycleVersion} + 1`, lifecycleChangedAt: new Date(),
-    }).where(and(eq(tenants.id, row.tenantId!), eq(tenants.lifecycleStatus, "PROVISIONING"))).returning();
+    const activated = await enableProvisionedHospital(tx, row.tenantId!);
     if (!activated) return { error: "invalid_lifecycle_transition", hospital: current } as const;
     await audit(tx, id, actor, "hospital_activated");
-    return { hospital: { ...current, active: true } };
+    return { hospital: { ...current, active: true, lifecycleStatus: "ACTIVE" as const } };
   });
 }

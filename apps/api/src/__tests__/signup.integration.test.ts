@@ -116,16 +116,16 @@ describe("platform-managed hospital onboarding (integration)", () => {
     expect(invitation.json().recipient).toBe(input.email);
     const token = tokenFrom(invitation.json().invitationPath);
     expect(await queryClient`select invitation_hash from hospital_onboardings where id = ${id}`).toEqual([{ invitation_hash: digest(token) }]);
+    await queryClient`delete from tenant_login_configs where tenant_id = ${tenantId}`;
     const accepts = await Promise.all([accept(token), accept(token)]);
     expect(accepts.map((res) => res.statusCode).sort()).toEqual([200, 400]);
     expect(accepts.every((res) => res.cookies.length === 0)).toBe(true);
     expect((await action(id, "invitation")).statusCode).toBe(409);
-    expect((await status(id)).json()).toMatchObject({ ready: true, active: false, invitation: "accepted" });
+    expect((await status(id)).json()).toMatchObject({ ready: false, active: false, invitation: "accepted" });
     expect((await login(input.email)).statusCode).toBe(401);
     expect((await login(input.email, slug)).statusCode).toBe(401);
     expect(await queryClient`select id from sessions where user_id = ${owner!.id}`).toHaveLength(0);
 
-    await queryClient`delete from tenant_login_configs where tenant_id = ${tenantId}`;
     expect((await status(id)).json()).toMatchObject({ ready: false, active: false });
     expect((await action(id, "activate")).statusCode).toBe(409);
     await queryClient`insert into tenant_login_configs (tenant_id) values (${tenantId})`;
@@ -211,8 +211,14 @@ describe("platform-managed hospital onboarding (integration)", () => {
   it("expires invitations and invalidates old tokens on reissue", async () => {
     const created = await create(valid("expire", { department: "ENT / Rhinology" }));
     const { id } = created.json();
-    const first = tokenFrom((await action(id, "invitation")).json().invitationPath);
-    const second = tokenFrom((await action(id, "invitation")).json().invitationPath);
+    const original = await action(id, "invitation");
+    expect(original.statusCode).toBe(200);
+    const first = tokenFrom(original.json().invitationPath);
+    expect((await action(id, "invitation")).statusCode).toBe(429);
+    await queryClient`update hospital_onboardings set invitation_expires_at = now() + interval '23 hours' where id = ${id}`;
+    const replacement = await action(id, "invitation");
+    expect(replacement.statusCode).toBe(200);
+    const second = tokenFrom(replacement.json().invitationPath);
     expect((await accept(first)).statusCode).toBe(400);
     await queryClient`update hospital_onboardings set invitation_expires_at = now() - interval '1 second' where id = ${id}`;
     expect((await accept(second)).statusCode).toBe(400);

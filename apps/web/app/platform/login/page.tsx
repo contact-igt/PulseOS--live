@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { ApiError, platformApi } from "@pulseos/api-client";
 import { PulseLockup } from "@pulseos/ui";
 import { ArrowRight } from "lucide-react";
@@ -56,7 +57,10 @@ export default function PlatformLogin() {
       window.location.replace("/platform");
     } catch (failure) {
       setError(failure instanceof ApiError && failure.status === 429 ? "Too many attempts. Wait before trying again."
-        : failure instanceof ApiError && failure.status < 500 ? "The credentials or authenticator code could not be verified."
+        : failure instanceof ApiError && failure.status < 500
+          ? mode === "login" && !useCode
+            ? "We couldn’t sign you in. Check your Platform email and password."
+            : "The credentials or authenticator code could not be verified."
         : "Platform authentication is temporarily unavailable.");
     } finally {
       setWorking(false);
@@ -71,12 +75,13 @@ export default function PlatformLogin() {
           <Image src={hospitalOperations} alt="" sizes="(min-width: 768px) 300px, 1px"
             className="mx-auto hidden h-auto w-full max-w-[300px] md:block" />
           <div className="hidden md:block">
-            <p className="text-3xl font-semibold tracking-tight">Platform administration</p>
-            <p className="mt-3 max-w-xs text-sm leading-relaxed text-primary-100">Manage hospital onboarding, administrator access, and platform operations.</p>
+            <p className="text-3xl font-semibold tracking-tight">Manage your hospital network</p>
+            <p className="mt-3 max-w-sm text-sm leading-relaxed text-primary-100">Onboard hospitals, manage administrator access, and review operational issues across PulseOS.</p>
           </div>
         </div>
         <section className="px-6 py-8 sm:px-10 md:p-12">
         <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 sm:text-3xl">{mode === "login" ? "Platform sign in" : "Set up platform access"}</h1>
+        {mode === "login" && <p className="mt-2 text-sm leading-relaxed text-neutral-600">Sign in with your PulseOS Platform administrator account.</p>}
         {checkingSession ? <p role="status" className="mt-4 text-sm text-neutral-600">Checking your session…</p> : <>
         {setup && mode === "verify" && (
           <div className="mt-4 space-y-2 text-sm">
@@ -98,6 +103,9 @@ export default function PlatformLogin() {
             <ArrowRight size={17} aria-hidden="true" />
           </button>
         </form>
+        {mode === "login" && !useCode && <p className="mt-6 border-t border-primary-100 pt-4 text-sm text-neutral-600">
+          Hospital staff can <Link href="/login" className="font-semibold text-primary-700 underline underline-offset-4">use hospital sign-in</Link>.
+        </p>}
         {(mode !== "login" || useCode) && <button type="button" disabled={working}
           onClick={() => window.location.assign("/platform/login")}
           className="mt-4 text-sm font-semibold text-primary-700">Back to sign in</button>}

@@ -5,11 +5,12 @@ import Link from "next/link";
 import { ArrowRight, Building2, Check, Eye, EyeOff, KeyRound, Link2 } from "lucide-react";
 import { ApiError, api } from "@pulseos/api-client";
 import { PulseLockup } from "@pulseos/ui";
+import { ROLE_HOME } from "../../components/shell/nav";
 
 const invitationSteps = [
   { title: "Open your invitation", detail: "Use the link sent to your hospital email.", icon: Link2 },
   { title: "Set your password", detail: "Create the password for your administrator account.", icon: KeyRound },
-  { title: "Hospital activation", detail: "Sign in once the PulseOS team activates your hospital.", icon: Building2 },
+  { title: "Open your dashboard", detail: "Your dashboard opens when your hospital is ready.", icon: Building2 },
 ];
 
 function PasswordField({ name, label, describedBy }: { name: string; label: string; describedBy?: string }) {
@@ -56,7 +57,11 @@ export default function HospitalInvitationPage() {
     }
     setSubmitting(true);
     try {
-      await api.redeemHospitalInvitation(token, password);
+      const result = await api.redeemHospitalInvitation(token, password);
+      if (result.signedIn) {
+        window.location.replace(ROLE_HOME.SUPER_ADMIN);
+        return;
+      }
       setAccepted(true);
       setToken("");
     } catch (failure) {
@@ -86,7 +91,7 @@ export default function HospitalInvitationPage() {
                   <Icon size={18} aria-hidden="true" />
                 </span>
                 <div>
-                  <p className="text-sm font-semibold">{title}{complete && <span className="sr-only"> (completed)</span>}</p>
+                  <p className="text-sm font-semibold">{accepted && current ? "Await hospital activation" : title}{complete && <span className="sr-only"> (completed)</span>}</p>
                   <p className="mt-0.5 hidden text-xs leading-relaxed text-primary-50 md:block">{detail}</p>
                 </div>
               </li>;

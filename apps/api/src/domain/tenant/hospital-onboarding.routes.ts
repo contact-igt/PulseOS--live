@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requirePlatform } from "../platform/platform-access.js";
+import { setSessionCookie } from "../auth/auth.routes.js";
 import { hospitalCreationSchema, ONBOARDING_EDITION } from "./hospital-onboarding.schema.js";
 import {
   activateHospital, createHospital, issueHospitalInvitation, onboardingStatus,
@@ -28,7 +29,8 @@ export async function hospitalOnboardingRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
     const accepted = await redeemHospitalInvitation(app.db, parsed.data.token, parsed.data.password);
     if (!accepted) return reply.status(400).send({ error: "invitation_unavailable" });
-    return { accepted: true };
+    if (accepted.session) setSessionCookie(reply, accepted.session.id, accepted.session.expiresAt, false);
+    return { accepted: true, signedIn: Boolean(accepted.session) };
   });
 
   await app.register(async (platform) => {

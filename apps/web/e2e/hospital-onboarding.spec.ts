@@ -46,8 +46,30 @@ test("hospital invitation accepts a password using the fragment token", async ({
   await confirmation.fill(password);
   await submit.click();
   await expect(page.getByRole("status")).toContainText("Your password is set");
-  await expect(currentStep).toContainText("Hospital activation");
+  await expect(currentStep).toContainText("Await hospital activation");
   expect((await page.context().cookies()).some((cookie) => cookie.name === "pulseos_session")).toBe(false);
+});
+
+test("a ready hospital opens the administrator dashboard after invitation redemption", async ({ page }) => {
+  const token = "b".repeat(43);
+  const password = "A synthetic test password";
+  await page.route("**/auth/hospital-invitations/redeem", async (route) => {
+    const headers = {
+      "access-control-allow-origin": new URL(page.url()).origin,
+      "access-control-allow-credentials": "true",
+      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-headers": "content-type",
+    };
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+    expect(route.request().postDataJSON()).toEqual({ token, password });
+    await route.fulfill({ status: 200, headers, json: { accepted: true, signedIn: true } });
+  });
+  await page.route("**/command-centre", (route) => route.fulfill({ contentType: "text/plain", body: "Dashboard route" }));
+  await page.goto(`/hospital-invitation#${token}`);
+  await page.getByLabel("New password", { exact: true }).fill(password);
+  await page.getByLabel("Confirm password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Accept invitation" }).click();
+  await expect(page).toHaveURL(/\/command-centre$/);
 });
 
 test("Platform Super Admin can queue a new invitation email and observe provider acceptance", async ({ page }) => {

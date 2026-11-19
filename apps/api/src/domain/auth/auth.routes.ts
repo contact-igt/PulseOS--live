@@ -36,7 +36,7 @@ const devLoginBody = z.object({
 
 const DEV_TENANT_ENV = new RegExp("^" + DEV_TENANT_PREFIX + "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" + String.fromCharCode(36), "i");
 
-function setSessionCookie(reply: import("fastify").FastifyReply, sessionId: string, expiresAt: Date, persistent = true) {
+export function setSessionCookie(reply: import("fastify").FastifyReply, sessionId: string, expiresAt: Date, persistent = true) {
   const sameSite = (process.env.COOKIE_SAMESITE as "lax" | "strict" | "none") ?? "lax";
   const secure = process.env.NODE_ENV === "production" || sameSite === "none";
   reply.setCookie(SESSION_COOKIE, sessionId, {

@@ -2,7 +2,7 @@ import { hospitalIsActive } from "../tenant/hospital-lifecycle.policy.js";
 import { resolveTenantCapabilities } from "../capability/capability.service.js";
 import { hash, verify } from "@node-rs/argon2";
 import { and, eq, notExists } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, Tx } from "../../db/client.js";
 import { users, sessions, tenants, branches, tenantLoginConfigs, tenantProfiles, hospitalOnboardings } from "../../db/schema.js";
 import { DEFAULT_EDITION, DEFAULT_INTERFACE_SIZE, DEFAULT_SURFACE_STYLE, DEFAULT_TEXT_SIZE, INTERFACE_SIZES, SURFACE_STYLES, TEXT_SIZES, type InterfaceSize, type SurfaceStyle, type TextSize, DEFAULT_LOGIN_SUPPORT_TEXT, DEFAULT_LOGIN_TAGLINE, LOGIN_LOGO_PATH_PATTERN, type DevEnvironment, type Role, type TenantLoginBranding } from "@pulseos/types";
 import { DEFAULT_DEMO_ENVIRONMENT, DEMO_ENVIRONMENTS, DEMO_LOGIN_ROLES, demoEmailForRole, type DemoEnvironmentKey } from "./demo-environments.js";
@@ -34,6 +34,13 @@ export async function verifyPassword(hashValue: string, plain: string): Promise<
   return verify(hashValue, plain);
 }
 
+export async function insertHospitalSession(tx: Tx, userId: string, remember = false) {
+  const [session] = await tx.insert(sessions)
+    .values({ userId, expiresAt: new Date(Date.now() + (remember ? REMEMBER_TTL_MS : SESSION_TTL_MS)) })
+    .returning();
+  return session!;
+}
+
 // Shared by password login and Dev Login — the only difference between them
 // is how the target user is found (email+password vs. role lookup); once a
 // `users` row is settled on, session creation is identical, so both go
@@ -42,10 +49,7 @@ async function createSessionFor(db: Db, user: typeof users.$inferSelect, remembe
   const signedIn = await db.transaction(async (tx) => {
     const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, user.tenantId)).for("share");
     if (!tenant || !hospitalIsActive(tenant)) return null;
-    const [session] = await tx.insert(sessions)
-      .values({ userId: user.id, expiresAt: new Date(Date.now() + (remember ? REMEMBER_TTL_MS : SESSION_TTL_MS)) })
-      .returning();
-    return { tenant, session: session! };
+    return { tenant, session: await insertHospitalSession(tx, user.id, remember) };
   });
   if (!signedIn) return { ok: false as const, reason: "invalid_credentials" as const };
   const { tenant, session } = signedIn;
