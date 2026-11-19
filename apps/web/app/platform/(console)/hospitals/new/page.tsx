@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRef, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, platformApi } from "@pulseos/api-client";
-import { SIGNUP_DEPARTMENTS, SIGNUP_DISCOVERY_SOURCES, SIGNUP_EDITIONS, SIGNUP_INDUSTRIES, SIGNUP_ORGANIZATION_TYPES, type HospitalCreationInput } from "@pulseos/types";
+import { SIGNUP_DEPARTMENTS, SIGNUP_EDITIONS, SIGNUP_INDUSTRIES, SIGNUP_ORGANIZATION_TYPES, type HospitalCreationInput } from "@pulseos/types";
 import { buttonClass, Failure, inputClass, PageTitle, panelClass, usePlatformAccount } from "../../platform-ui";
 
 type Field = {
@@ -35,7 +35,6 @@ const fields: Field[] = [
   { name: "state", label: "State", min: 2, max: 80 },
   { name: "pinCode", label: "PIN code", pattern: "[0-9]{6}", max: 6 },
   { name: "country", label: "Country", min: 2, max: 60, initial: "India" },
-  { name: "discoverySource", label: "Discovery source", options: SIGNUP_DISCOVERY_SOURCES },
   { name: "discoveryNotes", label: "Discovery notes", optional: true, max: 300 },
 ];
 
@@ -59,7 +58,10 @@ export default function NewHospital() {
     if (inFlight.current || conflict) return;
     if (!attempt.current) {
       const entries = [...new FormData(event.currentTarget)].map(([key, value]) => [key, String(value).trim()]).filter(([, value]) => value);
-      attempt.current = { key: crypto.randomUUID(), payload: Object.fromEntries(entries) as HospitalCreationInput };
+      attempt.current = {
+        key: crypto.randomUUID(),
+        payload: { ...Object.fromEntries(entries), discoverySource: "Other" } as HospitalCreationInput,
+      };
       setRequestId(attempt.current.key);
     }
     const { key, payload } = attempt.current;

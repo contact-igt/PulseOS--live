@@ -38,6 +38,7 @@ test("signs in as Super Admin with email and password and retries hospital creat
     }
     if (pathname === "/platform/hospitals" && call.method() === "POST") {
       const operation = { key: call.headers()["idempotency-key"]!, body: call.postDataJSON() };
+      expect(operation.body).toMatchObject({ discoverySource: "Other" });
       writes += 1;
       if (writes === 1) {
         request = operation;
@@ -85,7 +86,7 @@ test("signs in as Super Admin with email and password and retries hospital creat
   await page.getByLabel("City").fill("Bengaluru");
   await page.getByLabel("State").fill("Karnataka");
   await page.getByLabel("PIN code").fill("560001");
-  await page.getByLabel("Discovery source").selectOption("Google");
+  await expect(page.getByLabel("Discovery source")).toHaveCount(0);
   await page.getByLabel("Hospital name").fill("Workshop Hospital");
   await expect(page.getByLabel("Hospital name")).toHaveValue("Workshop Hospital");
   await page.getByRole("button", { name: "Create hospital" }).click();

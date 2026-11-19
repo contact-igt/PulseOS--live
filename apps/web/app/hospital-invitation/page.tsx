@@ -2,9 +2,15 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { Eye, EyeOff } from "lucide-react";
+import { ArrowRight, Building2, Check, Eye, EyeOff, KeyRound, Link2 } from "lucide-react";
 import { ApiError, api } from "@pulseos/api-client";
 import { PulseLockup } from "@pulseos/ui";
+
+const invitationSteps = [
+  { title: "Open your invitation", detail: "Use the link sent to your hospital email.", icon: Link2 },
+  { title: "Set your password", detail: "Create the password for your administrator account.", icon: KeyRound },
+  { title: "Hospital activation", detail: "Sign in once the PulseOS team activates your hospital.", icon: Building2 },
+];
 
 function PasswordField({ name, label, describedBy }: { name: string; label: string; describedBy?: string }) {
   const [visible, setVisible] = useState(false);
@@ -14,7 +20,7 @@ function PasswordField({ name, label, describedBy }: { name: string; label: stri
     <div className="relative mt-1">
       <input id={name} name={name} type={visible ? "text" : "password"} autoComplete="new-password"
         required minLength={12} maxLength={128} aria-describedby={describedBy}
-        className="block w-full rounded-control border border-neutral-300 py-2 pl-3 pr-11" />
+        className="block w-full rounded-control border border-neutral-300 bg-white py-3 pl-3.5 pr-11 text-base hover:border-primary-400" />
       <button type="button" onClick={() => setVisible(!visible)} aria-controls={name}
         aria-label={`${visible ? "Hide" : "Show"} ${label.toLowerCase()}`}
         className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-control text-neutral-600 hover:text-primary-700">
@@ -62,32 +68,57 @@ export default function HospitalInvitationPage() {
     }
   }
 
+  const currentStep = accepted ? 2 : token ? 1 : 0;
+
   return (
-    <main className="grid min-h-dvh place-items-center bg-neutral-50 px-4 py-10">
-      <section className="w-full max-w-md rounded-xl border border-neutral-200 bg-white p-8 shadow-sm">
-        <PulseLockup tone="onWhite" size={32} />
-        <h1 className="mt-6 text-2xl font-semibold text-neutral-900">Hospital administrator invitation</h1>
+    <main className="app-shell grid min-h-dvh place-items-center px-4 py-8 sm:px-8">
+      <div className="grid w-full max-w-5xl overflow-hidden rounded-shell border border-primary-100 bg-white shadow-xl shadow-primary-900/10 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <aside className="bg-gradient-to-br from-primary-900 via-primary-800 to-primary-600 p-6 text-white sm:p-8 lg:p-10">
+          <PulseLockup tone="onBlue" size={32} showBeta={false} />
+          <ol aria-label="Hospital invitation progress" className="mt-6 space-y-2.5 md:mt-10">
+            {invitationSteps.map(({ title, detail, icon }, index) => {
+              const complete = index < currentStep;
+              const current = index === currentStep;
+              const Icon = complete ? Check : icon;
+              return <li key={title} aria-current={current ? "step" : undefined}
+                className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 md:p-3 ${current ? "border-white/40 bg-white/15" : "border-transparent"}`}>
+                <span className={`grid size-9 shrink-0 place-items-center rounded-control ${current ? "bg-white text-primary-800" : "bg-white/10 text-primary-50"}`}>
+                  <Icon size={18} aria-hidden="true" />
+                </span>
+                <div>
+                  <p className="text-sm font-semibold">{title}{complete && <span className="sr-only"> (completed)</span>}</p>
+                  <p className="mt-0.5 hidden text-xs leading-relaxed text-primary-50 md:block">{detail}</p>
+                </div>
+              </li>;
+            })}
+          </ol>
+        </aside>
+        <section className="flex flex-col justify-center px-6 py-8 sm:px-10 lg:p-12">
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 sm:text-3xl">{accepted ? "Invitation accepted" : "Hospital administrator invitation"}</h1>
         {accepted ? (
           <>
-            <p role="status" className="mt-3 text-sm text-neutral-600">
+            <p role="status" className="mt-4 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-relaxed text-emerald-900">
+              <Check size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
               Your password is set. You can sign in after the PulseOS team activates your hospital.
             </p>
-            <Link href="/login" className="mt-4 inline-block text-sm font-semibold text-primary-700">Go to sign in</Link>
+            <Link href="/login" className="mt-5 inline-flex w-fit items-center gap-2 text-sm font-semibold text-primary-700">Go to sign in <ArrowRight size={16} aria-hidden="true" /></Link>
           </>
         ) : token ? (
-          <form onSubmit={accept} className="mt-5 space-y-4">
+          <form onSubmit={accept} className="mt-6 space-y-4">
             <PasswordField name="password" label="New password" describedBy="password-requirements" />
             <p id="password-requirements" className="text-sm text-neutral-600">Use at least 12 characters and a password different from your email.</p>
             <PasswordField name="confirm-password" label="Confirm password" />
-            {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-            <button type="submit" disabled={submitting} className="rounded-control bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700 disabled:opacity-60">
+            {error && <p role="alert" className="rounded-control border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-800">{error}</p>}
+            <button type="submit" disabled={submitting} className="inline-flex w-full items-center justify-center gap-2 rounded-control bg-primary-700 px-4 py-3 text-sm font-semibold text-white hover:bg-primary-800 disabled:opacity-60">
               {submitting ? "Accepting invitation…" : "Accept invitation"}
+              <ArrowRight size={17} aria-hidden="true" />
             </button>
           </form>
         ) : token === "" ? (
           <p className="mt-3 text-sm text-neutral-600">Open the original invitation link from the PulseOS team to set your password.</p>
-        ) : null}
-      </section>
+        ) : <p role="status" className="mt-3 text-sm text-neutral-600">Checking your invitation…</p>}
+        </section>
+      </div>
     </main>
   );
 }

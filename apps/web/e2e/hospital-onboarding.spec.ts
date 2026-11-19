@@ -30,6 +30,8 @@ test("hospital invitation accepts a password using the fragment token", async ({
   });
   await page.goto(`/hospital-invitation#${token}`);
   await expect(page).toHaveURL(/\/hospital-invitation$/);
+  const currentStep = page.getByRole("list", { name: "Hospital invitation progress" }).locator('[aria-current="step"]');
+  await expect(currentStep).toContainText("Set your password");
   await page.getByLabel("New password", { exact: true }).fill(password);
   const confirmation = page.getByLabel("Confirm password", { exact: true });
   await confirmation.fill("A different test password");
@@ -44,6 +46,7 @@ test("hospital invitation accepts a password using the fragment token", async ({
   await confirmation.fill(password);
   await submit.click();
   await expect(page.getByRole("status")).toContainText("Your password is set");
+  await expect(currentStep).toContainText("Hospital activation");
   expect((await page.context().cookies()).some((cookie) => cookie.name === "pulseos_session")).toBe(false);
 });
 
