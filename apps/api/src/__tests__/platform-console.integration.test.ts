@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance, InjectOptions } from "fastify";
+import { hospitalSidebarForUser } from "@pulseos/types";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
 import { authorizeLastPlatformAdminRecovery, bootstrapPlatform, OPS, SUPER } from "../domain/platform/platform-auth.service.js";
@@ -252,6 +253,38 @@ describe.skipIf(process.env.PLATFORM_TEST_DATABASE !== "1")("platform browser au
       vi.stubEnv("CONNECTOR_ENCRYPTION_KEY", previousKey);
       vi.stubEnv("HOSPITAL_INVITATION_WEB_ORIGIN", previousOrigin);
     }
+  });
+
+  it("lets only Platform Super Admins set a hospital-wide sidebar and restore defaults", async () => {
+    const login = await send("POST", "/auth/login", { email: "gyn.superadmin@pulseos.local", password: process.env.DEMO_PASSWORD });
+    expect(login.statusCode).toBe(200);
+    const { tenantId } = login.json().user;
+    const hospitalCookie = "pulseos_session=" + login.cookies.find((cookie) => cookie.name === "pulseos_session")!.value;
+    const path = `/platform/hospitals/${tenantId}/sidebar?legacy=1`;
+    const selection = { paths: ["/patients"] };
+    const readSession = () => send("GET", "/auth/session", undefined, hospitalCookie, {});
+    expect((await send("GET", path, undefined, superSession)).json().paths).toBeNull();
+    expect((await send("PATCH", path, selection, opsSession)).statusCode).toBe(403);
+    expect((await send("PATCH", path, selection, hospitalCookie)).statusCode).toBe(403);
+    expect((await send("PATCH", path, selection, superSession, {})).statusCode).toBe(403);
+    expect((await send("PATCH", path, { paths: ["/platform"] }, superSession)).statusCode).toBe(400);
+    expect((await send("PATCH", path, selection, superSession)).statusCode).toBe(200);
+    expect((await readSession()).json().user.hospitalSidebarPaths).toEqual(selection.paths);
+    const layout = [
+      { label: "Clinical", links: [{ href: "/appointments", label: "Calendar" }, { href: "/patients", label: "Patient list" }] },
+      { label: "Admin tools", links: [{ href: "/team", label: "Staff" }] },
+    ];
+    expect((await send("PATCH", path, { layout: [{ label: "Invalid", links: [{ href: "https://example.test", label: "External" }] }] }, superSession)).statusCode).toBe(400);
+    expect((await send("PATCH", path, { layout }, superSession)).statusCode).toBe(200);
+    const configured = (await readSession()).json().user;
+    expect(configured.hospitalSidebarLayout).toEqual(layout);
+    expect(hospitalSidebarForUser(configured).map((group) => [group.label, group.items.map((item) => item.label)]))
+      .toEqual([["Clinical", ["Calendar", "Patient list"]], ["Admin tools", ["Staff"]]]);
+    expect(hospitalSidebarForUser({ ...configured, role: "FRONT_DESK" }).map(({ label }) => label)).toEqual(["Clinical"]);
+    expect(await queryClient`select tenant_id from hospital_lifecycle_audit where action = 'hospital_sidebar_updated' and actor_id = ${adminId}`)
+      .toContainEqual({ tenant_id: tenantId });
+    expect((await send("PATCH", path, { layout: null }, superSession)).statusCode).toBe(200);
+    expect((await readSession()).json().user.hospitalSidebarPaths).toBeNull();
   });
 
   it("suspends a legacy hospital, holds intake and dispatch, and restores it with fresh login", async () => {

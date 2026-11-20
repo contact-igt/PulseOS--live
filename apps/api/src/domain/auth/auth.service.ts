@@ -70,6 +70,8 @@ async function createSessionFor(db: Db, user: typeof users.$inferSelect, remembe
       timezone: tenant?.timezone ?? "Asia/Kolkata",
       surfaceStyle: toSurfaceStyle(tenant?.surfaceStyle),
       interfaceSize: toInterfaceSize(user.interfaceSize),
+      hospitalSidebarPaths: tenant?.hospitalSidebarPaths ?? null,
+      hospitalSidebarLayout: tenant?.hospitalSidebarLayout ?? null,
       textSize: toTextSize(user.textSize),
       edition: tenant?.edition ?? DEFAULT_EDITION,
       capabilities,
@@ -223,7 +225,7 @@ async function loginToDevTenant(db: Db, role: Role, tenantId: string) {
 export async function resolveSession(db: Db, sessionId: string) {
   if (!SESSION_ID.test(sessionId)) return null;
   const [row] = await db
-    .select({ session: sessions, user: users, branch: branches, tenantName: tenants.name, loginSlug: tenants.loginSlug, timezone: tenants.timezone, edition: tenants.edition, surfaceStyle: tenants.surfaceStyle, loginEnabled: tenants.loginEnabled, lifecycleStatus: tenants.lifecycleStatus })
+    .select({ session: sessions, user: users, branch: branches, tenantName: tenants.name, loginSlug: tenants.loginSlug, timezone: tenants.timezone, edition: tenants.edition, surfaceStyle: tenants.surfaceStyle, loginEnabled: tenants.loginEnabled, lifecycleStatus: tenants.lifecycleStatus, hospitalSidebarPaths: tenants.hospitalSidebarPaths, hospitalSidebarLayout: tenants.hospitalSidebarLayout })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
     .innerJoin(tenants, eq(users.tenantId, tenants.id))
@@ -247,6 +249,8 @@ export async function resolveSession(db: Db, sessionId: string) {
     timezone: row.timezone,
     surfaceStyle: toSurfaceStyle(row.surfaceStyle),
     interfaceSize: toInterfaceSize(row.user.interfaceSize),
+    hospitalSidebarPaths: row.hospitalSidebarPaths,
+    hospitalSidebarLayout: row.hospitalSidebarLayout,
     textSize: toTextSize(row.user.textSize),
     edition: row.edition,
     // Resolved on every request: a Super Admin's switch takes effect immediately, in the API and in the next UI refresh.

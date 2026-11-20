@@ -26,7 +26,7 @@ const historyFields = {
 
 async function lifecycleView(db: DbOrTx, hospital: typeof tenants.$inferSelect) {
   const [event] = await db.select({ reason: audit.reason, explanation: audit.explanation }).from(audit)
-    .where(and(eq(audit.tenantId, hospital.id), eq(audit.requestedState, "SUSPENDED"), eq(audit.outcome, "applied")))
+    .where(and(eq(audit.tenantId, hospital.id), eq(audit.action, "suspend"), eq(audit.requestedState, "SUSPENDED"), eq(audit.outcome, "applied")))
     .orderBy(desc(audit.createdAt), desc(audit.id)).limit(1);
   return { status: hospital.lifecycleStatus, version: hospital.lifecycleVersion, loginEnabled: hospital.loginEnabled,
     changedAt: hospital.lifecycleChangedAt, suspension: hospital.lifecycleStatus === "SUSPENDED" ? event ?? null : null };

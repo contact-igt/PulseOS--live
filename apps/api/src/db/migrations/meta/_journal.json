@@ -414,6 +414,27 @@
       "when": 1793059200000,
       "tag": "0058_runo_allocations",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1793145600000,
+      "tag": "0059_hospital_sidebar_paths",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1793232000000,
+      "tag": "0060_platform_hospital_sidebar",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1793318400000,
+      "tag": "0061_hospital_sidebar_layout",
+      "breakpoints": true
     }
   ]
 }

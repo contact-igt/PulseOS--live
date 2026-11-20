@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { Activity, Building2, ClipboardList, LayoutDashboard, LogOut, Menu, ShieldCheck, X } from "lucide-react";
+import { Activity, Building2, ClipboardList, LayoutDashboard, LogOut, Menu, PanelLeft, ShieldCheck, X } from "lucide-react";
 import { ApiError, platformApi } from "@pulseos/api-client";
 import { PulseLockup } from "@pulseos/ui";
 import { Failure, Loading, secondaryClass, usePlatformAccount } from "./platform-ui";
@@ -36,6 +36,7 @@ export default function PlatformConsole({ children }: { children: React.ReactNod
   const links = [
     { href: "/platform", label: "Dashboard", icon: LayoutDashboard, allowed: true },
     { href: "/platform/hospitals", label: "Hospitals", icon: Building2, allowed: true },
+    { href: "/platform/hospital-sidebar", label: "Hospital Sidebar", icon: PanelLeft, allowed: account.data.role === "PLATFORM_SUPER_ADMIN" },
     { href: "/platform/operations", label: "Operations", icon: Activity, allowed: account.data.permissions.includes("hospital:lifecycle:read") },
     { href: "/platform/administrators", label: "Administrators", icon: ShieldCheck, allowed: account.data.permissions.includes("team:manage") },
     { href: "/platform/audit", label: "Audit log", icon: ClipboardList, allowed: account.data.permissions.includes("audit:read") },

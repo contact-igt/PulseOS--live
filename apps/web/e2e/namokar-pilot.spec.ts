@@ -92,9 +92,9 @@ test.describe("Namokar pilot", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/login/namokar-v1");
     await expect(page.getByTestId("tenant-login")).toBeVisible();
-    await expect(page.getByTestId("tenant-login-workspace")).toContainText(/You are signing into Namokar['’]s PulseOS workspace/);
+    await expect(page.getByTestId("login-lockup")).toContainText("PulseOS");
     await expect(page.getByTestId("tenant-login-pilot")).toHaveText("V1 Demo");
-    await expect(page.getByText("Namokar Eye & Oculoplasty Centre").first()).toBeVisible();
+    await expect(page.getByTestId("tenant-login")).not.toContainText("Namokar");
     // Nothing a developer or a stranger could use here: no Developer access, no create account, no hospital picker.
     for (const hidden of ["dev-login-block", "dev-login-toggle", "signup-link", "signup-prompt"]) await expect(page.getByTestId(hidden)).toHaveCount(0);
     await expect(page.getByText(/developer|create account|demo password/i)).toHaveCount(0);

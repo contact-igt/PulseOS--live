@@ -10,11 +10,7 @@ import { fetchTenantBranding } from "@/lib/tenantBranding";
 
 type Params = { params: Promise<{ tenant: string }> };
 
-export async function generateMetadata({ params }: Params): Promise<Metadata> {
-  const { tenant } = await params;
-  const r = await fetchTenantBranding(tenant);
-  return r.status === "ok" ? { title: `Sign in · ${r.branding.displayName}` } : { title: "Sign in · PulseOS", robots: { index: false } };
-}
+export const metadata: Metadata = { title: "Sign in · PulseOS", robots: { index: false } };
 
 export default async function TenantLoginPage({ params }: Params) {
   const { tenant } = await params;

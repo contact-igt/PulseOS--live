@@ -25,6 +25,8 @@ export const runoAllocations = pgTable("runo_allocations", {
 export const tenantEditionEnum = pgEnum("tenant_edition", ["BETA_V1_CORE", "BETA_V2_GROWTH"]);
 
 export const tenants = pgTable("tenants", {
+  hospitalSidebarPaths: text("hospital_sidebar_paths").array(),
+  hospitalSidebarLayout: jsonb("hospital_sidebar_layout").$type<import("@pulseos/types").HospitalSidebarLayout>(),
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   // ISO 3166-1 alpha-2 region used as the default country context when

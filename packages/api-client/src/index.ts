@@ -629,6 +629,10 @@ export const platformApi = {
   me: () => request<import("@pulseos/types").PlatformAccount>("/platform/me"),
   dashboard: () => request<import("@pulseos/types").PlatformDashboard>("/platform/dashboard"),
   hospitals: (page: number, search: string) => request<Page<import("@pulseos/types").PlatformHospital>>("/platform/hospitals?" + new URLSearchParams({ page: String(page), search })),
+  hospitalSidebar: (id: string, legacy: boolean) =>
+    request<import("@pulseos/types").PlatformHospitalSidebar>(`/platform/hospitals/${encodeURIComponent(id)}/sidebar${legacy ? "?legacy=1" : ""}`),
+  updateHospitalSidebar: (id: string, legacy: boolean, layout: import("@pulseos/types").HospitalSidebarLayout | null) =>
+    platformWrite<import("@pulseos/types").PlatformHospitalSidebar>(`/hospitals/${encodeURIComponent(id)}/sidebar${legacy ? "?legacy=1" : ""}`, "PATCH", { layout }),
   hospital: (id: string, legacy: boolean) => request<import("@pulseos/types").PlatformHospital>("/platform/hospitals/" + (legacy ? "legacy/" : "") + encodeURIComponent(id)),
   create: (body: import("@pulseos/types").HospitalCreationInput, key: string) =>
     platformWrite<import("@pulseos/types").PlatformHospital>("/hospitals", "POST", body, key),
