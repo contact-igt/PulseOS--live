@@ -1,0 +1,1 @@
+import config from './playwright.config'; export default { ...config, webServer: { command: 'pnpm exec next dev --hostname 127.0.0.1 --port 53320', url: 'http://localhost:53320/platform/login', timeout: 90000 }, projects: config.projects?.map(project => ({ ...project, use: { ...project.use, channel: 'chrome', launchOptions: { args: ['--disable-gpu'] } } })) };

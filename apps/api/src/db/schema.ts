@@ -1,12 +1,32 @@
+import { platformAccounts } from "./platform-schema.js";
+export * from "./platform-schema.js";
 import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, integer, boolean, jsonb, pgEnum, index, uniqueIndex, primaryKey, date, numeric, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 export const roleEnum = pgEnum("role", ["SUPER_ADMIN", "HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR", "DOCTOR"]);
 
+export const runoAllocations = pgTable("runo_allocations", {
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id, { onDelete: "cascade" }),
+  externalId: text("external_id").notNull(),
+  processName: text("process_name").notNull(),
+  customerName: text("customer_name"),
+  phone: text("phone"),
+  status: text("status"),
+  assignee: text("assignee"),
+  source: text("source"),
+  branch: text("branch"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.tenantId, t.externalId] }),
+  byDate: index("runo_allocations_tenant_created_idx").on(t.tenantId, t.createdAt, t.externalId),
+}));
+
 // One codebase, one schema: the edition is a tenant property read by the API (see domain/auth/edition.ts) and mirrored in the UI.
 export const tenantEditionEnum = pgEnum("tenant_edition", ["BETA_V1_CORE", "BETA_V2_GROWTH"]);
 
 export const tenants = pgTable("tenants", {
+  hospitalSidebarPaths: text("hospital_sidebar_paths").array(),
+  hospitalSidebarLayout: jsonb("hospital_sidebar_layout").$type<import("@pulseos/types").HospitalSidebarLayout>(),
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   // ISO 3166-1 alpha-2 region used as the default country context when
@@ -20,6 +40,10 @@ export const tenants = pgTable("tenants", {
   edition: tenantEditionEnum("edition").notNull().default("BETA_V2_GROWTH"),
   // The name a hospital's dedicated sign-in page is reached by (/login/<slug>). Null = no dedicated page (sign-up and demo
   // hospitals). Lower-case words only, unique; the page can sign people into THIS hospital and no other.
+  loginEnabled: boolean("login_enabled").notNull().default(true),
+  lifecycleStatus: text("lifecycle_status", { enum: ["PROVISIONING", "ACTIVE", "SUSPENDED", "ARCHIVED"] }).notNull().default("ACTIVE"),
+  lifecycleVersion: integer("lifecycle_version").notNull().default(0),
+  lifecycleChangedAt: timestamp("lifecycle_changed_at", { withTimezone: true }),
   loginSlug: text("login_slug"),
   // Weekly clinic hours (see ClinicHours in @pulseos/types). Null = no restriction. Appointments are only accepted inside them.
   clinicHours: jsonb("clinic_hours").$type<import("@pulseos/types").ClinicHours | null>(),
@@ -37,7 +61,7 @@ export const tenants = pgTable("tenants", {
 // enabled, and by the demo seed - never in production, never from a request field.
 export const tenantProfiles = pgTable("tenant_profiles", {
   tenantId: uuid("tenant_id").primaryKey().references(() => tenants.id),
-  source: text("source").notNull().default("signup"), // signup | demo
+  source: text("source").notNull().default("signup"), // signup | demo | platform
   devVisible: boolean("dev_visible").notNull().default(false),
   ownerName: text("owner_name").notNull(),
   ownerEmail: text("owner_email").notNull(),
@@ -813,6 +837,30 @@ export const connectorCapabilityEnum = pgEnum("connector_capability", [
   "RECEIVE_FORM", "EXPORT_CONVERSION",
 ]);
 
+export const hospitalMessagingCommands = pgTable("hospital_messaging_commands", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  connectorId: uuid("connector_id").notNull(),
+  remoteTenantId: text("remote_tenant_id").notNull(),
+  partnerOrigin: text("partner_origin").notNull(),
+  pairingRevision: timestamp("pairing_revision", { withTimezone: true }).notNull(),
+  lifecycleVersion: integer("lifecycle_version").notNull(),
+  action: text("action", { enum: ["pause", "resume"] }).notNull(),
+  actor: text("actor").notNull(),
+  status: text("status", { enum: ["pending", "confirmed", "failed", "superseded"] }).notNull().default("pending"),
+  expectedVersion: integer("expected_version"),
+  attempts: integer("attempts").notNull().default(0),
+  dueAt: timestamp("due_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  observation: jsonb("observation"),
+  acknowledgement: jsonb("acknowledgement"),
+  error: text("error"),
+}, (t) => ({
+  commandUnique: uniqueIndex("hospital_messaging_commands_lifecycle_unique").on(t.tenantId, t.lifecycleVersion, t.action),
+  dueIdx: index("hospital_messaging_commands_due_idx").on(t.status, t.dueAt),
+}));
+
 export const connectors = pgTable("connectors", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
@@ -1345,3 +1393,80 @@ export const activityLog = pgTable("activity_log", {
 }, (t) => ({
   tenantTimeIdx: index("activity_log_tenant_time_idx").on(t.tenantId, t.createdAt),
 }));
+
+export const platformIdentities = pgTable("platform_identities", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  label: text("label").notNull().unique(),
+  role: text("role").notNull(),
+  credentialHash: text("credential_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+});
+
+export const hospitalLifecycleAudit = pgTable("hospital_lifecycle_audit", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").references(() => tenants.id),
+  targetId: uuid("target_id").notNull(),
+  actorId: uuid("actor_id").references(() => platformAccounts.id),
+  operatorId: uuid("operator_id").references(() => platformIdentities.id),
+  action: text("action").notNull(),
+  previousState: text("previous_state"),
+  requestedState: text("requested_state").notNull(),
+  outcome: text("outcome").notNull(),
+  reason: text("reason"),
+  explanation: text("explanation"),
+  requestVersion: integer("request_version"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("hospital_lifecycle_audit_tenant_time_idx").on(t.tenantId, t.createdAt, t.id)]);
+
+export const hospitalOnboardings = pgTable("hospital_onboardings", {
+  id: uuid("id").primaryKey(),
+  requestHash: text("request_hash").notNull(),
+  tenantId: uuid("tenant_id").unique().references(() => tenants.id),
+  adminId: uuid("admin_id").unique().references(() => users.id),
+  provisioningError: text("provisioning_error"),
+  templateKey: text("template_key"),
+  templateStatus: text("template_status", { enum: ["none", "pending", "installed", "failed"] }).notNull().default("none"),
+  invitationHash: text("invitation_hash").unique(),
+  invitationExpiresAt: timestamp("invitation_expires_at", { withTimezone: true }),
+  invitationRedeemedAt: timestamp("invitation_redeemed_at", { withTimezone: true }),
+});
+
+export const hospitalInvitationDeliveries = pgTable("hospital_invitation_deliveries", {
+  onboardingId: uuid("onboarding_id").primaryKey().references(() => hospitalOnboardings.id),
+  messageId: uuid("message_id").notNull(),
+  encryptedToken: text("encrypted_token"),
+  status: text("status", { enum: ["pending", "accepted", "failed", "expired", "superseded"] }).notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull(),
+  failure: text("failure"),
+}, (t) => [index("hospital_invitation_deliveries_due_idx").on(t.status, t.nextAttemptAt)]);
+
+export const platformAuditLog = pgTable("platform_audit_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  onboardingId: uuid("onboarding_id").notNull().references(() => hospitalOnboardings.id),
+  actorId: uuid("actor_id").references(() => platformIdentities.id),
+  browserActorId: uuid("browser_actor_id").references(() => platformAccounts.id),
+  action: text("action").notNull(),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  onboardingIdx: index("platform_audit_log_onboarding_idx").on(t.onboardingId),
+  timeIdx: index("platform_audit_time_idx").on(t.createdAt, t.id),
+}));
+
+export const suspendedMetaLeads = pgTable("suspended_meta_leads", {
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  connectorId: uuid("connector_id").notNull().references(() => connectors.id),
+  externalLeadId: text("external_lead_id").notNull(),
+  reference: jsonb("reference").$type<{ page: string | null; form: string | null; group: string | null; ad: string | null; at: string }>(),
+  heldAt: timestamp("held_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull().default(sql`now() + interval '7 days'`),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  attempts: integer("attempts").notNull().default(0),
+}, (t) => [
+  primaryKey({ columns: [t.connectorId, t.externalLeadId] }),
+  index("suspended_meta_leads_tenant_time_idx").on(t.tenantId, t.heldAt),
+  index("suspended_meta_leads_expiry_idx").on(t.expiresAt),
+]);

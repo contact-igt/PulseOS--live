@@ -4,25 +4,38 @@ import { ccsTelephonyAdapter } from "../domain/connector/adapters/ccs.js";
 describe("ccsTelephonyAdapter", () => {
   it("verifies webhook with matching apiKey, secretKey or integrationKey", () => {
     const secrets = {
-      apiKey: "93250a2de829a1b0481c6d9b908bd45c",
-      secretKey: "3d0ce39f0f64a006c36bcc0c54cdc95e",
-      integrationKey: "23913d0ce39f0f64a006c36bcc0c54cdc95e",
+      apiKey: "fixture-api-key",
+      secretKey: "fixture-secret-key",
+      integrationKey: "fixture-integration-key",
     };
 
     // Header matching apiKey
-    expect(ccsTelephonyAdapter.verifyWebhook({}, { "x-api-key": "93250a2de829a1b0481c6d9b908bd45c" }, secrets)).toBe(true);
+    expect(ccsTelephonyAdapter.verifyWebhook({}, { "x-api-key": secrets.apiKey }, secrets)).toBe(true);
 
     // Header matching secretKey
-    expect(ccsTelephonyAdapter.verifyWebhook({}, { "secret-key": "3d0ce39f0f64a006c36bcc0c54cdc95e" }, secrets)).toBe(true);
+    expect(ccsTelephonyAdapter.verifyWebhook({}, { "secret-key": secrets.secretKey }, secrets)).toBe(true);
 
     // Payload body matching integrationKey
-    expect(ccsTelephonyAdapter.verifyWebhook({ integrationKey: "23913d0ce39f0f64a006c36bcc0c54cdc95e" }, {}, secrets)).toBe(true);
+    expect(ccsTelephonyAdapter.verifyWebhook({ integrationKey: secrets.integrationKey }, {}, secrets)).toBe(true);
 
     // Invalid key provided
     expect(ccsTelephonyAdapter.verifyWebhook({}, { "x-api-key": "wrong-key" }, secrets)).toBe(false);
 
-    // No secrets configured yet -> accepts for setup
-    expect(ccsTelephonyAdapter.verifyWebhook({}, {}, {})).toBe(true);
+    expect(ccsTelephonyAdapter.verifyWebhook({}, {}, secrets)).toBe(false);
+    expect(ccsTelephonyAdapter.verifyWebhook({}, {}, {})).toBe(false);
+    expect(ccsTelephonyAdapter.verifyWebhook({ apiKey: { bad: true } }, {}, secrets)).toBe(false);
+  });
+
+  it("excludes callback credentials from call metadata", () => {
+    const [event] = ccsTelephonyAdapter.parseWebhookPayload({
+      call_id: "ccs_metadata_fixture",
+      caller_number: "9810157258",
+      api_key: "synthetic-api-key",
+      secretKey: "synthetic-secret",
+      integrationKey: "synthetic-integration-key",
+    });
+    expect(event?.metadata).toMatchObject({ provider: "ccs_ivr", call_id: "ccs_metadata_fixture" });
+    expect(JSON.stringify(event?.metadata)).not.toContain("synthetic-");
   });
 
   it("parses completed call reports from CCS Express IVR", () => {

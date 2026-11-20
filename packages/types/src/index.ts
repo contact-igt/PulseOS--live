@@ -1,5 +1,14 @@
 export type Role = "SUPER_ADMIN" | "HOSPITAL_ADMIN" | "FRONT_DESK" | "PATIENT_COORDINATOR" | "DOCTOR";
 
+export const HOSPITAL_TEAM_ROLES = ["HOSPITAL_ADMIN", "FRONT_DESK", "PATIENT_COORDINATOR", "DOCTOR"] as const;
+export type HospitalTeamRole = (typeof HOSPITAL_TEAM_ROLES)[number];
+export type HospitalTeamMember = { id: string; name: string; email: string; role: Role; branchId: string | null; branchName: string | null };
+export type CreateHospitalTeamMember = { name: string; email: string; role: HospitalTeamRole; branchId: string; password: string };
+
+export function canCreateHospitalTeamRole(actor: Role, target: HospitalTeamRole) {
+  return actor === "SUPER_ADMIN" || (actor === "HOSPITAL_ADMIN" && target !== "HOSPITAL_ADMIN");
+}
+
 // ---------------------------------------------------------------------------
 // Editions — one codebase, one schema. A tenant's edition (tenants.edition) is the single source of truth
 // for which growth capabilities it has; the API enforces it per route and the UI mirrors it for navigation.
@@ -173,6 +182,8 @@ export interface DisplayPreferences {
 }
 
 export interface SessionUser {
+  hospitalSidebarPaths?: string[] | null;
+  hospitalSidebarLayout?: HospitalSidebarLayout | null;
   /** The hospital's interface style (tenants.surface_style); hospitals that never chose one read as Balanced. */
   surfaceStyle?: SurfaceStyle;
   /** THIS person's interface size (users.interface_size): personal, not the hospital's. Never chosen reads as Comfortable. */
@@ -240,17 +251,20 @@ export type Permission =
   | "VIEW_COMMUNICATION_ENDPOINTS"
   | "MANAGE_LEADS"
   | "MANAGE_SPECIALTIES"
+  | "MANAGE_HOSPITAL_TEAM"
   /** Download report / row-level Excel workbooks (patient names and phones leave the system). */
   | "EXPORT_REPORTS";
 
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   SUPER_ADMIN: [
+    "MANAGE_HOSPITAL_TEAM",
     "VIEW_ADMIN_COMMAND_CENTRE", "VIEW_PATIENTS", "EDIT_PATIENTS", "VIEW_JOURNEYS", "MANAGE_JOURNEYS",
     "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "RECORD_CONSULTATION_OUTCOME", "VIEW_TREATMENT", "MANAGE_TREATMENT",
     "VIEW_REVENUE", "VIEW_MARKETING", "VIEW_INBOX", "MANAGE_INBOX", "VIEW_TASKS", "MANAGE_TASKS",
     "VIEW_INTEGRATIONS", "MANAGE_INTEGRATION_CONFIG", "MANAGE_INTEGRATION_SECRETS", "VIEW_CALL_RECORDING", "DOWNLOAD_CALL_RECORDING", "VIEW_CALL_TRANSCRIPT", "LOG_CALL", "VIEW_COMMUNICATION_ENDPOINTS", "MANAGE_LEADS", "MANAGE_SPECIALTIES", "EXPORT_REPORTS",
   ],
   HOSPITAL_ADMIN: [
+    "MANAGE_HOSPITAL_TEAM",
     "VIEW_ADMIN_COMMAND_CENTRE", "VIEW_PATIENTS", "EDIT_PATIENTS", "VIEW_JOURNEYS", "MANAGE_JOURNEYS",
     "VIEW_APPOINTMENTS", "MANAGE_APPOINTMENTS", "VIEW_TREATMENT", "MANAGE_TREATMENT",
     "VIEW_REVENUE", "VIEW_MARKETING", "VIEW_INBOX", "MANAGE_INBOX", "VIEW_TASKS", "MANAGE_TASKS",
@@ -3640,4 +3654,301 @@ export interface TenantLoginBranding {
   /** The small badge in the sign-in card ("V1 Pilot"); null = no badge. */
   badgeLabel: string | null;
   supportText: string;
+}
+
+export const PLATFORM_ROLES = ["PLATFORM_SUPER_ADMIN", "PLATFORM_OPERATIONS_ADMIN"] as const;
+export type PlatformRole = (typeof PLATFORM_ROLES)[number];
+export const PLATFORM_ONBOARDING_GRANTS = ["hospital:create", "hospital:invite", "hospital:retry", "hospital:activate"] as const;
+export type PlatformPermission = (typeof PLATFORM_ONBOARDING_GRANTS)[number] | "hospital:read" | "dashboard:read" | "team:manage" | "audit:read" | "hospital:lifecycle:read" | "hospital:suspend" | "hospital:restore" | "hospital:archive";
+export type PlatformAccount = { id: string; email: string; role: PlatformRole; permissions: PlatformPermission[] };
+
+export type HospitalArchivalAssessment = {
+  assessedAt: string;
+  lifecycle: { state: "PROVISIONING" | "ACTIVE" | "SUSPENDED" | "ARCHIVED"; version: number };
+  onboarding: { invitation: string; delivery: string | null; template: string | null };
+  evidence: {
+    appointments: number; futureAppointments: number; pendingTasks: number; pendingNotifications: number;
+    unknownDispatches: number; pendingWebhooks: number; pendingCommands: number; recordedFailedCommands: number;
+    openConnectorEvents: number; heldMetaLeads: number; runningAdsSyncs: number; pendingOrRunningCallWork: number;
+  };
+  recordedRevenue: boolean;
+  whatsNexus: {
+    binding: string | null;
+    observation: { state: "ACTIVE" | "PAUSING" | "PAUSED"; observedAt: string;
+      alignment: "matching" | "historical"; unresolvedPermits: number | null } | null;
+  };
+  findings: {
+    classification: "BLOCKED_BY_STATE" | "BLOCKED_BY_OPEN_WORK" | "BLOCKED_BY_INTEGRATION"
+      | "BLOCKED_BY_CLINICAL_REVIEW" | "BLOCKED_BY_FINANCE_REVIEW" | "POLICY_NOT_APPROVED" | "EVIDENCE_UNAVAILABLE";
+    basis: "record" | "policy";
+    reason: string;
+  }[];
+};
+export type HospitalCreationInput = Omit<SignupInput, "password">;
+export type PlatformHospital = {
+  invitationDelivery?: {
+    enabled: boolean;
+    status: "not_queued" | "pending" | "accepted" | "failed" | "expired" | "superseded";
+    expiresAt: string | null;
+    attempts?: number;
+    lastAttemptAt?: string | null;
+    failure?: string | null;
+  };
+  id: string;
+  tenantId: string | null;
+  name: string | null;
+  slug: string | null;
+  edition: Edition | null;
+  createdAt: string | null;
+  onboardingId: string | null;
+  loginPath: string | null;
+  provisioning: "created" | "failed";
+  provisioningError?: string | null;
+  template: "none" | "pending" | "installed" | "failed";
+  invitation: "not_issued" | "pending" | "expired" | "accepted" | "not_applicable";
+  active: boolean;
+  ready?: boolean;
+  readinessFailures?: string[];
+  lifecycleStatus?: HospitalLifecycleStatus;
+};
+
+export interface PlatformAuditEvent {
+  id: string;
+  actorId: string | null;
+  subjectId: string | null;
+  category: string;
+  action: string;
+  reason: string | null;
+  createdAt: string;
+}
+
+export interface PlatformDashboard {
+  total: number;
+  active: number;
+  loginDisabled: number;
+  suspended: number;
+  provisioning: number;
+  failedOnboarding: number;
+  pendingCommands: number;
+  failedCommands: number;
+  agedCommands: number;
+  integrationProblems: number;
+  pending: number;
+  templateFailures: number;
+  pendingInvitations: number;
+  recentHospitals: PlatformHospital[];
+  recentAudit: PlatformAuditEvent[];
+}
+
+export type HospitalLifecycleStatus = "PROVISIONING" | "ACTIVE" | "SUSPENDED" | "ARCHIVED";
+export interface HospitalLifecycle {
+  status: HospitalLifecycleStatus;
+  version: number;
+  loginEnabled: boolean;
+  changedAt: string | null;
+  suspension: { reason: string; explanation: string | null } | null;
+}
+export interface HospitalLifecycleEvent {
+  id: string;
+  actorId: string | null;
+  action: string;
+  previousState: HospitalLifecycleStatus | null;
+  requestedState: HospitalLifecycleStatus;
+  outcome: string;
+  reason: string | null;
+  explanation: string | null;
+  createdAt: string;
+}
+
+export interface HospitalLifecycleOperations {
+  connector?: { status: string; mode: string; remoteTenantId: string | null; lastSyncAt: string | null } | null;
+  recentAudit?: PlatformAuditEvent[];
+  lifecycleStatus?: HospitalLifecycleStatus | null;
+  lifecycleVersion?: number | null;
+  oldestHeldMetaLeadAt?: string | null;
+  expiringMetaLeads?: number;
+  exhaustedMetaLeads?: number;
+  pendingNotifications?: number;
+  providerCoordination: "external_pause_unverified" | "no_whatsnexus_connector";
+  messaging?: { enabled: boolean; bindingCurrent: boolean; latest: HospitalMessagingCommand | null; history: HospitalMessagingCommand[] };
+  heldInbound: number;
+  queuedOutbound: number;
+  unresolvedDispatches: number;
+  oldestPendingAt: string | null;
+  lastVerifiedProviderHealthAt: string | null;
+  restorationReconciliation: "awaiting_review" | "held" | "no_held_references";
+}
+
+export interface PlatformMessagingException {
+  id: string;
+  tenantId: string;
+  hospitalName: string;
+  onboardingId: string | null;
+  action: "pause" | "resume";
+  status: "pending" | "failed";
+  classification: string | null;
+  createdAt: string;
+  verifiedAt: string | null;
+  attempts: number;
+  pendingMinutes: number | null;
+}
+
+export interface HospitalMessagingCommand {
+  id: string;
+  action: "pause" | "resume";
+  actor: string;
+  status: "pending" | "confirmed" | "failed" | "superseded";
+  error: string | null;
+  lifecycleVersion: number;
+  expectedVersion: number | null;
+  attempts: number;
+  observation: { state: "ACTIVE" | "PAUSING" | "PAUSED"; version: number; lastCommand: string | null; unresolvedPermits: number } | null;
+  verifiedAt: string | null;
+  createdAt: string;
+}
+export interface NavItem {
+  label: string;
+  href: string;
+  icon: string;
+  implemented: boolean;
+  /** Omit for items every non-Doctor role can reach (e.g. Settings, whose
+   * page itself degrades gracefully for a role without MANAGE_SPECIALTIES —
+   * see settings/page.tsx's own `canManage` gating). When set, the item
+   * (and the route guard it feeds) is filtered against the same
+   * ROLE_PERMISSIONS map the API enforces server-side, so a role's sidebar
+   * can never link to a page its session is actually forbidden to load. */
+  permission?: Permission;
+  /** Growth capability this page needs. A tenant without it never reaches the page (nav, route guard) and the API refuses its data. */
+  capability?: EditionCapability;
+  /** Show the item dimmed with a "Beta V2" label instead of hiding it when the tenant lacks the capability. */
+  previewWhenLocked?: boolean;
+}
+
+export interface NavGroup {
+  label: string;
+  items: NavItem[];
+}
+
+export type HospitalSidebarLayout = { label: string; links: { href: string; label: string }[] }[];
+
+export type PlatformHospitalSidebar = {
+  paths: string[] | null;
+  layout?: HospitalSidebarLayout | null;
+  groups: { label: string; items: { href: string; label: string; roles: Role[] }[] }[];
+};
+
+export function hospitalSidebarForUser(user: SessionUser): NavGroup[] {
+  const groups = navForRole(user.role, user.capabilities, user.hospitalSidebarPaths);
+  if (!user.hospitalSidebarLayout) return groups;
+  const eligible = new Map(groups.flatMap((group) => group.items.map((item) => [item.href, item] as const)));
+  return user.hospitalSidebarLayout.map(({ label, links }) => ({
+    label,
+    items: links.flatMap((link) => {
+      const item = eligible.get(link.href);
+      return item ? [{ ...item, label: link.label }] : [];
+    }),
+  })).filter((group) => group.items.length > 0);
+}
+
+export function hospitalSidebarGroups(capabilities: CapabilityMap): PlatformHospitalSidebar["groups"] {
+  const roles = ["SUPER_ADMIN", ...HOSPITAL_TEAM_ROLES] as const;
+  const routes = roles.map((role) => [role, navForRole(role, capabilities).flatMap((group) => group.items)] as const);
+  return [...FULL_NAV, { label: "Doctor workspace", items: DOCTOR_NAV[0]!.items }].map((group) => ({
+    label: group.label,
+    items: group.items.filter((item) => item.implemented).map((item) => ({
+      href: item.href, label: item.label,
+      roles: routes.filter(([, items]) => items.some(({ href }) => href === item.href)).map(([role]) => role),
+    })).filter((item) => item.roles.length > 0),
+  })).filter((group) => group.items.length > 0);
+}
+
+const FULL_NAV: NavGroup[] = [
+  {
+    label: "Main",
+    items: [
+      { label: "Command Centre", href: "/command-centre", icon: "LayoutDashboard", implemented: true, permission: "VIEW_ADMIN_COMMAND_CENTRE" },
+      { label: "Leads", href: "/leads", icon: "UserPlus", implemented: true, permission: "MANAGE_LEADS" },
+      { label: "My Work", href: "/my-work", icon: "ListChecks", implemented: true, permission: "VIEW_TASKS" },
+    ],
+  },
+  {
+    label: "Patients",
+    items: [
+      { label: "Patients", href: "/patients", icon: "Users", implemented: true, permission: "VIEW_PATIENTS" },
+      { label: "Journeys", href: "/journeys", icon: "GitBranch", implemented: true, permission: "VIEW_JOURNEYS" },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { label: "Appointments", href: "/appointments", icon: "CalendarCheck", implemented: true, permission: "VIEW_APPOINTMENTS" },
+      { label: "Front Desk", href: "/front-desk", icon: "CalendarCheck", implemented: true, permission: "VIEW_APPOINTMENTS" },
+      { label: "Treatments", href: "/treatments", icon: "Stethoscope", implemented: true, permission: "VIEW_TREATMENT" },
+      { label: "Analytics", href: "/analytics", icon: "BarChart3", implemented: true, permission: "VIEW_ADMIN_COMMAND_CENTRE" },
+      { label: "Inbox", href: "/inbox", icon: "Inbox", implemented: true, permission: "VIEW_INBOX", capability: "WHATSAPP_INBOX", previewWhenLocked: true },
+    ],
+  },
+  {
+    label: "Growth",
+    items: [
+      { label: "Campaigns / Sources", href: "/campaigns", icon: "Megaphone", implemented: true, permission: "VIEW_MARKETING", capability: "CAMPAIGNS" },
+    ],
+  },
+  {
+    label: "Administration",
+    items: [
+      { label: "Team", href: "/team", icon: "Users", implemented: true, permission: "MANAGE_HOSPITAL_TEAM" },
+      { label: "Integrations", href: "/integrations", icon: "Plug", implemented: true, permission: "VIEW_INTEGRATIONS" },
+      { label: "Connectors & Lines", href: "/connectors", icon: "Radio", implemented: true, permission: "VIEW_INTEGRATIONS" },
+      { label: "Settings", href: "/settings", icon: "Settings", implemented: true },
+    ],
+  },
+];
+
+const DOCTOR_NAV: NavGroup[] = [
+  {
+    label: "Main",
+    items: [{ label: "Command Centre", href: "/doctor-home", icon: "LayoutDashboard", implemented: true }],
+  },
+  {
+    label: "Patients",
+    items: [
+      { label: "Appointments", href: "/appointments", icon: "CalendarCheck", implemented: true },
+      { label: "Patients", href: "/patients", icon: "Users", implemented: true },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [{ label: "My Work", href: "/my-work", icon: "ListChecks", implemented: true }],
+  },
+];
+
+/** What a nav decision reads: the tenant's resolved capabilities (runtime truth) or, for tests and defaults, an edition. */
+export type NavSource = Edition | CapabilityMap;
+
+export function navForRole(role: Role, edition: NavSource = DEFAULT_EDITION, visiblePaths?: readonly string[] | null): NavGroup[] {
+  // Doctor's nav is a deliberately different information architecture (its
+  // own "Command Centre" pointing at /doctor-home, no Treatments/Campaigns/
+  // Integrations even though a Doctor's VIEW_TREATMENT permission would
+  // technically allow reading them) — curated explicitly, not derived.
+
+  // Every other role shares one nav shape, filtered down to what its actual
+  // permissions allow. Front Desk and Patient Coordinator previously saw
+  // Hospital Admin's full sidebar regardless of their real (narrower, always
+  // server-enforced) permissions — e.g. Front Desk lacks VIEW_TREATMENT,
+  // VIEW_MARKETING and VIEW_INTEGRATIONS, so its old sidebar linked to 3
+  // pages that would 403 on every request the moment they loaded, the same
+  // failure class the Doctor route-guard fix addressed. Filtering here means
+  // pathAllowedForRole (below) picks the fix up automatically, with no
+  // separate per-role guard list to maintain.
+  return (role === "DOCTOR" ? DOCTOR_NAV : FULL_NAV).map((group) => ({
+    ...group,
+    items: group.items.filter((item) => (!visiblePaths || visiblePaths.includes(item.href)) && (!item.permission || hasPermission(role, item.permission)) && (!item.capability || capabilityEnabled(edition, item.capability))),
+  })).filter((group) => group.items.length > 0);
+}
+
+/** Items this role could use but the tenant's edition does not include — shown dimmed as "Beta V2", never as links. */
+export function lockedNavItems(role: Role, edition: NavSource): NavItem[] {
+  if (role === "DOCTOR") return [];
+  return FULL_NAV.flatMap((g) => g.items).filter((item) => item.previewWhenLocked && item.capability && !capabilityEnabled(edition, item.capability) && (!item.permission || hasPermission(role, item.permission)));
 }

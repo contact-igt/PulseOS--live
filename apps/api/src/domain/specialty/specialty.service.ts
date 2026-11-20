@@ -1,5 +1,5 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { customFieldDefinitions, departments, specialtyTemplates } from "../../db/schema.js";
 import { createCrmField } from "../crm/crm-field.service.js";
 import type {
@@ -187,7 +187,7 @@ export interface SpecialtyDefinition {
  * field installed here is origin TEMPLATE. Passing `departmentId` also attaches the services to that department
  * (an existing service with no department is attached; one that already has a department is left alone).
  */
-export async function ensureSpecialties(db: Db, tenantId: string, definitions: SpecialtyDefinition[], opts: { departmentId?: string } = {}): Promise<void> {
+export async function ensureSpecialties(db: DbOrTx, tenantId: string, definitions: SpecialtyDefinition[], opts: { departmentId?: string } = {}): Promise<void> {
   for (const spec of definitions) {
     await db
       .insert(specialtyTemplates)

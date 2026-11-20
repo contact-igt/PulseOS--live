@@ -1,12 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
-import { purgeSignupTenants, sql } from "./support/fixtures";
+import { sql } from "./support/fixtures";
 
 // ONE approved PulseOS tenant sign-in for every hospital: /login/<slug>, resolved on the server from the slug alone; only safe
 // structured branding differs. These specs prove it is a shared system (not a Namokar one-off) and that its boundaries hold.
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD ?? "";
 const API = "http://localhost:4310";
-const RUN = `${Date.now()}`.slice(-6);
 
 const open = async (page: Page, slug: string) => {
   const res = await page.goto(`/login/${slug}`);
@@ -17,54 +16,40 @@ test.describe("Tenant-branded login (shared PulseOS system)", () => {
   test.skip(!DEMO_PASSWORD, "DEMO_PASSWORD must be set to run this suite");
   test.afterAll(() => {
     sql(`UPDATE tenant_login_configs SET logo_path = NULL WHERE tenant_id IN (SELECT id FROM tenants WHERE login_slug = 'eye-v1-demo')`);
-    purgeSignupTenants();
   });
 
-  test("1+2+3. Namokar and another seeded hospital use the SAME component with different words; no logo = typographic name", async ({ page }) => {
+  test("Namokar and another seeded hospital share PulseOS sign-in without hospital names", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     expect(await open(page, "namokar-v1")).toBe(200);
     await expect(page.getByTestId("tenant-login")).toHaveAttribute("data-workspace", "namokar-v1");
     await expect(page.getByTestId("login-lockup")).toContainText("PulseOS");
-    await expect(page.getByTestId("login-client-name")).toHaveText("Namokar");
-    await expect(page.getByTestId("login-headline")).toHaveText("Namokar Eye & Oculoplasty Centre");
+    await expect(page.getByTestId("tenant-login")).not.toContainText("Namokar");
+    await expect(page).toHaveTitle(/Sign in · PulseOS/);
     await expect(page.getByTestId("login-tagline")).toHaveText("Every enquiry, call, appointment and follow-up for your patients, in one place.");
     await expect(page.getByTestId("tenant-login-pilot")).toHaveText("V1 Demo");
-    await expect(page.getByTestId("tenant-login-workspace")).toContainText(/Namokar[’']s PulseOS workspace/);
     await expect(page.getByTestId("login-support")).toHaveText("Need help? Contact your administrator.");
     await expect(page.getByTestId("login-client-logo")).toHaveCount(0);
     const namokarShape = await page.evaluate(() => [...document.querySelectorAll("[data-testid]")].map((e) => e.getAttribute("data-testid")).filter((t) => t && t !== "tenant-login").sort().join(","));
 
     expect(await open(page, "eye-demo")).toBe(200);
     await expect(page.getByTestId("tenant-login")).toHaveAttribute("data-workspace", "eye-demo");
-    await expect(page.getByTestId("login-client-name")).toHaveText("Eye Demo");
-    await expect(page.getByTestId("login-headline")).toHaveText("PulseOS Ophthalmology Demo");
+    await expect(page.getByTestId("tenant-login")).not.toContainText(/Eye Demo|PulseOS Ophthalmology Demo/);
     await expect(page.getByTestId("login-tagline")).toHaveText("Every enquiry, call, appointment and follow-up in one place."); // the PulseOS default
     await expect(page.getByTestId("tenant-login-pilot")).toHaveText("Beta V2");
-    await expect(page.getByTestId("tenant-login-workspace")).toContainText(/Eye Demo[’']s PulseOS workspace/);
     const eyeShape = await page.evaluate(() => [...document.querySelectorAll("[data-testid]")].map((e) => e.getAttribute("data-testid")).filter((t) => t && t !== "tenant-login").sort().join(","));
     expect(eyeShape, "the same structure, only the words differ").toBe(namokarShape);
   });
 
-  test("4. an approved logo is shown untouched (not stretched, not recoloured), and removing it falls back to the name", async ({ page }) => {
+  test("a hospital with a configured logo can sign in through the shared PulseOS page", async ({ page }) => {
     sql(`INSERT INTO tenant_login_configs (tenant_id, logo_path) SELECT id, '/brand/test-mark.svg' FROM tenants WHERE login_slug = 'eye-v1-demo' ON CONFLICT (tenant_id) DO UPDATE SET logo_path = '/brand/test-mark.svg'`);
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, "eye-v1-demo");
-    const img = page.getByTestId("login-client-logo").locator("img");
-    await expect(img).toHaveAttribute("src", "/brand/test-mark.svg");
-    await expect(img).toHaveAttribute("alt", "PulseOS Ophthalmology V1 Demo");
-    await expect(page.getByTestId("login-client-name")).toHaveCount(0);
-    const m = await img.evaluate((el: HTMLImageElement) => ({ nw: el.naturalWidth, nh: el.naturalHeight, w: el.getBoundingClientRect().width, h: el.getBoundingClientRect().height, filter: getComputedStyle(el).filter }));
-    expect(m.nw).toBeGreaterThan(0); // the file really loads from our own origin
-    expect(Math.abs(m.w / m.h - m.nw / m.nh), "aspect ratio preserved").toBeLessThan(0.05);
-    expect(m.filter).toBe("none");
-    // The logo never blocks signing in.
+    await expect(page.locator('img[src="/brand/test-mark.svg"]')).toHaveCount(0);
     await page.getByLabel("Email address").fill("eyev1.admin@pulseos.local");
     await page.getByLabel("Password", { exact: true }).fill(DEMO_PASSWORD);
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.waitForURL(/command-centre/);
     sql(`UPDATE tenant_login_configs SET logo_path = NULL WHERE tenant_id IN (SELECT id FROM tenants WHERE login_slug = 'eye-v1-demo')`);
-    await open(page, "eye-v1-demo");
-    await expect(page.getByTestId("login-client-name")).toHaveText("Eye V1 Demo");
   });
 
   test("5. an unknown workspace is a generic 404 that reveals nothing", async ({ page }) => {
@@ -114,36 +99,6 @@ test.describe("Tenant-branded login (shared PulseOS system)", () => {
       expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toMatch(/session|token|password|pulseos_session/i);
       await context.close();
     }
-  });
-
-  test("10. a hospital that signs up gets its branded login immediately, discovered by Developer access, with no engineering step", async ({ page }) => {
-    const org = `E2E Signup Login ${RUN}`;
-    const email = `e2e.login.${RUN}@example.test`;
-    await page.goto("/login");
-    const res = await page.evaluate(
-      async ({ api, org, email }) => {
-        const r = await fetch(`${api}/auth/signup`, {
-          method: "POST", credentials: "include", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ fullName: "E2E Owner", email, phone: "+91 98765 43210", password: "Correct-Horse-9", organizationName: org, industry: "Healthcare", organizationType: "Eye Hospital", department: "Ophthalmology", addressLine: "12 MG Road", city: "Bengaluru", state: "Karnataka", pinCode: "560038", country: "India", discoverySource: "Google", edition: "V1" }),
-        });
-        return { status: r.status, body: await r.json() };
-      },
-      { api: API, org, email },
-    );
-    expect(res.status).toBe(201);
-    const loginPath = res.body.workspace.loginPath as string;
-    expect(loginPath).toMatch(/^\/login\/e2e-signup-login-\d+$/);
-    await page.context().clearCookies();
-    expect(await open(page, loginPath.replace("/login/", ""))).toBe(200);
-    await expect(page.getByTestId("login-headline")).toHaveText(org);
-    await expect(page.getByTestId("tenant-login-pilot")).toHaveCount(0); // no badge unless the configuration says so
-    await page.getByLabel("Email address").fill(email);
-    await page.getByLabel("Password", { exact: true }).fill("Correct-Horse-9");
-    await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForURL(/command-centre/);
-    // Developer access (development only) lists it by itself.
-    const envs = await page.evaluate(async (api) => (await fetch(`${api}/auth/dev-login/environments`, { credentials: "include" })).json(), API);
-    expect((envs as { label: string }[]).some((e) => e.label === org)).toBe(true);
   });
 
   test("11. the public configuration exposes display words only: no ids, secrets, users, edition or integrations", async ({ page }) => {

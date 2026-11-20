@@ -11,6 +11,8 @@ import { configureIntegration, pairWhatsNexus, getHubDetail, listHub, listIntegr
 import { createWebhook, deleteWebhook, listWebhooks, testWebhookDelivery, updateWebhook } from "./outbound-webhook.service.js";
 import { webhookInputSchema } from "./webhook-rules.js";
 import { dayRangeShape, refineDayRange } from "../../lib/day-range.js";
+import { dayKeyIn, isRealDate } from "../../lib/hospital-time.js";
+import { importRunoAllocations } from "./runo-allocations.service.js";
 
 const REASON_STATUS: Record<string, number> = {
   unknown_integration: 404,
@@ -54,6 +56,26 @@ const logQuerySchema = z
 
 export async function integrationHubRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requirePermission("VIEW_INTEGRATIONS"));
+
+  app.post("/integrations/hub/runo/allocations/import", { preHandler: requirePermission("MANAGE_INTEGRATION_CONFIG") }, async (request, reply) => {
+    const u = request.sessionUser!;
+    if (!u.capabilities.RUNO_CALLING) return reply.status(403).send({ error: "feature_not_available" });
+    const parsed = z.object({
+      date: z.string().refine(isRealDate),
+      processName: z.string().trim().min(1).max(300).refine((value) => value.toLowerCase() !== "all"),
+    }).strict().safeParse(request.body);
+    if (!parsed.success || parsed.data.date >= dayKeyIn(new Date(), "Asia/Kolkata")) {
+      return reply.status(400).send({ error: "runo_date_or_process_invalid" });
+    }
+    const result = await importRunoAllocations(app.db, u.tenantId, parsed.data);
+    if ("error" in result) {
+      if (result.diagnostic) request.log.warn({ date: parsed.data.date, errorCode: result.error, ...result.diagnostic }, "Runo allocation import failed");
+      return reply.status(result.error === "runo_key_unavailable" ? 409 : 502).send({ error: result.error });
+    }
+    if (result.expectedCount !== undefined) request.log.warn({ date: parsed.data.date, ...result }, "Runo returned fewer allocations than reported");
+    await recordActivity(app.db, { tenantId: u.tenantId, actorId: u.id, action: "integration.runo_allocations_imported", entityType: "integration", entityKey: "runo", metadata: { date: parsed.data.date, ...result } });
+    return result;
+  });
 
   app.get("/integrations/hub", async (request) => {
     const u = request.sessionUser!;
@@ -198,7 +220,7 @@ export async function integrationHubRoutes(app: FastifyInstance) {
         })
         .safeParse(request.body);
       if (!parsed.success) return reply.status(400).send({ error: "invalid_request" });
-      return testWebhookDelivery(u.tenantId, parsed.data);
+      return testWebhookDelivery(app.db, u.tenantId, parsed.data);
     });
 
     hooks.delete("/integrations/webhooks/:id", async (request, reply) => {

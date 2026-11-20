@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@pulseos/api-client";
 import { Badge, Button, ErrorState, SideSheet, Skeleton, Tabs, relativeTime } from "@pulseos/ui";
+import { RunoAllocationImport } from "./RunoAllocationImport";
 import { hasPermission, type IntegrationDetail } from "@pulseos/types";
 import { CONFIG_LABEL, CONFIG_TONE, HEALTH_LABEL, HEALTH_TONE, MODE_LABEL, MODE_TONE } from "./hubLabels";
 import { LogsPanel } from "./LogsPanel";
@@ -425,6 +426,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
             <>
               {d.key === "whatsnexus" && <WhatsNexusConnectWithCode d={d} />}
               <ConfigurationForm d={d} secrets />
+              {d.key === "runo" && d.canManageSecrets && <p className="text-sm text-ink-2">Use the Runo API Key field for allocation imports. If you previously saved the API key as the webhook shared secret, restore the original webhook secret or enter a hyphen in that field to clear it.</p>}
             </>
           )}
           {section === "mappings" && <p className="text-sm text-ink-2">{d.mappingNotes}</p>}
@@ -446,6 +448,7 @@ export function IntegrationDetailSheet({ integrationKey, onClose }: { integratio
             </div>
           )}
           {section === "sync" && (isTelephony ? <TelephonySyncSection d={d} /> : <SyncSection d={d} />)}
+          {section === "sync" && d.key === "runo" && d.enabled && d.canConfigure && <RunoAllocationImport />}
           {section === "activity" && <LogsPanel provider={d.key} />}
           {section === "health" && <Health d={d} />}
         </div>

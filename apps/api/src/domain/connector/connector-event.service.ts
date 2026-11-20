@@ -1,5 +1,5 @@
 import { and, eq, or, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbOrTx } from "../../db/client.js";
 import { connectorEvents } from "../../db/schema.js";
 
 export interface RecordEventInput {
@@ -21,7 +21,7 @@ const STALE_RECEIVED_MINUTES = 10;
 // abandoned mid-way ('received' for longer than STALE_RECEIVED_MINUTES). A
 // provider retry of either is claimed — atomically, so racing retries process it
 // once — and reprocessed on the same row.
-export async function recordConnectorEvent(db: Db, input: RecordEventInput): Promise<{ eventId: string; duplicate: boolean }> {
+export async function recordConnectorEvent(db: DbOrTx, input: RecordEventInput): Promise<{ eventId: string; duplicate: boolean }> {
   const [existing] = await db
     .select({ id: connectorEvents.id })
     .from(connectorEvents)
@@ -40,36 +40,33 @@ export async function recordConnectorEvent(db: Db, input: RecordEventInput): Pro
     return { eventId: existing.id, duplicate: claimed.length === 0 };
   }
 
-  try {
-    const [row] = await db
-      .insert(connectorEvents)
-      .values({
-        tenantId: input.tenantId,
-        connectorId: input.connectorId,
-        externalEventId: input.externalEventId,
-        direction: input.direction,
-        status: "received",
-        payload: input.payload,
-      })
-      .returning({ id: connectorEvents.id });
-    return { eventId: row.id, duplicate: false };
-  } catch {
-    // Race: two concurrent deliveries of the same event both passed the SELECT
-    // above before either INSERT committed. The unique index still protects
-    // us — treat the loser as a duplicate rather than surfacing a 500.
-    const [row] = await db
-      .select({ id: connectorEvents.id })
-      .from(connectorEvents)
-      .where(and(eq(connectorEvents.connectorId, input.connectorId), eq(connectorEvents.externalEventId, input.externalEventId)))
-      .limit(1);
-    return { eventId: row!.id, duplicate: true };
-  }
+  const [row] = await db
+    .insert(connectorEvents)
+    .values({
+      tenantId: input.tenantId,
+      connectorId: input.connectorId,
+      externalEventId: input.externalEventId,
+      direction: input.direction,
+      status: "received",
+      payload: input.payload,
+    })
+    .onConflictDoNothing()
+    .returning({ id: connectorEvents.id });
+  if (row) return { eventId: row.id, duplicate: false };
+  // Keep the caller's transaction usable when a concurrent insert wins.
+  const [existingAfterInsert] = await db
+    .select({ id: connectorEvents.id })
+    .from(connectorEvents)
+    .where(and(eq(connectorEvents.connectorId, input.connectorId), eq(connectorEvents.externalEventId, input.externalEventId)))
+    .limit(1);
+  if (!existingAfterInsert) throw new Error("event conflict without an existing event");
+  return { eventId: existingAfterInsert.id, duplicate: true };
 }
 
-export async function markEventProcessed(db: Db, eventId: string): Promise<void> {
+export async function markEventProcessed(db: DbOrTx, eventId: string): Promise<void> {
   await db.update(connectorEvents).set({ status: "processed", processedAt: new Date() }).where(eq(connectorEvents.id, eventId));
 }
 
-export async function markEventFailed(db: Db, eventId: string, error: string): Promise<void> {
+export async function markEventFailed(db: DbOrTx, eventId: string, error: string): Promise<void> {
   await db.update(connectorEvents).set({ status: "failed", error, processedAt: new Date() }).where(eq(connectorEvents.id, eventId));
 }

@@ -1,9 +1,10 @@
 import type {
+  CreateHospitalTeamMember,
+  HospitalTeamMember,
   ClinicHours,
   DisplayPreferences,
   SetupStatus,
   DevEnvironment,
-  SignupInput,
   ActivityEntry,
   AdsAnalytics,
   AdsSyncRunVm,
@@ -273,6 +274,9 @@ export interface DashboardQuery {
 }
 
 export const api = {
+  hospitalTeam: () => request<{ items: HospitalTeamMember[] }>("/hospital-team"),
+  createHospitalTeamMember: (body: CreateHospitalTeamMember) =>
+    request<HospitalTeamMember>("/hospital-team", { method: "POST", body: JSON.stringify(body) }),
   login: (email: string, password: string, remember = false) =>
     request<{ user: SessionUser }>("/auth/login", { method: "POST", body: JSON.stringify({ email, password, remember }) }),
   /** A hospital's dedicated sign-in page: the hospital is fixed by the slug; the body can name nothing else. */
@@ -296,7 +300,7 @@ export const api = {
   /** Hospitals listed in Developer Access (development only), each with the roles that exist in it. */
   devLoginEnvironments: () => request<DevEnvironment[]>("/auth/dev-login/environments"),
   /** Public hospital sign-up: the server creates the workspace and signs the owner in. */
-  signup: (input: SignupInput) => request<{ user: SessionUser; workspace: { template: "installed" | "none" | "failed" } }>("/auth/signup", { method: "POST", body: JSON.stringify(input) }),
+  redeemHospitalInvitation: (token: string, password: string) => request<{ accepted: true; signedIn?: boolean }>("/auth/hospital-invitations/redeem", { method: "POST", body: JSON.stringify({ token, password }) }),
   devLogin: (role: Role, environment?: string) =>
     request<{ user: SessionUser }>("/auth/dev-login", { method: "POST", body: JSON.stringify({ role, environment }) }),
   branches: () => request<Branch[]>("/branches"),
@@ -414,6 +418,12 @@ export const api = {
   /** URL of the authenticated recording stream (play in an <audio> tag, or download). The provider URL is never exposed. */
   callRecordingUrl: (callId: string, opts: { download?: boolean } = {}) => `${API_BASE}/calls/${callId}/recording${opts.download ? "?download=1" : ""}`,
   integrationHub: () => request<IntegrationCard[]>("/integrations/hub"),
+  importRunoAllocations: (input: { date: string; processName: string }) =>
+    request<{ imported: number; expectedCount?: number }>("/integrations/hub/runo/allocations/import", { method: "POST", body: JSON.stringify(input) }),
+  runoAllocations: (page: number) => request<{
+    rows: { externalId: string; processName: string; createdAt: string; customerName: string | null; phone: string | null; status: string | null; assignee: string | null; source: string | null; branch: string | null }[];
+    hasMore: boolean;
+  }>(`/leads/runo-allocations?page=${page}`),
   integrationDetail: (key: string) => request<IntegrationDetail>(`/integrations/hub/${key}`),
   /** "Connect with code": redeem a WhatsNexus pairing code; the server stores the credentials it returns. Nothing secret comes back. */
   pairIntegration: (key: string, body: { baseUrl: string; code: string }) =>
@@ -569,3 +579,71 @@ export const api = {
 
 export { ApiError };
 export type { SessionUser };
+
+type Page<T> = { items: T[]; hasMore: boolean };
+
+function platformWrite<T>(path: string, method: "POST" | "PATCH", body?: unknown, idempotencyKey?: string) {
+  const headers: Record<string, string> = { "x-pulseos-platform": "1" };
+  if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
+  return request<T>("/platform" + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+}
+
+type PlatformTeamMember = import("@pulseos/types").PlatformAccount & {
+  enrolled: boolean; disabled: boolean; canRecover: boolean;
+  recovery: { status: "pending" | "approved" | "completed" | "rejected" | "expired"; expiresAt: string; canApprove: boolean } | null;
+};
+type TeamChanges = Pick<PlatformTeamMember, "role" | "disabled"> & { permissions: import("@pulseos/types").PlatformPermission[]; reissue?: boolean };
+
+export const platformApi = {
+  administratorRecovery: (id: string, body: { action: "request" | "reject" } | { action: "approve"; code: string }) =>
+    platformWrite<{ recoveryToken?: string; expiresAt?: string; updated?: boolean }>(
+      "/administrators/" + encodeURIComponent(id) + "/recovery", "POST", body),
+  administratorRecoveryHistory: (id: string) => request<{ items: { id: string; action: string; actorId: string | null; createdAt: string }[] }>(
+    "/platform/administrators/" + encodeURIComponent(id) + "/recovery"),
+  resendHospitalInvitation: (id: string, requestId: string) => platformWrite<{ queued: true }>(
+    "/hospitals/" + encodeURIComponent(id) + "/invitation-resend", "POST", undefined, requestId),
+  messagingExceptions: (filters: { page: number; status?: "pending" | "failed"; tenantId?: string }) =>
+    request<Page<import("@pulseos/types").PlatformMessagingException>>("/platform/operations/messaging" + toQuery(filters)),
+  lifecycleOperations: (id: string, legacy: boolean) => request<import("@pulseos/types").HospitalLifecycleOperations>(
+    "/platform/hospitals/" + encodeURIComponent(id) + "/lifecycle-operations" + (legacy ? "?legacy=1" : "")),
+  archivalAssessment: (id: string, legacy: boolean) => request<import("@pulseos/types").HospitalArchivalAssessment>(
+    "/platform/hospitals/" + encodeURIComponent(id) + "/archival-assessment" + (legacy ? "?legacy=1" : "")),
+  coordinateMessaging: (id: string, legacy: boolean, action: "retry" | "resume", version: number) =>
+    platformWrite<{ queued: boolean }>("/hospitals/" + encodeURIComponent(id) + "/whatsnexus-" + action +
+      (legacy ? "?legacy=1" : ""), "POST", { version, approved: true }),
+  replayHeldMetaLeads: (id: string, legacy: boolean, version: number) =>
+    platformWrite<{ processed: number; failed: number; skipped: number }>(
+      "/hospitals/" + encodeURIComponent(id) + "/replay-held-meta-leads" + (legacy ? "?legacy=1" : ""),
+      "POST", { version, approved: true }),
+  lifecycle: (id: string, legacy: boolean) => request<import("@pulseos/types").HospitalLifecycle>(
+    "/platform/hospitals/" + encodeURIComponent(id) + "/lifecycle" + (legacy ? "?legacy=1" : "")),
+  lifecycleHistory: (id: string, legacy: boolean, page: number) => request<Page<import("@pulseos/types").HospitalLifecycleEvent>>(
+    "/platform/hospitals/" + encodeURIComponent(id) + "/lifecycle-history?page=" + page + (legacy ? "&legacy=1" : "")),
+  changeLifecycle: (id: string, legacy: boolean, action: "suspend" | "restore", body: { version: number; reason: string; explanation?: string }) =>
+    platformWrite<{ lifecycle: import("@pulseos/types").HospitalLifecycle }>(
+      "/hospitals/" + encodeURIComponent(id) + "/" + action + (legacy ? "?legacy=1" : ""), "POST", body),
+  login: (body: { email: string; password: string; code?: string }) => platformWrite("/login", "POST", body),
+  enroll: (body: { invitation: string; password: string }) => platformWrite<{ setupKey: string; email: string }>("/enroll", "POST", body),
+  verifyEnrollment: (code: string) => platformWrite("/enroll/verify", "POST", { code }),
+  logout: () => platformWrite("/logout", "POST"),
+  me: () => request<import("@pulseos/types").PlatformAccount>("/platform/me"),
+  dashboard: () => request<import("@pulseos/types").PlatformDashboard>("/platform/dashboard"),
+  hospitals: (page: number, search: string) => request<Page<import("@pulseos/types").PlatformHospital>>("/platform/hospitals?" + new URLSearchParams({ page: String(page), search })),
+  hospitalSidebar: (id: string, legacy: boolean) =>
+    request<import("@pulseos/types").PlatformHospitalSidebar>(`/platform/hospitals/${encodeURIComponent(id)}/sidebar${legacy ? "?legacy=1" : ""}`),
+  updateHospitalSidebar: (id: string, legacy: boolean, layout: import("@pulseos/types").HospitalSidebarLayout | null) =>
+    platformWrite<import("@pulseos/types").PlatformHospitalSidebar>(`/hospitals/${encodeURIComponent(id)}/sidebar${legacy ? "?legacy=1" : ""}`, "PATCH", { layout }),
+  hospital: (id: string, legacy: boolean) => request<import("@pulseos/types").PlatformHospital>("/platform/hospitals/" + (legacy ? "legacy/" : "") + encodeURIComponent(id)),
+  create: (body: import("@pulseos/types").HospitalCreationInput, key: string) =>
+    platformWrite<import("@pulseos/types").PlatformHospital>("/hospitals", "POST", body, key),
+  hospitalAction: (id: string, action: "retry-template" | "activate") =>
+    platformWrite<{ hospital: import("@pulseos/types").PlatformHospital }>("/hospitals/" + encodeURIComponent(id) + "/" + action, "POST"),
+  hospitalInvitation: (id: string) => platformWrite<{ invitationPath: string; recipient: string; expiresAt: string }>(
+    "/hospitals/" + encodeURIComponent(id) + "/invitation", "POST"),
+  administrators: (page: number) => request<Page<PlatformTeamMember>>("/platform/administrators?page=" + page),
+  inviteAdministrator: (body: Pick<TeamChanges, "role" | "permissions"> & { email: string }) =>
+    platformWrite<{ setupToken: string; expiresAt: string }>("/administrators", "POST", body),
+  updateAdministrator: (id: string, body: TeamChanges) =>
+    platformWrite<{ setupToken?: string; expiresAt?: string }>("/administrators/" + encodeURIComponent(id), "PATCH", body),
+  audit: (page: number) => request<Page<import("@pulseos/types").PlatformAuditEvent>>("/platform/audit?page=" + page),
+};

@@ -1,4 +1,4 @@
-import type { Db } from "../../db/client.js";
+import type { DbOrTx } from "../../db/client.js";
 import { resolveLeadSource } from "../lead/lead-source.service.js";
 import { journeys, tasks, timelineEvents } from "../../db/schema.js";
 import { findMostRecentActiveJourney, resolveOrCreatePatient } from "../patient/identity.service.js";
@@ -35,7 +35,7 @@ export interface IngestLeadOptions {
 // (Meta then Google on one journey) fall out naturally rather than needing
 // special-case logic — see recordTouchpoint.
 export async function ingestNormalizedLead(
-  db: Db,
+  db: DbOrTx,
   tenantId: string,
   lead: NormalizedLead,
   opts: IngestLeadOptions,

@@ -1,8 +1,8 @@
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
-import { campaignTouchpoints, connectors, marketingCampaigns, patients } from "../db/schema.js";
+import { campaignTouchpoints, connectors, connectorEvents, marketingCampaigns, patients, tenants } from "../db/schema.js";
 import type { FastifyInstance } from "fastify";
 import type { ConnectorRow } from "@pulseos/types";
 
@@ -56,6 +56,38 @@ describe.skipIf(!DEMO_PASSWORD)("Google Ads Lead Forms webhook (Group AE, fixtur
     const res = await app.inject({ method: "POST", url: `/webhooks/google-ads-lead-forms/${connectorId}`, payload: leadPayload("LEAD_BADKEY", "+919876500001", { google_key: "wrong" }) });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ message: "invalid_google_key" });
+  });
+
+  it("waits for competing suspension and accepts provider redelivery after restoration", async () => {
+    const [connector] = await db.select().from(connectors).where(eq(connectors.id, connectorId));
+    const tenantId = connector!.tenantId;
+    const id = `LEAD_SUSPENSION_${Date.now()}`;
+    const body = leadPayload(id, `+91 9${String(Date.now()).slice(-9)}`);
+    const deliver = () => app.inject({
+      method: "POST", url: `/webhooks/google-ads-lead-forms/${connectorId}`,
+      payload: body,
+    });
+    try {
+      const { delivery } = await db.transaction(async (tx) => {
+        await tx.update(tenants).set({ lifecycleStatus: "SUSPENDED", loginEnabled: false }).where(eq(tenants.id, tenantId));
+        const delivery = deliver().then((response) => response);
+        await vi.waitFor(async () => {
+          const [row] = await queryClient`select exists (select 1 from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+            and query like '%from "tenants"%for share') as waiting`;
+          expect(row?.waiting).toBe(true);
+        }, { timeout: 5000 });
+        return { delivery };
+      });
+      expect((await delivery).statusCode).toBe(503);
+      expect(await db.select().from(connectorEvents).where(eq(connectorEvents.externalEventId, id))).toHaveLength(0);
+      expect(await db.select().from(campaignTouchpoints).where(eq(campaignTouchpoints.externalLeadId, id))).toHaveLength(0);
+    } finally {
+      await db.update(tenants).set({ lifecycleStatus: "ACTIVE", loginEnabled: true }).where(eq(tenants.id, tenantId));
+    }
+    const redeliveries = await Promise.all([deliver(), deliver()]);
+    expect(redeliveries.map((result) => result.statusCode)).toEqual([200, 200]);
+    expect(await db.select().from(campaignTouchpoints).where(eq(campaignTouchpoints.externalLeadId, id))).toHaveLength(1);
   });
 
   it("a valid lead creates a Patient/Journey/touchpoint preserving campaign/ad-group/gclid, and responds 200 {}", async () => {

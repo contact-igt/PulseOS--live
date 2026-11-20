@@ -2,6 +2,10 @@
 
 @source "../../../packages/ui/src/**/*.{ts,tsx}";
 
+@theme inline {
+  --font-sans: var(--font-pulseos), ui-sans-serif, system-ui, sans-serif;
+}
+
 /* Keep in sync with packages/design-tokens/src/colors.ts (a vitest contract
    test in that package fails when the two drift). */
 @theme {
@@ -146,7 +150,7 @@
 body {
   background: var(--color-canvas-base);
   color: var(--color-slate-900);
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-pulseos), ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 

@@ -143,7 +143,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
   const found = entry.connectorProvider ? facts.get(entry.connectorProvider) : undefined;
   const base = card(entry, caps, role, found, await webhookFacts(db, tenantId));
 
-  const config = found?.facts.configuration ?? {};
+  const config: Record<string, unknown> = found?.facts.configuration ?? {};
   const base_ = process.env.PUBLIC_API_BASE_URL?.replace(/\/$/, "") || (process.env.NODE_ENV === "production" ? "" : `http://localhost:${process.env.PORT || 4310}`);
   const websitePublicBase = entry.key === "website_leads" ? resolvePublicApiBase(process.env.PUBLIC_API_BASE_URL, process.env.NODE_ENV, process.env.PORT) : null;
   const webhookPath =
@@ -188,7 +188,7 @@ export async function getHubDetail(db: Db, tenantId: string, role: Role, caps: C
   return {
     ...base,
     configurationFields: entry.configurationFields,
-    configurationValues: Object.fromEntries(entry.configurationFields.map((f) => [f.key, (config as any)[f.key] == null ? "" : String((config as any)[f.key])])),
+    configurationValues: Object.fromEntries(entry.configurationFields.map(({ key }) => [key, String(config[key] ?? "")])),
     secretFields: entry.secretFields.map((f) => ({
       ...f,
       hasSecret: !!found?.facts.secretKeys.includes(f.key),
@@ -269,8 +269,8 @@ export async function configureIntegration(db: Db, tenantId: string, key: string
   if (input.secrets) {
     secretsNow = { ...secretsNow };
     for (const [k, v] of Object.entries(input.secrets)) {
-      // The one secret that must be removable: the previous callback secret kept only while WhatsNexus rotates over ("-" clears it).
-      if (key === "whatsnexus" && k === "previousCallbackSecret" && v.trim() === "-") delete secretsNow[k];
+      const removable = (key === "whatsnexus" && k === "previousCallbackSecret") || (key === "runo" && k === "webhookSharedSecret");
+      if (removable && v.trim() === "-") delete secretsNow[k];
       else if (v.trim() !== "") secretsNow[k] = v.trim();
     }
     const encryptedPayload = encryptSecret(secretsNow);

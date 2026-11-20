@@ -1,5 +1,5 @@
 import { eq, sql, type SQL } from "drizzle-orm";
-import type { Db } from "../db/client.js";
+import type { Db, DbOrTx } from "../db/client.js";
 import { tenants } from "../db/schema.js";
 
 // Hospital-local time. Every "today", day boundary and day bucket in PulseOS
@@ -50,7 +50,7 @@ export function inLocalRange(column: unknown, timezone: string, from: string, to
   return sql`${column} >= (${from}::date)::timestamp at time zone ${tz} and ${column} < ((${to}::date + 1))::timestamp at time zone ${tz}`;
 }
 
-export async function tenantTimezone(db: Db, tenantId: string): Promise<string> {
+export async function tenantTimezone(db: DbOrTx, tenantId: string): Promise<string> {
   const [row] = await db.select({ timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, tenantId));
   return row?.timezone ?? "Asia/Kolkata";
 }

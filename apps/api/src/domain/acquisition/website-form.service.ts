@@ -1,6 +1,11 @@
 import type { Db } from "../../db/client.js";
 import { ingestNormalizedLead } from "./lead-ingestion.service.js";
 import type { NormalizedLead } from "./types.js";
+import { eq } from "drizzle-orm";
+import { tenants } from "../../db/schema.js";
+import { hospitalIsActive } from "../tenant/hospital-lifecycle.policy.js";
+
+export class WebsiteIntakeUnavailable extends Error {}
 
 export interface WebsiteFormSubmissionInput {
   formId: string;
@@ -61,18 +66,22 @@ export async function processWebsiteFormSubmission(
 
   // All-or-nothing for this source: a failure part-way (after the patient, before the follow-up task) must not leave a half-made
   // lead behind, because the retry would then reuse that journey and never create the task. The shared pipeline is unchanged.
-  const result = await db.transaction((tx) => ingestNormalizedLead(tx as unknown as Db, tenantId, lead, {
-    branchId: input.branchId,
-    journeyTypeFallback: input.service ?? "Website Enquiry",
-    campaignNameFallback: "Website – Direct",
-    sourceLabel: "website",
-    taskDueInHours: 2,
-    firstTouchEventType: "website_form_submitted",
-    firstTouchTitle: "Website enquiry received",
-    additionalTouchEventType: "website_form_resubmitted",
-    additionalTouchTitle: "Website form resubmitted",
-    description: [input.message, input.referralCode ? `Referral code: ${input.referralCode}` : null, input.pageUrl].filter((x): x is string => !!x).join(" · ") || null,
-  }));
+  const result = await db.transaction(async (tx) => {
+    const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, tenantId)).for("share");
+    if (!tenant || !hospitalIsActive(tenant)) throw new WebsiteIntakeUnavailable();
+    return ingestNormalizedLead(tx, tenantId, lead, {
+      branchId: input.branchId,
+      journeyTypeFallback: input.service ?? "Website Enquiry",
+      campaignNameFallback: "Website – Direct",
+      sourceLabel: "website",
+      taskDueInHours: 2,
+      firstTouchEventType: "website_form_submitted",
+      firstTouchTitle: "Website enquiry received",
+      additionalTouchEventType: "website_form_resubmitted",
+      additionalTouchTitle: "Website form resubmitted",
+      description: [input.message, input.referralCode ? `Referral code: ${input.referralCode}` : null, input.pageUrl].filter((x): x is string => !!x).join(" · ") || null,
+    });
+  });
 
   return { patientId: result.patientId, journeyId: result.journeyId, touchpointId: result.touchpointId, deduped: result.journeyReused };
 }

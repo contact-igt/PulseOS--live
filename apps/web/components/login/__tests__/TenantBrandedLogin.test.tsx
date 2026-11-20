@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { TenantLoginBranding } from "@pulseos/types";
 import { DEFAULT_LOGIN_SUPPORT_TEXT, DEFAULT_LOGIN_TAGLINE } from "@pulseos/types";
@@ -12,24 +12,21 @@ const base: TenantLoginBranding = {
 const page = (over: Partial<TenantLoginBranding> = {}) => render(<TenantBrandedLogin branding={{ ...base, ...over }}><form aria-label="form-slot" /></TenantBrandedLogin>);
 
 describe("TenantBrandedLogin: one layout, tenant-driven words", () => {
-  it("shows PulseOS × client, the client's name, the tagline, the badge and the workspace sentence", () => {
+  it("shows PulseOS branding and the sign-in form without naming the hospital", () => {
     page();
     const lockup = screen.getByTestId("login-lockup");
-    expect(within(lockup).getByText("×")).toBeTruthy();
-    expect(within(lockup).getByTestId("login-client-name").textContent).toBe("Namokar");
-    expect(screen.getByTestId("login-headline").textContent).toBe("Namokar Eye & Oculoplasty Centre");
+    expect(lockup.textContent).toBe("PulseOS");
     expect(screen.getByTestId("login-tagline").textContent).toBe(base.tagline);
     expect(screen.getByTestId("tenant-login-pilot").textContent).toBe("V1 Pilot");
-    expect(screen.getByTestId("tenant-login-workspace").textContent).toBe("You are signing into Namokar’s PulseOS workspace.");
+    expect(document.body.textContent).not.toContain("Namokar");
     expect(screen.getByTestId("login-support").textContent).toBe("Need help? Contact your administrator.");
     expect(screen.getByRole("form", { name: "form-slot" })).toBeTruthy(); // the interactive form is a slot, not part of this server component
   });
 
-  it("a different hospital uses the SAME layout with its own words", () => {
+  it("keeps the workspace slug while omitting the configured hospital headline", () => {
     page({ slug: "rio", displayName: "RIO Children’s & Women’s Hospital", shortName: "RIO", badgeLabel: null, headline: "RIO Children’s & Women’s Hospital", tagline: DEFAULT_LOGIN_TAGLINE });
-    expect(screen.getByTestId("login-client-name").textContent).toBe("RIO");
     expect(screen.getByTestId("login-tagline").textContent).toBe(DEFAULT_LOGIN_TAGLINE);
-    expect(screen.getByTestId("tenant-login-workspace").textContent).toContain("RIO’s PulseOS workspace");
+    expect(document.body.textContent).not.toContain("RIO");
     expect(screen.getByTestId("tenant-login").getAttribute("data-workspace")).toBe("rio");
   });
 
@@ -39,20 +36,9 @@ describe("TenantBrandedLogin: one layout, tenant-driven words", () => {
     expect(screen.getByTestId("login-note").textContent).toBe("");
   });
 
-  it("no logo: the typographic name is the fallback and nothing else is needed", () => {
-    page({ logoPath: null });
-    expect(screen.getByTestId("login-client-name")).toBeTruthy();
-    expect(screen.queryByTestId("login-client-logo")).toBeNull();
-  });
-
-  it("a logo: the approved mark replaces the name, as an image of the file itself, with the hospital's name as its text alternative", () => {
+  it("omits a configured hospital logo", () => {
     page({ logoPath: "/brand/test-mark.svg" });
-    const logo = screen.getByTestId("login-client-logo").querySelector("img")!;
-    expect(logo.getAttribute("src")).toBe("/brand/test-mark.svg");
-    expect(logo.getAttribute("alt")).toBe("Namokar Eye & Oculoplasty Centre");
-    expect(logo.className).toContain("object-contain"); // never stretched
-    expect(logo.getAttribute("style")).toBeNull(); // no recolouring or filters
-    expect(screen.queryByTestId("login-client-name")).toBeNull();
+    expect(document.querySelector('img[src="/brand/test-mark.svg"]')).toBeNull();
   });
 
   it("never renders markup from the data: tenant text is text", () => {

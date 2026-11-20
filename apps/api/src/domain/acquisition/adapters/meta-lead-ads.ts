@@ -116,6 +116,7 @@ export const metaLeadAdsAdapter: AcquisitionProviderAdapter = {
         const v = change.value;
         refs.push({
           externalLeadId: String(v.leadgen_id),
+          externalPageId: v.page_id != null ? String(v.page_id) : null,
           externalFormId: v.form_id != null ? String(v.form_id) : null,
           externalAdGroupId: v.adgroup_id != null ? String(v.adgroup_id) : null,
           externalAdId: v.ad_id != null ? String(v.ad_id) : null,
@@ -160,10 +161,10 @@ export const metaLeadAdsAdapter: AcquisitionProviderAdapter = {
 
     const fields = "id,form_id,ad_id,adset_id,campaign_id,created_time,field_data";
     const url = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${ref.externalLeadId}?fields=${fields}&access_token=${encodeURIComponent(accessToken)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
-      const errorBody = await res.text().catch(() => "");
-      throw new Error(`Meta lead fetch failed: ${res.status} ${errorBody}`);
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`Meta lead fetch failed: ${res.status}`);
     }
 
     const data = (await res.json()) as MetaLeadDetailResponse;

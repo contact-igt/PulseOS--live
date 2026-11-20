@@ -89,6 +89,7 @@ export interface ConversionFeedbackPayload {
 // distinct, smaller shape from NormalizedLead rather than the same one.
 export interface LeadReference {
   externalLeadId: string;
+  externalPageId?: string | null;
   externalFormId: string | null;
   externalAdGroupId: string | null;
   externalAdId: string | null;

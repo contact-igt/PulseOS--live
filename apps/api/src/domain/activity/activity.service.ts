@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { activityLog, users } from "../../db/schema.js";
 import { inLocalRange, isRealDate, tenantTimezone } from "../../lib/hospital-time.js";
 import { redactLogText } from "../security/redact.js";
@@ -36,7 +36,7 @@ export interface ActivityInput {
 }
 
 /** Record that a setting changed. Call inside the same transaction as the change when there is one. */
-export async function recordActivity(db: Db, a: ActivityInput): Promise<void> {
+export async function recordActivity(db: DbOrTx, a: ActivityInput): Promise<void> {
   await db.insert(activityLog).values({ tenantId: a.tenantId, actorId: a.actorId, action: a.action, entityType: a.entityType, entityKey: a.entityKey ?? null, metadata: scrubMetadata(a.metadata ?? {}) as Record<string, unknown> });
 }
 

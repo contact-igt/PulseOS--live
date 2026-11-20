@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { allocationRules, branches, specialtyTemplates, users } from "../../db/schema.js";
 import type { AllocationRuleVm, CreateAllocationRuleInput, Role, SourceChannel, UpdateAllocationRuleInput } from "@pulseos/types";
 import type { Result } from "./crm-field.service.js";
@@ -145,7 +145,7 @@ const matches = (r: Row, ctx: AllocationContext): boolean =>
  * The cursor is advanced with a single atomic UPDATE ... RETURNING, so leads arriving at the same moment get
  * different turns. Returns null when no rule applies (the Journey is simply left unassigned, as before).
  */
-export async function pickOwnerForNewJourney(db: Db, tenantId: string, ctx: AllocationContext): Promise<{ userId: string; userName: string; ruleName: string } | null> {
+export async function pickOwnerForNewJourney(db: DbOrTx, tenantId: string, ctx: AllocationContext): Promise<{ userId: string; userName: string; ruleName: string } | null> {
   const rows = await db.select().from(allocationRules).where(and(eq(allocationRules.tenantId, tenantId), eq(allocationRules.enabled, true))).orderBy(asc(allocationRules.sortOrder), asc(allocationRules.createdAt));
   for (const rule of rows) {
     if (!matches(rule, ctx)) continue;

@@ -8,7 +8,6 @@ import { db, queryClient } from "../db/client.js";
 import { tenantLoginConfigs, tenants } from "../db/schema.js";
 import { createTestTenant, destroyTestTenant, type TestTenant } from "./helpers/edition-tenant.js";
 
-process.env.SIGNUP_MAX_PER_HOUR = "1000";
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
 
 // One approved PulseOS sign-in page for every hospital; only SAFE structured data differs. The public branding endpoint is
@@ -18,7 +17,6 @@ describe.skipIf(!DEMO_PASSWORD)("tenant sign-in branding (integration)", () => {
   let t: TestTenant;
   const slug = `brand-${randomUUID().slice(0, 8)}`;
   const branding = async (s: string) => app.inject({ method: "GET", url: `/auth/tenants/${s}` });
-  const createdByEmail: string[] = [];
 
   beforeAll(async () => {
     app = await buildApp();
@@ -27,15 +25,6 @@ describe.skipIf(!DEMO_PASSWORD)("tenant sign-in branding (integration)", () => {
     await db.update(tenants).set({ loginSlug: slug, name: "Sunrise Eye & Laser Centre" }).where(eq(tenants.id, t.tenantId));
   });
   afterAll(async () => {
-    for (const email of createdByEmail) {
-      const rows = await queryClient`select distinct tenant_id from users where email = ${email}`;
-      for (const r of rows) {
-        const tenantId = r.tenant_id as string;
-        await queryClient`delete from sessions where user_id in (select id from users where tenant_id = ${tenantId})`;
-        await queryClient`delete from tenant_profiles where tenant_id = ${tenantId}`;
-        await destroyTestTenant(db, { tenantId } as TestTenant);
-      }
-    }
     await destroyTestTenant(db, t);
     await app.close();
     await queryClient.end();
@@ -124,52 +113,4 @@ describe.skipIf(!DEMO_PASSWORD)("tenant sign-in branding (integration)", () => {
     expect(Number(serverDays)).toBeGreaterThan(6.9);
   });
 
-  describe("a hospital that signs up gets its own sign-in page with no engineering step", () => {
-    const signup = (email: string, name: string) =>
-      app.inject({
-        method: "POST",
-        url: "/auth/signup",
-        payload: { fullName: "Asha Verma", email, phone: "+91 98765 43210", password: "Correct-Horse-9", organizationName: name, industry: "Healthcare", organizationType: "Eye Hospital", department: "Ophthalmology", addressLine: "12 MG Road", city: "Bengaluru", state: "Karnataka", pinCode: "560038", country: "India", discoverySource: "Google", edition: "V1" },
-      });
-    const tag = Date.now().toString(36);
-
-    it("generates a clean slug from the name, answers at /login/<slug>, and shows the hospital's own name", async () => {
-      const email = `brand.${tag}.a@example.test`;
-      createdByEmail.push(email);
-      const res = await signup(email, `ABC Eye Hospital ${tag}`);
-      expect(res.statusCode).toBe(201);
-      const loginPath = res.json().workspace.loginPath as string;
-      expect(loginPath).toMatch(/^\/login\/abc-eye-hospital-[a-z0-9]+$/);
-      const b = await branding(loginPath.replace("/login/", ""));
-      expect(b.statusCode).toBe(200);
-      expect(b.json()).toMatchObject({ displayName: `ABC Eye Hospital ${tag}`, logoPath: null, tagline: DEFAULT_LOGIN_TAGLINE });
-      // No badge is invented for a hospital whose configuration does not say so.
-      expect(b.json().badgeLabel).toBeNull();
-      // …and the owner can sign in through it.
-      const signedIn = await app.inject({ method: "POST", url: `/auth/login/tenant/${loginPath.replace("/login/", "")}`, payload: { email, password: "Correct-Horse-9" } });
-      expect(signedIn.statusCode).toBe(200);
-    });
-
-    it("two hospitals with the same name get different pages, and a reserved word is never a slug", async () => {
-      const a = `brand.${tag}.b@example.test`;
-      const b = `brand.${tag}.c@example.test`;
-      const c = `brand.${tag}.d@example.test`;
-      createdByEmail.push(a, b, c);
-      const first = (await signup(a, `Twin Clinic ${tag}`)).json().workspace.loginPath as string;
-      const second = (await signup(b, `Twin Clinic ${tag}`)).json().workspace.loginPath as string;
-      expect(first).not.toBe(second);
-      const reserved = (await signup(c, "Admin")).json().workspace.loginPath as string;
-      expect(reserved).not.toBe("/login/admin");
-      expect(reserved).toMatch(/^\/login\/[a-z][a-z0-9-]+[a-z0-9]$/);
-    });
-
-    it.skipIf(process.env.ENABLE_DEV_LOGIN !== "true")("and Developer Access (development only) discovers it by itself", async () => {
-      const email = `brand.${tag}.e@example.test`;
-      createdByEmail.push(email);
-      const res = await signup(email, `Discoverable Clinic ${tag}`);
-      expect(res.statusCode).toBe(201);
-      const envs = (await app.inject({ method: "GET", url: "/auth/dev-login/environments" })).json() as { key: string; label: string }[];
-      expect(envs.some((e) => e.label === `Discoverable Clinic ${tag}`)).toBe(true);
-    });
-  });
 });

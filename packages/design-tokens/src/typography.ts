@@ -1,6 +1,6 @@
 export const typography = {
   fontFamily: {
-    sans: "'Inter', ui-sans-serif, system-ui, sans-serif",
+    sans: "'Geist', ui-sans-serif, system-ui, sans-serif",
   },
   scale: {
     xs: { size: "12px", lineHeight: "16px" },

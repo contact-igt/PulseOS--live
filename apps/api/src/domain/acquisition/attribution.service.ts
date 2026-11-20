@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { campaignTouchpoints, marketingCampaigns, type SourceChannelDb } from "../../db/schema.js";
 import { buildTouchpointValues, type TouchpointDetails } from "./touchpoint.js";
 
@@ -12,7 +12,7 @@ import { buildTouchpointValues, type TouchpointDetails } from "./touchpoint.js";
 // manually-created MarketingCampaign row), the caller passes a campaignId
 // directly instead of calling this.
 export async function resolveCampaign(
-  db: Db,
+  db: DbOrTx,
   tenantId: string,
   input: { source: SourceChannelDb; externalCampaignId: string | null; name: string; connectorId?: string | null },
 ): Promise<string | null> {
@@ -64,7 +64,7 @@ export async function resolveCampaign(
 // Add Lead picking an existing campaign from a dropdown), is passed
 // directly and resolveCampaign is skipped.
 export async function recordTouchpoint(
-  db: Db,
+  db: DbOrTx,
   input: {
     tenantId: string;
     patientId: string;

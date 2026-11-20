@@ -1,12 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import { purgeSignupTenants, sql } from "./support/fixtures";
 import { pickPeriod, periodOptionLabels } from "./support/period";
 
-// The rapid demo patch: PulseOS-owned date controls, Sign up, 7-day Remember me, Developer Access that lists new
-// hospitals, a guided empty workspace, day navigation on Front Desk / Doctor Home, the Treatments date dimension and the
-// Namokar telecalling demo. Screenshots land in review-artifacts/demo-patch (gitignored).
+// Screenshots land in review-artifacts/demo-patch (gitignored).
 
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD ?? "";
 const OUT = path.resolve(__dirname, "../../../review-artifacts/demo-patch");
@@ -15,7 +12,6 @@ const NATIVE_LISTBOX = "select"; // a native <select> anywhere inside the period
 test.describe("demo patch", () => {
   test.skip(!DEMO_PASSWORD, "DEMO_PASSWORD must be set");
   test.beforeAll(() => fs.mkdirSync(OUT, { recursive: true }));
-  test.afterAll(() => purgeSignupTenants());
 
   const shot = (page: Page, name: string) => page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: false });
 
@@ -27,7 +23,7 @@ test.describe("demo patch", () => {
     await page.waitForURL(/command-centre|front-desk|my-work|doctor-home/);
   }
 
-  test("login offers Sign in, Remember me, Create account and Developer access", async ({ page }) => {
+  test("login offers Sign in, Remember me, hospital onboarding and Developer access", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/login");
     await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
@@ -51,97 +47,6 @@ test.describe("demo patch", () => {
     expect(cookie.httpOnly).toBe(true);
     expect(await page.evaluate(() => document.cookie)).not.toContain("pulseos_session");
     expect(await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }))).not.toContain(cookie.value);
-  });
-
-  test("sign up in five steps, land in a guided empty workspace, and the new hospital appears in Developer Access", async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const stamp = Date.now().toString(36);
-    const email = `e2e.signup.${stamp}@example.test`;
-    const hospital = `E2E Signup Eye Care ${stamp}`;
-
-    await page.goto("/login");
-    await page.getByTestId("signup-link").click();
-    await expect(page).toHaveURL(/\/signup/);
-
-    // Step 1 - the checks are friendly and stay on the step.
-    await page.getByTestId("signup-next").click();
-    await expect(page.getByText("Enter your full name")).toBeVisible();
-    await page.getByTestId("signup-field-fullName").fill("Asha Verma");
-    await page.getByTestId("signup-field-email").fill(email);
-    await page.getByTestId("signup-field-phone").fill("+91 98765 43210");
-    await page.getByTestId("signup-field-password").fill("Correct-Horse-9");
-    await shot(page, "02-signup-step1");
-    await page.getByTestId("signup-next").click();
-
-    // Step 2
-    await expect(page.getByTestId("signup-progress")).toHaveText("Step 2 of 5");
-    await page.getByTestId("signup-field-organizationName").fill(hospital);
-    await page.getByTestId("signup-orgtype-Eye Hospital").click();
-    await page.getByTestId("signup-department-Ophthalmology").click();
-    await shot(page, "03-signup-step2");
-    await page.getByTestId("signup-next").click();
-
-    // Step 3
-    await page.getByTestId("signup-field-addressLine").fill("12 MG Road");
-    await page.getByTestId("signup-field-city").fill("Bengaluru");
-    await page.getByTestId("signup-field-state").fill("Karnataka");
-    await page.getByTestId("signup-field-pinCode").fill("560038");
-    await page.getByTestId("signup-next").click();
-
-    // Step 4
-    await page.getByTestId("signup-discovery-Referral").click();
-    await page.getByTestId("signup-field-discoveryNotes").fill("Dr. Rao");
-    await page.getByTestId("signup-next").click();
-
-    // Step 5 - V1 is the default.
-    await expect(page.getByTestId("signup-edition-V1")).toHaveAttribute("aria-checked", "true");
-    await shot(page, "04-signup-step5");
-    await page.getByTestId("signup-submit").click();
-    await expect(page.getByTestId("signup-success")).toContainText("Your PulseOS workspace is ready.");
-    await shot(page, "05-signup-success");
-
-    await page.getByTestId("signup-go-dashboard").click();
-    await expect(page).toHaveURL(/command-centre/);
-    // Nothing to chart yet: the guided welcome, not a wall of zeros.
-    await expect(page.getByTestId("workspace-welcome")).toBeVisible();
-    await expect(page.getByTestId("kpi-strip")).toHaveCount(0);
-    await expect(page.getByTestId("welcome-step-lead")).toHaveAttribute("data-done", "false");
-    await expect(page.getByTestId("welcome-step-crm")).toHaveAttribute("data-done", "true"); // the Ophthalmology template is installed
-    await shot(page, "06-new-workspace-welcome");
-
-    // The hospital is saved in the database and listed in Developer Access (queried, not hard-coded).
-    expect(sql(`SELECT count(*) FROM tenants WHERE name = '${hospital}'`)).toBe("1");
-    await page.context().clearCookies();
-    await page.goto("/login");
-    await page.getByTestId("dev-login-toggle").click();
-    await page.getByRole("button", { name: hospital }).click();
-    await page.getByTestId("dev-login-role-SUPER_ADMIN").click();
-    await page.waitForURL(/command-centre/);
-    await expect(page.getByTestId("workspace-welcome")).toBeVisible();
-  });
-
-  test("a duplicate email is refused on step 1 with a plain message", async ({ page }) => {
-    await page.goto("/signup");
-    await page.getByTestId("signup-field-fullName").fill("Asha Verma");
-    await page.getByTestId("signup-field-email").fill("eye.admin@pulseos.local");
-    await page.getByTestId("signup-field-phone").fill("+91 98765 43210");
-    await page.getByTestId("signup-field-password").fill("Correct-Horse-9");
-    await page.getByTestId("signup-next").click();
-    await page.getByTestId("signup-field-organizationName").fill("E2E Signup Duplicate");
-    await page.getByTestId("signup-orgtype-Clinic").click();
-    await page.getByTestId("signup-department-Other").click();
-    await page.getByTestId("signup-next").click();
-    await page.getByTestId("signup-field-addressLine").fill("1 Test Road");
-    await page.getByTestId("signup-field-city").fill("Pune");
-    await page.getByTestId("signup-field-state").fill("Maharashtra");
-    await page.getByTestId("signup-field-pinCode").fill("411001");
-    await page.getByTestId("signup-next").click();
-    await page.getByTestId("signup-discovery-Google").click();
-    await page.getByTestId("signup-next").click();
-    await page.getByTestId("signup-submit").click();
-    await expect(page.getByTestId("signup-progress")).toHaveText("Step 1 of 5");
-    await expect(page.getByText(/already exists/)).toBeVisible();
-    expect(sql(`SELECT count(*) FROM tenants WHERE name = 'E2E Signup Duplicate'`)).toBe("0");
   });
 
   test("Developer Access lists the Namokar demo and signs in as its staff", async ({ page }) => {

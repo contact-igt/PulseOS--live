@@ -1,5 +1,5 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { connectorEvents, connectors, connectorSecrets } from "../../db/schema.js";
 import { decryptSecret, encryptSecret } from "../security/encryption.js";
 import type { ConnectorDetail, ConnectorRow, ConnectorStatus } from "@pulseos/types";
@@ -101,7 +101,7 @@ export async function upsertConnectorConfig(
   return { ok: true };
 }
 
-export async function getConnectorSecrets(db: Db, connectorId: string): Promise<Record<string, unknown> | null> {
+export async function getConnectorSecrets(db: DbOrTx, connectorId: string): Promise<Record<string, unknown> | null> {
   const [row] = await db.select().from(connectorSecrets).where(eq(connectorSecrets.connectorId, connectorId)).limit(1);
   if (!row) return null;
   return decryptSecret(row.encryptedPayload);
@@ -117,14 +117,14 @@ export async function getConnectorById(db: Db, connectorId: string) {
   return row ?? null;
 }
 
-export async function touchConnectorSuccess(db: Db, connectorId: string): Promise<void> {
+export async function touchConnectorSuccess(db: DbOrTx, connectorId: string): Promise<void> {
   await db
     .update(connectors)
     .set({ lastEventAt: new Date(), lastSyncAt: new Date(), lastError: null, status: sql`case when ${connectors.status} = 'DISABLED' then ${connectors.status} else 'CONNECTED'::connector_status end`, updatedAt: new Date() })
     .where(eq(connectors.id, connectorId));
 }
 
-export async function touchConnectorError(db: Db, connectorId: string, error: string): Promise<void> {
+export async function touchConnectorError(db: DbOrTx, connectorId: string, error: string): Promise<void> {
   await db
     .update(connectors)
     // A switched-off connector stays off: a late failure (a request already in flight when it was disabled) must not turn it back on.

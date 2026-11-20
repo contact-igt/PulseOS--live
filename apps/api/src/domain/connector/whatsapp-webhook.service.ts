@@ -1,5 +1,5 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { DbOrTx } from "../../db/client.js";
 import { conversations, journeys, messageAttachments, messages } from "../../db/schema.js";
 import { findOrCreatePatientByPhone } from "../patient/identity.service.js";
 import { resolveEndpointByProviderRef } from "./communication-endpoint.service.js";
@@ -24,7 +24,7 @@ import type { WhatsNexusOutboundEvent } from "./whatsnexus-callback.js";
 //   0 active Journeys  -> null (Patient-level conversation; not an error)
 //   1 active Journey   -> that Journey (deterministic, unambiguous)
 //   >1 active Journeys -> null (genuinely ambiguous; never guess)
-async function resolveJourneyForNewConversation(db: Db, tenantId: string, patientId: string): Promise<string | null> {
+async function resolveJourneyForNewConversation(db: DbOrTx, tenantId: string, patientId: string): Promise<string | null> {
   const activeJourneys = await db
     .select({ id: journeys.id })
     .from(journeys)
@@ -35,7 +35,7 @@ async function resolveJourneyForNewConversation(db: Db, tenantId: string, patien
 }
 
 async function findOrCreateConversation(
-  db: Db,
+  db: DbOrTx,
   tenantId: string,
   connectorId: string,
   patientId: string,
@@ -109,7 +109,7 @@ async function findOrCreateConversation(
   return created;
 }
 
-export async function processInboundWhatsAppMessage(db: Db, tenantId: string, connectorId: string, event: InboundMessageEvent): Promise<{ conversationId: string; patientId: string }> {
+export async function processInboundWhatsAppMessage(db: DbOrTx, tenantId: string, connectorId: string, event: InboundMessageEvent): Promise<{ conversationId: string; patientId: string }> {
   const patient = await findOrCreatePatientByPhone(db, tenantId, event.fromPhone, event.fromName ?? null);
   // Best-effort, exact match only: resolves when an admin has configured a
   // CommunicationEndpoint whose providerRef equals this message's real
@@ -154,7 +154,7 @@ export async function processInboundWhatsAppMessage(db: Db, tenantId: string, co
  * It never creates a patient or a conversation: a WhatsNexus broadcast to someone who has not written to this hospital is not
  * PulseOS's conversation. The provider message id makes a repeat harmless (nothing is stored twice).
  */
-export async function processOutboundWhatsAppMessage(db: Db, tenantId: string, connectorId: string, event: WhatsNexusOutboundEvent): Promise<"applied" | "duplicate" | "unknown_thread"> {
+export async function processOutboundWhatsAppMessage(db: DbOrTx, tenantId: string, connectorId: string, event: WhatsNexusOutboundEvent): Promise<"applied" | "duplicate" | "unknown_thread"> {
   const [conversation] = await db
     .select()
     .from(conversations)
@@ -192,7 +192,7 @@ export async function processOutboundWhatsAppMessage(db: Db, tenantId: string, c
   return "applied";
 }
 
-export async function processWhatsAppStatusUpdate(db: Db, connectorId: string, event: MessageStatusEvent): Promise<{ matched: boolean }> {
+export async function processWhatsAppStatusUpdate(db: DbOrTx, connectorId: string, event: MessageStatusEvent): Promise<{ matched: boolean }> {
   const [existing] = await db
     .select({ id: messages.id })
     .from(messages)

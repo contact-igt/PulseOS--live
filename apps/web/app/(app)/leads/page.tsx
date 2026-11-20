@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { RunoAllocationsView } from "@/components/leads/RunoAllocationsView";
 import { api } from "@pulseos/api-client";
 import { Button, Card, EmptyState, ErrorState, Skeleton, Tabs, Toolbar, ViewSwitcher } from "@pulseos/ui";
 import { LEAD_VIEWS, hasPermission, type LeadRow, type LeadsTodaySummary } from "@pulseos/types";
@@ -32,6 +34,11 @@ const VIEW_OPTIONS = [
 type Assigning = { kind: "one"; row: LeadRow } | { kind: "bulk" } | null;
 
 export default function LeadsPage() {
+  const searchParams = useSearchParams();
+  return searchParams.get("sourceView") === "runo" ? <RunoAllocationsView /> : <LeadsWorkspace />;
+}
+
+function LeadsWorkspace() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const quickCreate = useQuickCreate();
@@ -129,6 +136,7 @@ export default function LeadsPage() {
       <Toolbar
         actions={
           <>
+            {canEdit && session.data?.user.capabilities.RUNO_CALLING && <Link href="/leads?sourceView=runo" className="text-sm text-primary-700 underline">Runo Allocations</Link>}
             {view === "table" && !narrow && <ColumnPicker value={columns} onChange={chooseColumns} onReset={() => chooseColumns(DEFAULT_COLUMNS)} />}
             <ViewSwitcher ariaLabel="Leads view" value={view} onChange={setView} options={VIEW_OPTIONS} />
             <Button variant="primary" onClick={() => quickCreate.openAddLead()} className="max-md:min-h-11" data-testid="add-lead-button">

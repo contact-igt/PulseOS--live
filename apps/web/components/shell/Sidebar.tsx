@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   CalendarCheck,
   GitBranch,
   Inbox,
@@ -19,11 +20,12 @@ import {
 } from "lucide-react";
 import { PulseLockup } from "@pulseos/ui";
 import type { SessionUser } from "@pulseos/types";
-import { initials, lockedNavItems, navForRole } from "./nav";
+import { initials, lockedNavItems } from "./nav";
 import { TruncatedText } from "./TruncatedText";
-import { roleGroupLabel } from "@pulseos/types";
+import { hospitalSidebarForUser, roleGroupLabel } from "@pulseos/types";
 
 const ICONS: Record<string, LucideIcon> = {
+  BarChart3,
   LayoutDashboard,
   ListChecks,
   Users,
@@ -42,11 +44,11 @@ const ICONS: Record<string, LucideIcon> = {
 export function Sidebar({ user, open = false, onClose }: { user: SessionUser; open?: boolean; onClose?: () => void }) {
   const pathname = usePathname();
   // Unbuilt destinations are hidden, not shown greyed out: no dead navigation.
-  const groups = navForRole(user.role, user.capabilities)
+  const groups = hospitalSidebarForUser(user)
     .map((group) => ({ ...group, items: group.items.filter((item) => item.implemented) }))
     .filter((group) => group.items.length > 0);
 
-  const locked = lockedNavItems(user.role, user.capabilities);
+  const locked = user.hospitalSidebarPaths ? [] : lockedNavItems(user.role, user.capabilities);
 
   return (
     <>

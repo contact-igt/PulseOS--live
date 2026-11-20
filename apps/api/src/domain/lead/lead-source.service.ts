@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { leadSources } from "../../db/schema.js";
 import type { CreateLeadSourceInput, LeadSourceVm, SourceChannel, UpdateLeadSourceInput } from "@pulseos/types";
 
@@ -28,7 +28,7 @@ export const DEFAULT_LEAD_SOURCES: { key: string; label: string; bucket: SourceC
 const toVm = (r: typeof leadSources.$inferSelect): LeadSourceVm => ({ id: r.id, key: r.key, label: r.label, bucket: r.bucket, archived: r.archived, sortOrder: r.sortOrder });
 
 /** Idempotently gives a tenant the default catalogue the first time it is needed (a hospital's later edits are never overwritten). */
-export async function ensureLeadSources(db: Db, tenantId: string): Promise<void> {
+export async function ensureLeadSources(db: DbOrTx, tenantId: string): Promise<void> {
   // The common case (already installed) is one cheap read, not a write on every request.
   const [existing] = await db.select({ id: leadSources.id }).from(leadSources).where(eq(leadSources.tenantId, tenantId)).limit(1);
   if (existing) return;
@@ -55,7 +55,7 @@ export type ResolvedLeadSource = { id: string; key: string; label: string; bucke
  * a coarse value ("meta", "website"): they resolve even when the hospital has archived that entry. A person
  * choosing a source for a new lead never may.
  */
-export async function resolveLeadSource(db: Db, tenantId: string, key: string, opts: { allowArchived: boolean }): Promise<ResolvedLeadSource | null> {
+export async function resolveLeadSource(db: DbOrTx, tenantId: string, key: string, opts: { allowArchived: boolean }): Promise<ResolvedLeadSource | null> {
   await ensureLeadSources(db, tenantId);
   const [row] = await db.select().from(leadSources).where(and(eq(leadSources.tenantId, tenantId), eq(leadSources.key, key))).limit(1);
   if (!row || (row.archived && !opts.allowArchived)) return null;

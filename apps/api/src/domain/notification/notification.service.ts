@@ -1,5 +1,6 @@
+import { activeHospital, allowsHospitalWork, submitWhileActive } from "../tenant/hospital-lifecycle.policy.js";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, lte, sql } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { appointments, branches, connectorEvents, conversations, messages, messageTemplates, notificationRules, notifications, patients, scheduleResources, tenants, timelineEvents, treatmentOpportunities, users } from "../../db/schema.js";
 import { TEMPLATE_VARIABLES, checkProviderTemplate, type WhatsAppDelivery, type MessageTemplateVm, type NotificationOffsetUnit, type NotificationRuleVm, type NotificationSubject, type NotificationVm, type TemplatePurpose, type WhatsAppPreview } from "@pulseos/types";
 import { tenantCapabilityMap } from "../capability/capability.service.js";
@@ -256,6 +257,7 @@ export interface PlanOptions {
 }
 
 export async function planForSubject(db: Db, tenantId: string, type: "APPOINTMENT" | "SURGERY", id: string, now: Date = new Date(), opts: PlanOptions = {}): Promise<{ planned: number; suppressed: string[] }> {
+  if (!(await allowsHospitalWork(db, tenantId))) return { planned: 0, suppressed: ["HOSPITAL_UNAVAILABLE"] };
   const caps = await tenantCapabilityMap(db, tenantId);
   if (!caps.WHATSAPP_NOTIFICATIONS) return { planned: 0, suppressed: [] };
   await ensureNotificationDefaults(db, tenantId);
@@ -289,6 +291,7 @@ export async function planForSubject(db: Db, tenantId: string, type: "APPOINTMEN
 
 /** Queue one immediate appointment-change message. Its event key makes repeated delivery of the same domain event harmless. */
 export async function queueAppointmentChange(db: Db, tenantId: string, appointmentId: string, purpose: "APPOINTMENT_RESCHEDULED" | "APPOINTMENT_CANCELLED", now: Date = new Date()): Promise<number> {
+  if (!(await allowsHospitalWork(db, tenantId))) return 0;
   const caps = await tenantCapabilityMap(db, tenantId);
   if (!caps.WHATSAPP_NOTIFICATIONS) return 0;
   await ensureNotificationDefaults(db, tenantId);
@@ -411,7 +414,7 @@ export async function mirrorNotificationToConversation(
 }
 
 /** Carry a provider delivery status onto the conversation message with that provider id: forward only, never back from read. */
-async function syncMessageDelivery(db: Db, tenantId: string, providerMessageId: string, status: "sent" | "delivered" | "read" | "failed"): Promise<void> {
+async function syncMessageDelivery(db: DbOrTx, tenantId: string, providerMessageId: string, status: "sent" | "delivered" | "read" | "failed"): Promise<void> {
   const rows = await db.select({ id: messages.id, deliveryStatus: messages.deliveryStatus }).from(messages).where(and(eq(messages.tenantId, tenantId), eq(messages.providerMessageId, providerMessageId)));
   for (const m of rows) {
     const current = m.deliveryStatus ?? "queued";
@@ -527,8 +530,14 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
 
   let providerMessageId: string;
   try {
-    const res = await adapter.sendTemplate(config, secrets, patientPhone, { name: template.providerTemplateName, language: template.language, parameters: templateParameters(template.body, values), idempotencyKey: n.id });
-    providerMessageId = res.providerMessageId;
+    const submitted = await submitWhileActive(db, tenantId, () =>
+      adapter.sendTemplate(config, secrets, patientPhone, { name: template.providerTemplateName, language: template.language, parameters: templateParameters(template.body, values), idempotencyKey: n.id }),
+    n.scheduledFor);
+    if (!submitted) {
+      await finish(db, n.id, { status: "BLOCKED", reason: "LIFECYCLE_DISPATCH_INTERRUPTED" });
+      return "blocked";
+    }
+    providerMessageId = submitted.value.providerMessageId;
   } catch (err) {
     const raw = redactLogText(err instanceof Error ? err.message : String(err)) ?? "send failed";
     // An ambiguous WhatsNexus outcome stays visibly "unknown" (the reconcile job resolves it from WhatsNexus's own record).
@@ -556,15 +565,19 @@ async function sendClaimed(db: Db, n: Row, now: Date, deps: SendDeps): Promise<"
 export async function processDueNotifications(db: Db, now: Date, deps: SendDeps = {}): Promise<Record<string, number>> {
   // A worker that died mid-send leaves PROCESSING rows; after a grace period they are marked failed (never re-sent).
   // Not back to PENDING: the provider may already have the message, and a resend (or a late staff send) is worse than a visible failure.
-  await db.update(notifications).set({ status: "FAILED", reason: "SEND_INTERRUPTED" }).where(and(eq(notifications.status, "PROCESSING"), lt(notifications.processingStartedAt, new Date(now.getTime() - STALE_PROCESSING_MS))));
+  await db.update(notifications).set({
+    status: "FAILED",
+    reason: sql`case when ${notifications.provider} = ${WHATSNEXUS_PROVIDER}
+      then 'OUTCOME_UNKNOWN: SEND_INTERRUPTED' else 'SEND_INTERRUPTED' end`,
+  }).where(and(eq(notifications.status, "PROCESSING"), lt(notifications.processingStartedAt, new Date(now.getTime() - STALE_PROCESSING_MS))));
 
-  const due = await db.select({ id: notifications.id }).from(notifications).where(and(eq(notifications.status, "PENDING"), lte(notifications.scheduledFor, now))).orderBy(asc(notifications.scheduledFor)).limit(50);
+  const due = await db.select({ id: notifications.id }).from(notifications).where(and(eq(notifications.status, "PENDING"), activeHospital(notifications.tenantId), lte(notifications.scheduledFor, now))).orderBy(asc(notifications.scheduledFor)).limit(50);
   const tally: Record<string, number> = { sent: 0, blocked: 0, cancelled: 0, retry: 0, failed: 0 };
   for (const { id } of due) {
     const [claimed] = await db
       .update(notifications)
       .set({ status: "PROCESSING", attempts: sql`${notifications.attempts} + 1`, processingStartedAt: now })
-      .where(and(eq(notifications.id, id), eq(notifications.status, "PENDING")))
+      .where(and(eq(notifications.id, id), eq(notifications.status, "PENDING"), activeHospital(notifications.tenantId)))
       .returning();
     if (!claimed) continue;
     try {
@@ -584,7 +597,7 @@ export async function processDueNotifications(db: Db, now: Date, deps: SendDeps 
 const RANK: Record<string, number> = { PENDING: 0, PROCESSING: 1, SENT: 2, DELIVERED: 3, READ: 4 };
 
 /** `tenantId` is the connector's tenant: a status event can only ever touch that hospital's own messages. */
-export async function applyDeliveryStatus(db: Db, tenantId: string, providerMessageId: string, status: "sent" | "delivered" | "read" | "failed", at: Date): Promise<boolean> {
+export async function applyDeliveryStatus(db: DbOrTx, tenantId: string, providerMessageId: string, status: "sent" | "delivered" | "read" | "failed", at: Date): Promise<boolean> {
   const [n] = await db.select().from(notifications).where(and(eq(notifications.tenantId, tenantId), eq(notifications.providerMessageId, providerMessageId))).limit(1);
   if (!n) return false;
   await syncMessageDelivery(db, tenantId, providerMessageId, status);
@@ -609,7 +622,7 @@ export type WhatsNexusStatusResult = "applied" | "unknown_notification" | "provi
 const UNKNOWN_OUTCOME_PREFIX = "OUTCOME_UNKNOWN";
 
 /** WhatsNexus has proven the provider accepted a send whose outcome was unknown: it becomes SENT, with the real wamid. */
-async function resolveUnknownAsSent(db: Db, n: Row, wamid: string, at: Date): Promise<void> {
+async function resolveUnknownAsSent(db: DbOrTx, n: Row, wamid: string, at: Date): Promise<void> {
   await db
     .update(notifications)
     .set({ status: "SENT", providerMessageId: wamid, sentAt: n.sentAt ?? at, reason: null })
@@ -622,7 +635,7 @@ async function resolveUnknownAsSent(db: Db, n: Row, wamid: string, at: Date): Pr
  * is bound on first sight and a different wamid afterwards is refused. Status moves only forward (applyDeliveryStatus).
  * Safe if the callback beats the send's own bookkeeping: the row exists from planning, and finishAfterSend keeps its status.
  */
-export async function applyWhatsNexusStatus(db: Db, tenantId: string, e: { notificationId: string; wamid: string; status: "sent" | "delivered" | "read" | "failed"; at: Date }): Promise<WhatsNexusStatusResult> {
+export async function applyWhatsNexusStatus(db: DbOrTx, tenantId: string, e: { notificationId: string; wamid: string; status: "sent" | "delivered" | "read" | "failed"; at: Date }): Promise<WhatsNexusStatusResult> {
   const [n] = await db.select().from(notifications).where(and(eq(notifications.tenantId, tenantId), eq(notifications.id, e.notificationId))).limit(1);
   if (!n) return "unknown_notification";
   if (n.provider !== WHATSNEXUS_PROVIDER) return "provider_mismatch";
@@ -742,6 +755,7 @@ export async function previewFollowUpMessage(db: Db, tenantId: string, actorId: 
  * adapter, the same status tracking), is recorded on the Journey timeline, and never completes the follow-up task.
  */
 export async function sendFollowUpMessage(db: Db, tenantId: string, actorId: string, journeyId: string, idempotencyKey: string, deps: SendDeps = {}, now: Date = new Date()): Promise<Result<{ notificationId: string; status: string; duplicate: boolean; /** Why it failed or was blocked (provider code and message), so staff see the real reason. */ reason: string | null }>> {
+  if (!(await allowsHospitalWork(db, tenantId))) return { ok: false, reason: "hospital_unavailable" };
   const preview = await previewFollowUpMessage(db, tenantId, actorId, journeyId);
   if (!preview.ok) return preview;
   if (!preview.preview.canSend) return { ok: false, reason: preview.preview.blockedReason ?? "cannot_send" };

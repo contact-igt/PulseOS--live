@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "../../db/client.js";
+import type { Db, DbOrTx } from "../../db/client.js";
 import { tenantCapabilities, tenants } from "../../db/schema.js";
 import { recordActivity } from "../activity/activity.service.js";
 import {
@@ -19,14 +19,14 @@ import {
 const isCapability = (v: string): v is Capability => (CAPABILITIES as readonly string[]).includes(v);
 
 /** The tenant's own switches (only the ones that differ from nothing: a row means "override"). */
-export async function loadCapabilityOverrides(db: Db, tenantId: string): Promise<Partial<Record<Capability, boolean>>> {
+export async function loadCapabilityOverrides(db: DbOrTx, tenantId: string): Promise<Partial<Record<Capability, boolean>>> {
   const rows = await db.select().from(tenantCapabilities).where(eq(tenantCapabilities.tenantId, tenantId));
   const out: Partial<Record<Capability, boolean>> = {};
   for (const r of rows) if (isCapability(r.capability)) out[r.capability] = r.enabled;
   return out;
 }
 
-export async function resolveTenantCapabilities(db: Db, tenantId: string, edition: Edition): Promise<CapabilityMap> {
+export async function resolveTenantCapabilities(db: DbOrTx, tenantId: string, edition: Edition): Promise<CapabilityMap> {
   return resolveCapabilities(edition, await loadCapabilityOverrides(db, tenantId));
 }
 
@@ -107,7 +107,7 @@ async function applyCapabilityChange(db: Db, tenantId: string, actor: { id: stri
 }
 
 /** Webhooks have no session: resolve the connector tenant's capabilities directly. */
-export async function tenantCapabilityMap(db: Db, tenantId: string): Promise<CapabilityMap> {
+export async function tenantCapabilityMap(db: DbOrTx, tenantId: string): Promise<CapabilityMap> {
   const [tenant] = await db.select({ edition: tenants.edition }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   return resolveCapabilities(tenant?.edition ?? "BETA_V1_CORE", await loadCapabilityOverrides(db, tenantId));
 }

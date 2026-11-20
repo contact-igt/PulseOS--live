@@ -1,217 +1,229 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomBytes, randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
 import { db, queryClient } from "../db/client.js";
+import { platformIdentities } from "../db/schema.js";
+import { digest } from "../domain/tenant/hospital-onboarding.service.js";
+import { installDepartmentTemplate } from "../domain/specialty/department.service.js";
+import { provisionHospital } from "../domain/tenant/hospital-provisioning.service.js";
 import { destroyTestTenant, type TestTenant } from "./helpers/edition-tenant.js";
 
-// Public hospital sign-up: the server creates the tenant and its first Super Admin in one transaction; the client never
-// supplies a tenant id; a double-submit makes ONE hospital; the new workspace is listed in Developer Access (dev only).
-
-process.env.SIGNUP_MAX_PER_HOUR = "1000";
-const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
-const DEV_LOGIN = process.env.ENABLE_DEV_LOGIN === "true";
-
-const valid = (email: string, over: Record<string, unknown> = {}) => ({
-  fullName: "Asha Verma",
-  email,
-  phone: "+91 98765 43210",
-  password: "Correct-Horse-9",
-  organizationName: "Sunrise Eye Care",
-  industry: "Healthcare",
-  organizationType: "Eye Hospital",
-  department: "Ophthalmology",
-  addressLine: "12 MG Road",
-  locality: "Indiranagar",
-  city: "Bengaluru",
-  state: "Karnataka",
-  pinCode: "560038",
-  country: "India",
-  discoverySource: "Google",
-  discoveryNotes: "",
-  edition: "V1",
-  ...over,
+vi.mock("../domain/specialty/department.service.js", async (original) => {
+  const actual = await original<typeof import("../domain/specialty/department.service.js")>();
+  return { ...actual, installDepartmentTemplate: vi.fn(actual.installDepartmentTemplate) };
+});
+vi.mock("../domain/tenant/hospital-provisioning.service.js", async (original) => {
+  const actual = await original<typeof import("../domain/tenant/hospital-provisioning.service.js")>();
+  return { ...actual, provisionHospital: vi.fn(actual.provisionHospital) };
 });
 
-describe.skipIf(!DEMO_PASSWORD)("hospital sign-up (integration)", () => {
+const password = "Correct-Horse-9";
+const tag = randomUUID().slice(0, 8);
+const valid = (suffix: string, overrides: Record<string, unknown> = {}) => ({
+  fullName: "Asha Verma", email: `onboarding.${tag}.${suffix}@example.test`, phone: "+91 98765 43210",
+  organizationName: `Sunrise ${tag} ${suffix}`, industry: "Healthcare", organizationType: "Eye Hospital",
+  department: "Ophthalmology", addressLine: "12 MG Road", city: "Bengaluru", state: "Karnataka",
+  pinCode: "560038", country: "India", discoverySource: "Google", edition: "V1", ...overrides,
+});
+
+describe("platform-managed hospital onboarding (integration)", () => {
   let app: FastifyInstance;
-  const tag = Date.now().toString(36);
-  const emails: string[] = [];
-  const mail = (n: string) => {
-    const e = `signup.${n}.${tag}@example.test`;
-    emails.push(e);
-    return e;
+  const ids = new Set<string>();
+  const operator = randomBytes(32).toString("base64url");
+  const wrongRole = randomBytes(32).toString("base64url");
+  const expiredOperator = randomBytes(32).toString("base64url");
+  const revokedOperator = randomBytes(32).toString("base64url");
+  const authorization = `Bearer ${operator}`;
+  const create = (body: object, id = randomUUID(), headers: Record<string, string> = {}) => {
+    ids.add(id);
+    return app.inject({ method: "POST", url: "/platform/hospitals", payload: body, headers: { authorization, "idempotency-key": id, ...headers } });
   };
-  const post = (payload: unknown, headers: Record<string, string> = {}) => app.inject({ method: "POST", url: "/auth/signup", payload: payload as object, headers });
+  const action = (id: string, name: string) =>
+    app.inject({ method: "POST", url: `/platform/hospitals/${id}/${name}`, headers: { authorization } });
+  const status = (id: string) =>
+    app.inject({ method: "GET", url: `/platform/hospitals/${id}`, headers: { authorization } });
+  const accept = (token: string) =>
+    app.inject({ method: "POST", url: "/auth/hospital-invitations/redeem", payload: { token, password } });
+  const tokenFrom = (invitationPath: string) => invitationPath.split("#")[1]!;
+  const login = (email: string, slug?: string) => app.inject({
+    method: "POST", url: slug ? `/auth/login/tenant/${slug}` : "/auth/login", payload: { email, password },
+  });
 
   beforeAll(async () => {
     app = await buildApp();
     await app.ready();
+    const expiresAt = new Date(Date.now() + 300_000);
+    await db.insert(platformIdentities).values([
+      { label: `operator-${tag}`, role: "HOSPITAL_ONBOARDING_ADMIN", credentialHash: digest(operator), expiresAt },
+      { label: `wrong-role-${tag}`, role: "READ_ONLY", credentialHash: digest(wrongRole), expiresAt },
+      { label: `expired-${tag}`, role: "HOSPITAL_ONBOARDING_ADMIN", credentialHash: digest(expiredOperator), expiresAt: new Date(0) },
+      { label: `revoked-${tag}`, role: "HOSPITAL_ONBOARDING_ADMIN", credentialHash: digest(revokedOperator), expiresAt, revokedAt: new Date() },
+    ]);
   });
 
   afterAll(async () => {
-    const rows = await queryClient`select distinct tenant_id from users where email = any(${emails})`;
-    for (const r of rows) {
-      const tenantId = r.tenant_id as string;
-      await queryClient`delete from sessions where user_id in (select id from users where tenant_id = ${tenantId})`;
-      await queryClient`delete from tenant_profiles where tenant_id = ${tenantId}`;
-      await destroyTestTenant(db, { tenantId } as TestTenant);
+    for (const id of ids) {
+      const [row] = await queryClient`select tenant_id from hospital_onboardings where id = ${id}`;
+      await queryClient`delete from platform_audit_log where onboarding_id = ${id}`;
+      await queryClient`delete from hospital_onboardings where id = ${id}`;
+      if (row?.tenant_id) {
+        await queryClient`delete from tenant_profiles where tenant_id = ${row.tenant_id}`;
+        await destroyTestTenant(db, { tenantId: row.tenant_id } as TestTenant);
+      }
     }
+    await queryClient`delete from platform_identities where label = any(${[`operator-${tag}`, `wrong-role-${tag}`, `expired-${tag}`, `revoked-${tag}`]})`;
     await app.close();
     await queryClient.end();
   });
 
-  it("creates the hospital, its branch, a Super Admin and the profile - and signs the owner in", async () => {
-    const email = mail("ok");
-    const res = await post(valid(email));
-    expect(res.statusCode).toBe(201);
-    const body = res.json();
-    expect(body.user).toMatchObject({ email, role: "SUPER_ADMIN", name: "Asha Verma", edition: "BETA_V1_CORE", timezone: "Asia/Kolkata", tenantName: "Sunrise Eye Care" });
-    const cookie = res.cookies.find((c) => c.name === "pulseos_session")!;
-    expect(cookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
-
-    // Nothing secret leaves the server.
-    const text = res.body;
-    expect(text).not.toContain("Correct-Horse-9");
-    expect(text).not.toMatch(/passwordHash|password_hash|argon2/i);
-    expect(text).not.toContain(cookie.value);
-
-    const [u] = await queryClient`select u.id, u.tenant_id, u.password_hash, u.branch_id from users u where u.email = ${email}`;
-    expect(u!.password_hash).toMatch(/^\$argon2id\$/);
-    const [t] = await queryClient`select name, timezone, edition from tenants where id = ${u!.tenant_id}`;
-    expect(t).toMatchObject({ name: "Sunrise Eye Care", timezone: "Asia/Kolkata", edition: "BETA_V1_CORE" });
-    const [p] = await queryClient`select * from tenant_profiles where tenant_id = ${u!.tenant_id}`;
-    expect(p).toMatchObject({ source: "signup", owner_email: email, industry: "Healthcare", organization_type: "Eye Hospital", department: "Ophthalmology", city: "Bengaluru", state: "Karnataka", pin_code: "560038", country: "India", discovery_source: "Google" });
-    expect(p!.owner_phone).toBe("+919876543210");
-    const [b] = await queryClient`select id from branches where tenant_id = ${u!.tenant_id}`;
-    expect(b!.id).toBe(u!.branch_id);
-    // The Ophthalmology template is installed: services and a treatment catalogue exist for the new hospital.
-    const [d] = await queryClient`select (select count(*) from departments where tenant_id = ${u!.tenant_id})::int as departments, (select count(*) from specialty_templates where tenant_id = ${u!.tenant_id})::int as services, (select count(*) from treatment_definitions where tenant_id = ${u!.tenant_id})::int as treatments`;
-    expect(d!.departments).toBe(1);
-    expect(d!.services).toBeGreaterThan(3);
-    expect(d!.treatments).toBeGreaterThan(3);
-
-    // The session works, and the new account can sign in with its password.
-    const me = await app.inject({ method: "GET", url: "/auth/session", cookies: { pulseos_session: cookie.value } });
-    expect(me.statusCode).toBe(200);
-    const login = await app.inject({ method: "POST", url: "/auth/login", payload: { email, password: "Correct-Horse-9" } });
-    expect(login.statusCode).toBe(200);
+  it("closes public signup and checks platform credentials, role, expiry, revocation and strict input", async () => {
+    const body = valid("closed");
+    const rejected = await app.inject({ method: "POST", url: "/auth/signup", payload: { ...body, password } });
+    expect(rejected.statusCode).toBe(410);
+    expect(rejected.cookies).toHaveLength(0);
+    expect(await queryClient`select id from tenants where name = ${body.organizationName}`).toHaveLength(0);
+    for (const token of ["", wrongRole, expiredOperator, revokedOperator]) {
+      expect((await create(body, randomUUID(), { authorization: token ? `Bearer ${token}` : "" })).statusCode).toBe(401);
+    }
+    expect((await create({ ...body, password })).statusCode).toBe(400);
+    expect((await create({ ...body, tenantId: randomUUID() })).statusCode).toBe(400);
+    expect((await create({ ...body, department: undefined })).statusCode).toBe(400);
   });
 
-  it("never accepts a tenant id (or any unknown field) from the client", async () => {
-    const res = await post({ ...valid(mail("tenantid")), tenantId: "00000000-0000-4000-8000-000000000000" });
-    expect(res.statusCode).toBe(400);
-    expect(await queryClient`select 1 from users where email = ${emails[emails.length - 1]!}`).toHaveLength(0);
+  it("uses shared provisioning, gates login and isolates platform and tenant sessions", async () => {
+    const input = valid("full", { edition: "V2" });
+    const result = await create(input);
+    expect(result.statusCode).toBe(201);
+    expect(result.headers["cache-control"]).toBe("no-store");
+    expect(result.cookies).toHaveLength(0);
+    expect(provisionHospital).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ email: input.email, edition: "BETA_V2_GROWTH" }));
+    const { id, tenantId, loginPath } = result.json();
+    const slug = loginPath.split("/").at(-1)!;
+    expect(result.json()).toMatchObject({ active: false, ready: false, template: "installed", invitation: "not_issued" });
+    const [owner] = await queryClient`select u.id, u.password_hash, u.role, b.tenant_id as branch_tenant from users u join branches b on b.id = u.branch_id where u.tenant_id = ${tenantId}`;
+    expect(owner).toMatchObject({ role: "SUPER_ADMIN", branch_tenant: tenantId, password_hash: expect.stringMatching(/^\$argon2id\$/) });
+    expect(await queryClient`select source, dev_visible, owner_phone from tenant_profiles where tenant_id = ${tenantId}`)
+      .toEqual([{ source: "platform", dev_visible: false, owner_phone: "+919876543210" }]);
+    expect(await queryClient`select 1 from tenant_login_configs where tenant_id = ${tenantId}`).toHaveLength(1);
+    expect(await queryClient`select 1 from departments where tenant_id = ${tenantId}`).toHaveLength(1);
+    expect((await action(id, "activate")).statusCode).toBe(409);
+    expect((await app.inject({ method: "GET", url: `/auth/tenants/${slug}` })).statusCode).toBe(404);
+
+    const invitation = await action(id, "invitation");
+    expect(invitation.statusCode).toBe(200);
+    expect(invitation.headers["cache-control"]).toBe("no-store");
+    expect(invitation.json().recipient).toBe(input.email);
+    const token = tokenFrom(invitation.json().invitationPath);
+    expect(await queryClient`select invitation_hash from hospital_onboardings where id = ${id}`).toEqual([{ invitation_hash: digest(token) }]);
+    await queryClient`delete from tenant_login_configs where tenant_id = ${tenantId}`;
+    const accepts = await Promise.all([accept(token), accept(token)]);
+    expect(accepts.map((res) => res.statusCode).sort()).toEqual([200, 400]);
+    expect(accepts.every((res) => res.cookies.length === 0)).toBe(true);
+    expect((await action(id, "invitation")).statusCode).toBe(409);
+    expect((await status(id)).json()).toMatchObject({ ready: false, active: false, invitation: "accepted" });
+    expect((await login(input.email)).statusCode).toBe(401);
+    expect((await login(input.email, slug)).statusCode).toBe(401);
+    expect(await queryClient`select id from sessions where user_id = ${owner!.id}`).toHaveLength(0);
+
+    expect((await status(id)).json()).toMatchObject({ ready: false, active: false });
+    expect((await action(id, "activate")).statusCode).toBe(409);
+    await queryClient`insert into tenant_login_configs (tenant_id) values (${tenantId})`;
+
+    expect((await action(id, "activate")).json().hospital.active).toBe(true);
+    expect((await action(id, "activate")).json().hospital.active).toBe(true);
+    const branding = await app.inject({ method: "GET", url: `/auth/tenants/${slug}` });
+    expect(branding.json()).toMatchObject({ displayName: input.organizationName, slug });
+    const signedIn = await login(input.email, slug);
+    expect(signedIn.statusCode).toBe(200);
+    expect(signedIn.json().user).toMatchObject({ tenantId, role: "SUPER_ADMIN", edition: "BETA_V2_GROWTH" });
+    const cookie = signedIn.cookies.find((c) => c.name === "pulseos_session")!.value;
+    expect((await create(valid("tenant-cookie"), randomUUID(), { authorization: "", cookie: `pulseos_session=${cookie}` })).statusCode).toBe(403);
+    expect((await create(valid("tenant-bearer"), randomUUID(), { authorization: `Bearer ${cookie}` })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/auth/session", headers: { authorization } })).statusCode).toBe(401);
+    const dev = await app.inject({ method: "GET", url: "/auth/dev-login/environments" });
+    if (dev.statusCode === 200) expect(dev.json()).not.toEqual(expect.arrayContaining([expect.objectContaining({ key: `tenant:${tenantId}` })]));
+
+    const events = await queryClient`select action, actor_id from platform_audit_log where onboarding_id = ${id}`;
+    expect(events.map((e) => e.action)).toEqual(expect.arrayContaining([
+      "hospital_created", "template_installed", "activation_failed", "invitation_issued", "invitation_redeemed", "hospital_activated",
+    ]));
+    expect(events.filter((e) => e.action === "hospital_activated")).toHaveLength(1);
+    expect(events.find((e) => e.action === "invitation_redeemed")?.actor_id).toBeNull();
   });
 
-  it("a double-submit makes exactly one hospital", async () => {
-    const email = mail("double");
-    const [a, b] = await Promise.all([post(valid(email)), post(valid(email))]);
-    expect([a.statusCode, b.statusCode].sort()).toEqual([201, 409]);
-    expect(await queryClient`select 1 from users where email = ${email}`).toHaveLength(1);
-    expect(await queryClient`select 1 from tenant_profiles where owner_email = ${email}`).toHaveLength(1);
-    expect(await queryClient`select 1 from tenants where name = 'Sunrise Eye Care' and id in (select tenant_id from users where email = ${email})`).toHaveLength(1);
+  it("serializes idempotency keys, case-insensitive owner email and shared slug allocation", async () => {
+    const id = randomUUID();
+    const input = valid("concurrent", { department: "ENT / Rhinology" });
+    const [a, b] = await Promise.all([create(input, id), create(input, id)]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 201]);
+    expect(a.json()).toEqual(b.json());
+    expect(a.json().template).toBe("none");
+    expect((await create(valid("other"), id)).json()).toEqual({ error: "idempotency_conflict" });
+
+    const another = valid("slug-a", { organizationName: input.organizationName, department: "ENT / Rhinology" });
+    const [duplicateA, duplicateB] = await Promise.all([create(another), create({ ...another, email: another.email.toUpperCase() })]);
+    expect([duplicateA.statusCode, duplicateB.statusCode].sort()).toEqual([201, 409]);
+    expect((duplicateA.statusCode === 409 ? duplicateA : duplicateB).json().error).toBe("email_in_use");
+
+    const [slugA, slugB] = await Promise.all([
+      create(valid("slug-b", { organizationName: input.organizationName, department: "ENT / Rhinology" })),
+      create(valid("slug-c", { organizationName: input.organizationName, department: "ENT / Rhinology" })),
+    ]);
+    const base = a.json().loginPath;
+    expect([slugA.json().loginPath, slugB.json().loginPath].sort()).toEqual([`${base}-3`, `${base}-4`]);
   });
 
-  it("an email that is already registered (any case, any hospital) is refused without creating anything", async () => {
-    const email = mail("dupe");
-    expect((await post(valid(email))).statusCode).toBe(201);
-    const before = (await queryClient`select count(*)::int as c from tenants`)[0]!.c;
-    const again = await post(valid(email.toUpperCase(), { organizationName: "Another Hospital" }));
-    expect(again.statusCode).toBe(409);
-    expect(again.json().error).toBe("email_in_use");
-    expect((await queryClient`select count(*)::int as c from tenants`)[0]!.c).toBe(before);
-    // A seeded demo account's address is taken too.
-    expect((await post(valid("eye.admin@pulseos.local"))).statusCode).toBe(409);
-  });
-
-  it.each([
-    ["an invalid email", { email: "not-an-email" }],
-    ["an invalid phone", { phone: "12" }],
-    ["a short password", { password: "short1" }],
-    ["a password that is the email", { password: "x" }],
-    ["a bad PIN code", { pinCode: "12" }],
-    ["an unknown discovery source", { discoverySource: "Carrier pigeon" }],
-    ["an unknown edition", { edition: "V9" }],
-    ["Healthcare without an organization type", { organizationType: undefined }],
-    ["Healthcare without a department", { department: undefined }],
-    ["a missing organization name", { organizationName: " " }],
-  ])("rejects %s with 400 and creates nothing", async (name, over) => {
-    const email = mail(`bad-${name.replace(/\W+/g, "-")}`);
-    const payload = valid(email, over);
-    if (name === "a password that is the email") payload.password = email;
-    const res = await post(payload);
-    expect(res.statusCode, name).toBe(400);
-    expect(await queryClient`select 1 from users where email = ${email}`).toHaveLength(0);
-  });
-
-  it("'Other' industry needs no healthcare details, and gets no department template", async () => {
-    const email = mail("other");
-    const res = await post(valid(email, { industry: "Other", organizationType: undefined, department: undefined, organizationName: "Acme Wellness" }));
-    expect(res.statusCode).toBe(201);
-    const [u] = await queryClient`select tenant_id from users where email = ${email}`;
-    expect((await queryClient`select 1 from departments where tenant_id = ${u!.tenant_id}`).length).toBe(0);
-  });
-
-  it("a department with no template yet (ENT) is recorded, not faked", async () => {
-    const email = mail("ent");
-    const res = await post(valid(email, { department: "ENT / Rhinology", organizationName: "City ENT Clinic" }));
-    expect(res.statusCode).toBe(201);
-    const [u] = await queryClient`select tenant_id from users where email = ${email}`;
-    const [p] = await queryClient`select department from tenant_profiles where tenant_id = ${u!.tenant_id}`;
-    expect(p!.department).toBe("ENT / Rhinology");
-    expect((await queryClient`select 1 from departments where tenant_id = ${u!.tenant_id}`).length).toBe(0);
-  });
-
-  it("V2 gets the growth edition", async () => {
-    const email = mail("v2");
-    const res = await post(valid(email, { edition: "V2", organizationName: "Growth Eye Centre" }));
-    expect(res.statusCode).toBe(201);
-    expect(res.json().user.edition).toBe("BETA_V2_GROWTH");
-  });
-
-  it("a brand-new hospital reports what is still to set up, so the dashboard can guide it", async () => {
-    const email = mail("setup");
-    const res = await post(valid(email, { organizationName: "Setup Checklist Hospital" }));
-    expect(res.statusCode).toBe(201);
-    const cookie = res.cookies.find((c) => c.name === "pulseos_session")!.value;
-    const status = await app.inject({ method: "GET", url: "/dashboard/setup-status", cookies: { pulseos_session: cookie } });
-    expect(status.statusCode).toBe(200);
-    expect(status.json()).toEqual({ hasJourneys: false, crmConfigured: true, hasDoctors: false, callingConnected: false, whatsappConnected: false, hasStaff: false });
-  });
-
-  it("setup status is for the signed-in hospital's administrators only", async () => {
-    expect((await app.inject({ method: "GET", url: "/dashboard/setup-status" })).statusCode).toBe(401);
-  });
-
-  it("a cross-origin sign-up request is refused like every other write", async () => {
-    const res = await post(valid(mail("evil")), { origin: "https://evil.example" });
-    expect(res.statusCode).toBe(403);
-  });
-
-  describe.skipIf(!DEV_LOGIN)("Developer Access (development only)", () => {
-    it("lists a newly signed-up hospital with the roles that exist, and signs in as them", async () => {
-      const email = mail("dev");
-      expect((await post(valid(email, { organizationName: "Dev Visible Hospital" }))).statusCode).toBe(201);
-      const envs = (await app.inject({ method: "GET", url: "/auth/dev-login/environments" })).json() as { key: string; label: string; roles: { role: string }[] }[];
-      const mine = envs.find((e) => e.label === "Dev Visible Hospital");
-      expect(mine, "new hospital is listed").toBeTruthy();
-      expect(mine!.key).toMatch(/^tenant:[0-9a-f-]{36}$/);
-      expect(mine!.roles.map((r) => r.role)).toEqual(["SUPER_ADMIN"]);
-      const login = await app.inject({ method: "POST", url: "/auth/dev-login", payload: { role: "SUPER_ADMIN", environment: mine!.key } });
-      expect(login.statusCode).toBe(200);
-      expect(login.json().user.email).toBe(email);
-      // Roles that do not exist in that hospital are not invented.
-      expect((await app.inject({ method: "POST", url: "/auth/dev-login", payload: { role: "DOCTOR", environment: mine!.key } })).statusCode).toBe(404);
+  it("records provisioning and template failures independently and retries safely", async () => {
+    const id = randomUUID();
+    const input = valid("retry");
+    vi.mocked(provisionHospital).mockRejectedValueOnce(new Error("provisioning interrupted"));
+    const install = vi.mocked(installDepartmentTemplate).getMockImplementation()!;
+    let committedStatus: unknown;
+    vi.mocked(installDepartmentTemplate).mockImplementationOnce(async (...args) => {
+      const [row] = await queryClient`select template_status from hospital_onboardings where id = ${id}`;
+      committedStatus = row?.template_status;
+      await install(...args);
+      throw new Error("template interrupted");
     });
+    expect((await create(input, id)).statusCode).toBe(503);
+    expect((await status(id)).json()).toMatchObject({ tenantId: null, provisioning: "failed", template: "none" });
+    const created = await create(input, id);
+    expect(created.statusCode).toBe(201);
+    expect(committedStatus).toBe("pending");
+    const { tenantId } = created.json();
+    expect(created.json()).toMatchObject({ provisioning: "created", provisioningError: null, template: "failed" });
+    expect(await queryClient`select 1 from departments where tenant_id = ${tenantId}`).toHaveLength(0);
+    expect((await create(input, id)).json()).toMatchObject({ tenantId, template: "failed" });
+    expect((await action(id, "activate")).statusCode).toBe(409);
 
-    it("never lists or signs in to a hospital that was not made visible", async () => {
-      const [anyDemo] = await queryClient`select t.id from tenants t where t.name like 'Edition Test%' limit 1`;
-      const envs = (await app.inject({ method: "GET", url: "/auth/dev-login/environments" })).json() as { key: string }[];
-      if (anyDemo) expect(envs.some((e) => e.key === `tenant:${anyDemo.id}`)).toBe(false);
-      const res = await app.inject({ method: "POST", url: "/auth/dev-login", payload: { role: "SUPER_ADMIN", environment: "tenant:00000000-0000-4000-8000-000000000000" } });
-      expect(res.statusCode).toBe(404);
-      const bad = await app.inject({ method: "POST", url: "/auth/dev-login", payload: { role: "SUPER_ADMIN", environment: "tenant:not-a-uuid" } });
-      expect(bad.statusCode).toBe(400);
-    });
+    const retries = await Promise.all([action(id, "retry-template"), action(id, "retry-template")]);
+    for (const retry of retries) expect(retry.json().hospital).toMatchObject({ tenantId, template: "installed" });
+    expect(await queryClient`select 1 from departments where tenant_id = ${tenantId}`).toHaveLength(1);
+    const events = await queryClient`select action, reason from platform_audit_log where onboarding_id = ${id}`;
+    expect(events).toEqual(expect.arrayContaining([
+      { action: "provisioning_failed", reason: "provisioning_failed" },
+      { action: "template_failed", reason: "template_install_failed" },
+    ]));
+    expect(events.filter((event) => event.action === "template_installed")).toHaveLength(1);
+  });
+
+  it("expires invitations and invalidates old tokens on reissue", async () => {
+    const created = await create(valid("expire", { department: "ENT / Rhinology" }));
+    const { id } = created.json();
+    const original = await action(id, "invitation");
+    expect(original.statusCode).toBe(200);
+    const first = tokenFrom(original.json().invitationPath);
+    expect((await action(id, "invitation")).statusCode).toBe(429);
+    await queryClient`update hospital_onboardings set invitation_expires_at = now() + interval '23 hours' where id = ${id}`;
+    const replacement = await action(id, "invitation");
+    expect(replacement.statusCode).toBe(200);
+    const second = tokenFrom(replacement.json().invitationPath);
+    expect((await accept(first)).statusCode).toBe(400);
+    await queryClient`update hospital_onboardings set invitation_expires_at = now() - interval '1 second' where id = ${id}`;
+    expect((await accept(second)).statusCode).toBe(400);
+    expect((await status(id)).json().invitation).toBe("expired");
+    const third = tokenFrom((await action(id, "invitation")).json().invitationPath);
+    expect((await accept(third)).statusCode).toBe(200);
   });
 });
