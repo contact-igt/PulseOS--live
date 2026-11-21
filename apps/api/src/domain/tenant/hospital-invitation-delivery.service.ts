@@ -15,6 +15,11 @@ class MailRejected extends Error {}
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 
+const invitationExpiryFormat = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric", month: "long", year: "numeric",
+  hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short",
+});
+
 export async function sendHospitalInvitationEmail(mail: InvitationMail) {
   const { HOSPITAL_INVITATION_WEB_ORIGIN, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM } = process.env;
   const origin = URL.canParse(HOSPITAL_INVITATION_WEB_ORIGIN ?? "") ? new URL(HOSPITAL_INVITATION_WEB_ORIGIN!) : null;
@@ -23,8 +28,9 @@ export async function sendHospitalInvitationEmail(mail: InvitationMail) {
     !SMTP_HOST || !SMTP_FROM || !SMTP_USER || !SMTP_PASSWORD || !Number.isInteger(port) || port < 1 || port > 65535) throw new MailUnavailable();
   const url = new URL("/hospital-invitation", origin);
   url.hash = mail.token;
-  const expires = mail.expiresAt.toISOString();
-  const text = `You were invited to set up administrator access for ${mail.hospital} in PulseOS.\n\nSet your password: ${url.href}\n\nThis single-use link expires at ${expires}. If you need help, contact the PulseOS team that created your hospital.\n`;
+  const expires = invitationExpiryFormat.format(mail.expiresAt);
+  const help = "If you need help or a new invitation, contact the PulseOS team that set up your hospital.";
+  const text = `You were invited to manage ${mail.hospital} in PulseOS.\n\nSet your password: ${url.href}\n\nYou can use this link once. It expires on ${expires}.\n\n${help}\n`;
   const transport = nodemailer.createTransport({
     host: SMTP_HOST, port, secure: port === 465, requireTLS: true,
     auth: { user: SMTP_USER, pass: SMTP_PASSWORD },
@@ -35,7 +41,32 @@ export async function sendHospitalInvitationEmail(mail: InvitationMail) {
     const result = await transport.sendMail({
       from: SMTP_FROM, to: { name: "", address: mail.to }, messageId: `<${mail.messageId}@${origin.hostname}>`,
       subject: "Set up your PulseOS hospital administrator account", text,
-      html: `<!doctype html><html lang="en"><body style="margin:0;background:#f5f7fb;padding:16px;font:16px/1.5 Arial,sans-serif;color:#182230"><main style="max-width:540px;margin:auto;background:white;padding:24px;border-radius:12px"><p style="font-weight:bold;color:#175cd3">PulseOS</p><h1 style="font-size:24px">Set up your administrator account</h1><p>You were invited to manage <strong>${escapeHtml(mail.hospital)}</strong> in PulseOS.</p><p><a style="display:inline-block;background:#175cd3;color:white;padding:12px 18px;border-radius:8px" href="${escapeHtml(url.href)}">Set your password</a></p><p>This single-use link expires at ${escapeHtml(expires)}.</p><p>If you need help, contact the PulseOS team that created your hospital.</p></main></body></html>`,
+      html: `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0;background-color:#eff5fb;color:#152941;font-family:Arial,sans-serif">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#eff5fb">
+    <tr><td align="center" style="padding:24px 12px">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" align="center" style="max-width:560px;background-color:#ffffff;border:1px solid #d5e2f0;border-radius:16px;border-collapse:separate">
+        <tr><td style="padding:18px 24px;background-color:#093b71;color:#ffffff;border-radius:15px 15px 0 0;font-size:22px;font-weight:bold">PulseOS</td></tr>
+        <tr><td style="padding:26px 24px 24px">
+          <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Set up your administrator account</h1>
+          <p style="margin:0 0 22px;color:#344b63;font-size:16px;line-height:1.6;overflow-wrap:anywhere">You were invited to manage <strong>${escapeHtml(mail.hospital)}</strong> in PulseOS.</p>
+          <table role="presentation" cellspacing="0" cellpadding="0">
+            <tr><td bgcolor="#1059a8" style="border-radius:8px">
+              <a href="${escapeHtml(url.href)}" style="display:inline-block;border:14px solid #1059a8;border-left-width:20px;border-right-width:20px;border-radius:8px;background-color:#1059a8;color:#ffffff;font-size:16px;font-weight:bold;line-height:20px;text-decoration:none">Set your password</a>
+            </td></tr>
+          </table>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:22px">
+            <tr><td style="padding:12px 14px;background-color:#edf5ff;border-radius:8px;color:#25496d;font-size:14px;line-height:1.5">You can use this link once.<br><strong>Expires on ${escapeHtml(expires)}</strong></td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:16px 24px;border-top:1px solid #d5e2f0;color:#465e75;font-size:14px;line-height:1.5">${help}</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
     });
     if (!result.accepted.length || result.rejected.length) throw new MailRejected();
   } finally {

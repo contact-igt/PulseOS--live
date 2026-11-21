@@ -1340,6 +1340,7 @@ export const adsDailyFacts = pgTable("ads_daily_facts", {
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   connectorId: uuid("connector_id").notNull().references(() => connectors.id),
   provider: text("provider").notNull(),
+  mode: connectorModeEnum("mode"),
   accountId: text("account_id").notNull(),
   entityType: text("entity_type").notNull().default("CAMPAIGN"),
   entityId: text("entity_id").notNull(),
@@ -1363,6 +1364,8 @@ export const adsSyncRuns = pgTable("ads_sync_runs", {
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   connectorId: uuid("connector_id").notNull().references(() => connectors.id),
   provider: text("provider").notNull(),
+  mode: connectorModeEnum("mode"),
+  accountId: text("account_id"),
   trigger: text("trigger").notNull(), // MANUAL | SCHEDULED
   status: text("status").notNull().default("RUNNING"), // RUNNING | SUCCEEDED | FAILED
   rangeFrom: date("range_from", { mode: "string" }).notNull(),

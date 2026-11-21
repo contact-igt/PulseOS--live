@@ -12,7 +12,7 @@ import { createTestTenant, destroyTestTenant, type TestTenant } from "./helpers/
 const DEMO_PASSWORD = process.env.DEMO_PASSWORD;
 const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 
-describe.skipIf(!DEMO_PASSWORD)("ads sync and Marketing Analytics (integration, fixtures only)", () => {
+describe.skipIf(!DEMO_PASSWORD)("ads sync and Marketing Analytics (integration, no external API calls)", () => {
   let app: FastifyInstance;
   let t: TestTenant; // V1 with every ads switch turned on by a Super Admin
   let bare: TestTenant; // V1 defaults: ads off
@@ -206,5 +206,40 @@ describe.skipIf(!DEMO_PASSWORD)("ads sync and Marketing Analytics (integration, 
       expect(a.campaigns).toEqual([]);
       expect(a.unavailable).toBe("NO_PROVIDER_ENABLED");
     });
+  });
+  it("backfills live Meta history after fixture syncs and excludes sample spend from live reporting", async () => {
+    const switched = await call(t, "SUPER_ADMIN", "PUT", "/integrations/hub/meta_ads/configuration", {
+      mode: "LIVE", secrets: { accessToken: "mock-meta-token" },
+    });
+    expect(switched.statusCode).toBe(200);
+    const before = await ads();
+    expect(before.campaigns).toEqual([]);
+    expect(before.providers.find((p) => p.provider === "meta_ads")?.lastSyncedAt).toBeNull();
+
+    const requests: Array<{ from: string; to: string }> = [];
+    const adapter: AdsReportingProvider = {
+      provider: "meta_ads",
+      fetchDailyFacts: async (config, _secrets, range) => {
+        expect(config.mode).toBe("live");
+        requests.push(range);
+        if (range.from > day(-20) || range.to < day(-20)) return [];
+        return [{
+          accountId: "555", entityType: "CAMPAIGN", entityId: "historical-lead-form", entityName: "Historical lead form",
+          date: day(-20), currency: "INR", spend: 2875.06, impressions: 100, clicks: 8, providerConversions: null, actions: null,
+        }];
+      },
+    };
+    const now = new Date(Date.now() + 12 * 3_600_000);
+    const sync = await syncAds(db, t.tenantId, "meta_ads", { trigger: "MANUAL", adapter, now });
+    expect(sync.ok && sync.run).toMatchObject({ status: "SUCCEEDED", rowsUpserted: 1 });
+    const syncedTo = requests[0]!.to;
+    expect(requests[0]!.from).toBe(new Date(Date.parse(syncedTo) - 89 * 86_400_000).toISOString().slice(0, 10));
+
+    const live = await ads();
+    expect(live.campaigns.map((c) => c.entityId)).toEqual(["historical-lead-form"]);
+    expect(live.totals?.spend).toBe(2875.06);
+    const incremental = await syncAds(db, t.tenantId, "meta_ads", { trigger: "SCHEDULED", adapter, now: new Date(now.getTime() + 3_600_000) });
+    expect(incremental.ok && incremental.run).toMatchObject({ status: "SUCCEEDED", rowsUpserted: 0 });
+    expect((await ads()).totals?.spend).toBe(2875.06);
   });
 });
