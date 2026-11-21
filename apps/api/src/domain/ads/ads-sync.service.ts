@@ -1,5 +1,5 @@
 import { activeHospital, allowsHospitalWork } from "../tenant/hospital-lifecycle.policy.js";
-import { and, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { adsDailyFacts, adsSyncRuns, connectors } from "../../db/schema.js";
 import { ADS_PROVIDERS, type AdsProvider, type AdsSyncRunVm, type Capability } from "@pulseos/types";
@@ -22,6 +22,7 @@ const RETRY_DELAYS_MS = [1000, 3000];
 /** Providers restate recent days (late conversions, invoicing corrections), so every incremental sync re-reads the last week. */
 const RESTATEMENT_DAYS = 7;
 const FIRST_SYNC_DAYS = 30;
+const LIVE_HISTORY_DAYS = 90;
 const MAX_RANGE_DAYS = 92;
 const MANUAL_COOLDOWN_MS = 60_000;
 const STALE_RUNNING_MS = 10 * 60_000;
@@ -41,6 +42,17 @@ export async function listSyncRuns(db: Db, tenantId: string, provider: AdsProvid
 async function connectorFor(db: Db, tenantId: string, provider: AdsProvider) {
   const [c] = await db.select().from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, provider))).limit(1);
   return c ?? null;
+}
+
+export function adsAccountId(provider: AdsProvider, configuration: Record<string, unknown>, mode: typeof connectors.$inferSelect.mode): string {
+  const id = provider === "meta_ads"
+    ? String(configuration.adAccountId ?? "").replace(/^act_/, "")
+    : String(configuration.customerId ?? "").replace(/-/g, "");
+  return id || (mode === "FIXTURE" ? "fixture" : "");
+}
+
+export function adsRunScope(connector: typeof connectors.$inferSelect, accountId: string) {
+  return and(eq(adsSyncRuns.connectorId, connector.id), eq(adsSyncRuns.mode, connector.mode), eq(adsSyncRuns.accountId, accountId));
 }
 
 async function isConfigured(db: Db, provider: AdsProvider, c: typeof connectors.$inferSelect): Promise<boolean> {
@@ -79,12 +91,21 @@ export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, o
 
   const tz = await tenantTimezone(db, tenantId);
   const today = await localToday(db, tz, now);
-  const [prior] = await db.select({ id: adsSyncRuns.id }).from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, provider), eq(adsSyncRuns.status, "SUCCEEDED"))).limit(1);
-  const range = opts.range ?? { from: addDays(today, -((prior ? RESTATEMENT_DAYS : FIRST_SYNC_DAYS) - 1)), to: today };
+  const configuration = (connector.configuration as Record<string, unknown> | null) ?? {};
+  const accountId = adsAccountId(provider, configuration, connector.mode);
+  const [prior] = await db.select({ to: adsSyncRuns.rangeTo }).from(adsSyncRuns)
+    .where(and(eq(adsSyncRuns.tenantId, tenantId), adsRunScope(connector, accountId), eq(adsSyncRuns.status, "SUCCEEDED")))
+    .orderBy(desc(adsSyncRuns.rangeTo)).limit(1);
+  const historyDays = connector.mode === "LIVE" ? LIVE_HISTORY_DAYS : FIRST_SYNC_DAYS;
+  const earliest = addDays(today, -(historyDays - 1));
+  const recent = addDays(today, -(RESTATEMENT_DAYS - 1));
+  const resume = prior ? addDays(prior.to, -(RESTATEMENT_DAYS - 1)) : earliest;
+  const from = resume < earliest ? earliest : resume < recent ? resume : recent;
+  const range = opts.range ?? { from, to: today };
   if (range.from > range.to || (new Date(`${range.to}T00:00:00Z`).getTime() - new Date(`${range.from}T00:00:00Z`).getTime()) / 86_400_000 > MAX_RANGE_DAYS) return { ok: false, reason: "invalid_range" };
 
-  const [run] = await db.insert(adsSyncRuns).values({ tenantId, connectorId: connector.id, provider, trigger: opts.trigger, rangeFrom: range.from, rangeTo: range.to, startedAt: now }).returning();
-  const config = { ...((connector.configuration as Record<string, unknown> | null) ?? {}), mode: connector.mode.toLowerCase() };
+  const [run] = await db.insert(adsSyncRuns).values({ tenantId, connectorId: connector.id, provider, mode: connector.mode, accountId, trigger: opts.trigger, rangeFrom: range.from, rangeTo: range.to, startedAt: now }).returning();
+  const config = { ...configuration, mode: connector.mode.toLowerCase() };
 
   let attempts = 0;
   try {
@@ -106,10 +127,10 @@ export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, o
     await db.transaction(async (tx) => {
       // The provider's answer for this window REPLACES what was stored for it: a day or campaign it no longer reports
       // (restated to nothing, removed) must not keep its old spend forever.
-      await tx.delete(adsDailyFacts).where(and(eq(adsDailyFacts.tenantId, tenantId), eq(adsDailyFacts.connectorId, connector.id), gte(adsDailyFacts.factDate, range.from), lte(adsDailyFacts.factDate, range.to)));
+      await tx.delete(adsDailyFacts).where(and(eq(adsDailyFacts.tenantId, tenantId), eq(adsDailyFacts.connectorId, connector.id), eq(adsDailyFacts.accountId, accountId), or(eq(adsDailyFacts.mode, connector.mode), isNull(adsDailyFacts.mode)), gte(adsDailyFacts.factDate, range.from), lte(adsDailyFacts.factDate, range.to)));
       for (let i = 0; i < facts.length; i += 500) {
         const chunk = facts.slice(i, i + 500).map((f) => ({
-          tenantId, connectorId: connector.id, provider, accountId: f.accountId, entityType: f.entityType, entityId: f.entityId, entityName: f.entityName, factDate: f.date,
+          tenantId, connectorId: connector.id, provider, mode: connector.mode, accountId: f.accountId, entityType: f.entityType, entityId: f.entityId, entityName: f.entityName, factDate: f.date,
           currency: f.currency, spend: String(f.spend), impressions: f.impressions, clicks: f.clicks,
           providerConversions: f.providerConversions === null ? null : String(f.providerConversions), actions: f.actions, syncedAt: now,
         }));
@@ -117,7 +138,7 @@ export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, o
         await tx.insert(adsDailyFacts).values(chunk).onConflictDoUpdate({
           target: [adsDailyFacts.tenantId, adsDailyFacts.provider, adsDailyFacts.accountId, adsDailyFacts.entityType, adsDailyFacts.entityId, adsDailyFacts.factDate],
           set: {
-            entityName: sql`excluded.entity_name`, currency: sql`excluded.currency`, spend: sql`excluded.spend`, impressions: sql`excluded.impressions`, clicks: sql`excluded.clicks`,
+            mode: sql`excluded.mode`, connectorId: sql`excluded.connector_id`, entityName: sql`excluded.entity_name`, currency: sql`excluded.currency`, spend: sql`excluded.spend`, impressions: sql`excluded.impressions`, clicks: sql`excluded.clicks`,
             providerConversions: sql`excluded.provider_conversions`, actions: sql`excluded.actions`, syncedAt: sql`excluded.synced_at`,
           },
         });
@@ -136,12 +157,13 @@ export async function syncAds(db: Db, tenantId: string, provider: AdsProvider, o
 
 /** Scheduled tick: every configured, enabled ads connector that has not synced successfully in the last 6 hours. */
 export async function syncDueAds(db: Db, now: Date, opts: { adapterFor?: (p: AdsProvider) => AdsReportingProvider | null } = {}): Promise<{ synced: number; skipped: number }> {
-  const rows = await db.select({ tenantId: connectors.tenantId, provider: connectors.provider }).from(connectors).where(and(inArray(connectors.provider, [...ADS_PROVIDERS]), activeHospital(connectors.tenantId)));
+  const rows = await db.select().from(connectors).where(and(inArray(connectors.provider, [...ADS_PROVIDERS]), activeHospital(connectors.tenantId)));
   let synced = 0;
   let skipped = 0;
-  for (const { tenantId, provider } of rows) {
+  for (const connector of rows) {
+    const { tenantId, provider } = connector;
     const p = provider as AdsProvider;
-    const [lastOk] = await db.select({ at: adsSyncRuns.finishedAt }).from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, p), eq(adsSyncRuns.status, "SUCCEEDED"))).orderBy(desc(adsSyncRuns.finishedAt)).limit(1);
+    const [lastOk] = await db.select({ at: adsSyncRuns.finishedAt }).from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), adsRunScope(connector, adsAccountId(p, (connector.configuration as Record<string, unknown> | null) ?? {}, connector.mode)), eq(adsSyncRuns.status, "SUCCEEDED"))).orderBy(desc(adsSyncRuns.finishedAt)).limit(1);
     const [recent] = await db.select({ id: adsSyncRuns.id }).from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, p), gt(adsSyncRuns.startedAt, new Date(now.getTime() - SCHEDULED_RETRY_AFTER_FAILURE_MS)))).limit(1);
     if (recent || (lastOk?.at && now.getTime() - lastOk.at.getTime() < SCHEDULED_SYNC_EVERY_MS)) { skipped++; continue; }
     const r = await syncAds(db, tenantId, p, { trigger: "SCHEDULED", now, adapter: opts.adapterFor ? opts.adapterFor(p) : undefined });

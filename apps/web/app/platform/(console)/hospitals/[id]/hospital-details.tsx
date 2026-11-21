@@ -6,7 +6,7 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { platformApi } from "@pulseos/api-client";
-import { buttonClass, date, Failure, label, Loading, PageTitle, panelClass, secondaryClass, usePlatformAccount } from "../../platform-ui";
+import { date, Failure, label, Loading, PageTitle, panelClass, secondaryClass, usePlatformAccount } from "../../platform-ui";
 
 const readiness: Record<string, string> = {
   login_slug_required: "Assign a login slug.",
@@ -30,7 +30,7 @@ export default function HospitalDetails({ id, legacy }: { id: string; legacy: bo
   const [error, setError] = useState<unknown>();
   const [notice, setNotice] = useState("");
 
-  async function run(action: "invitation" | "invitation-resend" | "retry-template" | "activate") {
+  async function run(action: "invitation" | "invitation-resend" | "retry-template") {
     setWorking(true);
     setError(undefined);
     setNotice("");
@@ -46,7 +46,7 @@ export default function HospitalDetails({ id, legacy }: { id: string; legacy: bo
         setIssued({ link: new URL(result.invitationPath, window.location.origin).href, recipient: result.recipient, expiresAt: result.expiresAt });
       } else {
         const { hospital } = await platformApi.hospitalAction(id, action);
-        setNotice(action === "activate" ? "Hospital activated." : hospital.template === "failed" ? "The template failed again. You can retry installation." : "Template installed.");
+        setNotice(hospital.template === "failed" ? "The template failed again. You can retry installation." : "Template installed.");
       }
       void cache.invalidateQueries({ queryKey: ["platform"] });
     } catch (failure) {
@@ -100,7 +100,6 @@ export default function HospitalDetails({ id, legacy }: { id: string; legacy: bo
         {!delivery?.enabled && permissions.includes("hospital:invite") && hospital.tenantId && hospital.invitation !== "accepted" && <button className={secondaryClass} disabled={working} onClick={() => run("invitation")}>
           {hospital.invitation === "not_issued" ? "Issue administrator invitation" : "Replace administrator invitation"}
         </button>}
-        {permissions.includes("hospital:activate") && !hospital.active && hospital.lifecycleStatus !== "SUSPENDED" && hospital.lifecycleStatus !== "ARCHIVED" && <button className={buttonClass} disabled={working || !hospital.ready} onClick={() => run("activate")}>Activate hospital</button>}
       </div>
       {error !== undefined && <Failure error={error} />}
       {notice && <p role="status">{notice}</p>}

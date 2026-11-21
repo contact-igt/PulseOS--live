@@ -93,7 +93,7 @@ test("signs in as Super Admin with email and password and retries hospital creat
   await expect(page.getByLabel("Hospital name")).toBeDisabled();
   await page.getByRole("button", { name: "Retry same request" }).click();
   await expect(page.getByRole("heading", { name: "Workshop Hospital" })).toBeVisible({ timeout: 20000 });
-  await expect(page.getByRole("button", { name: "Activate hospital" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Activate hospital" })).toHaveCount(0);
   await expect(page.getByText("The first hospital administrator must accept their invitation.")).toBeVisible();
   await page.getByRole("button", { name: "Issue administrator invitation" }).click();
   await expect(page.getByLabel("Hospital administrator invitation link")).toHaveValue(/hospital-invitation#example$/);

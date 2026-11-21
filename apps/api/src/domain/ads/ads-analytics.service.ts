@@ -1,4 +1,4 @@
-import { and, between, desc, eq, inArray } from "drizzle-orm";
+import { and, between, desc, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "../../db/client.js";
 import { adsDailyFacts, adsSyncRuns, connectors, marketingCampaigns } from "../../db/schema.js";
 import type { AdsAnalytics, AdsCampaignOutcomes, AdsCampaignRow, AdsProvider, AdsProviderStatus, AnalyticsQuery } from "@pulseos/types";
@@ -10,7 +10,7 @@ import { decryptSecret } from "../security/encryption.js";
 import { connectorSecrets } from "../../db/schema.js";
 import { costPer, roas as roasOf } from "../marketing/formulas.js";
 import { fetchJourneys, fetchRevenue, reached, resolvePeriod, sumBy } from "../analytics/analytics.service.js";
-import { CAPABILITY_FOR } from "./ads-sync.service.js";
+import { adsAccountId, adsRunScope, CAPABILITY_FOR } from "./ads-sync.service.js";
 
 /** The PulseOS source channel a provider's campaigns are filed under. */
 const CHANNEL: Record<AdsProvider, "google" | "meta"> = { google_ads: "google", meta_ads: "meta" };
@@ -26,8 +26,8 @@ export function sumMappedActions(actions: Record<string, number> | null, mapped:
   return mapped.reduce((n, t) => n + (actions?.[t] ?? 0), 0);
 }
 
-async function providerStatuses(db: Db, tenantId: string, caps: Record<string, boolean>): Promise<AdsProviderStatus[]> {
-  const out: AdsProviderStatus[] = [];
+async function providerStatuses(db: Db, tenantId: string, caps: Record<string, boolean>) {
+  const out = [];
   for (const provider of ADS_PROVIDERS) {
     const entry = catalogueEntry(provider)!;
     const enabled = !!caps[CAPABILITY_FOR[provider]];
@@ -38,9 +38,15 @@ async function providerStatuses(db: Db, tenantId: string, caps: Record<string, b
       facts = { status: c.status, mode: c.mode, configuration: (c.configuration as Record<string, unknown> | null) ?? null, secretKeys: secret ? Object.keys(decryptSecret(secret.encryptedPayload)) : [] };
     }
     const configuration = deriveConfiguration(entry, facts);
-    const [ok] = await db.select({ at: adsSyncRuns.finishedAt }).from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, provider), eq(adsSyncRuns.status, "SUCCEEDED"))).orderBy(desc(adsSyncRuns.finishedAt)).limit(1);
-    const [last] = await db.select().from(adsSyncRuns).where(and(eq(adsSyncRuns.tenantId, tenantId), eq(adsSyncRuns.provider, provider))).orderBy(desc(adsSyncRuns.startedAt)).limit(1);
-    out.push({
+    const accountId = c ? adsAccountId(provider, facts?.configuration ?? {}, c.mode) : "";
+    const scope = c ? adsRunScope(c, accountId) : undefined;
+    const [ok] = c ? await db.select({ at: adsSyncRuns.finishedAt }).from(adsSyncRuns)
+      .where(and(eq(adsSyncRuns.tenantId, tenantId), scope, eq(adsSyncRuns.status, "SUCCEEDED")))
+      .orderBy(desc(adsSyncRuns.finishedAt)).limit(1) : [];
+    const [last] = c ? await db.select().from(adsSyncRuns)
+      .where(and(eq(adsSyncRuns.tenantId, tenantId), scope))
+      .orderBy(desc(adsSyncRuns.startedAt)).limit(1) : [];
+    const status: AdsProviderStatus = {
       provider,
       name: ADS_PROVIDER_LABEL[provider],
       setup: !enabled ? "NOT_ENABLED" : configuration !== "CONFIGURED" ? "NOT_CONFIGURED" : !ok ? "NEVER_SYNCED" : "READY",
@@ -48,7 +54,8 @@ async function providerStatuses(db: Db, tenantId: string, caps: Record<string, b
       lastSyncedAt: ok?.at?.toISOString() ?? null,
       lastSyncStatus: (last?.status as AdsProviderStatus["lastSyncStatus"]) ?? null,
       lastSyncError: last?.status === "FAILED" ? last.error : null,
-    });
+    };
+    out.push({ status, connector: c, accountId });
   }
   return out;
 }
@@ -64,7 +71,8 @@ const emptyCoverage = { matchedCampaigns: 0, totalCampaigns: 0, matchedSpend: 0,
 export async function getAdsAnalytics(db: Db, tenantId: string, query: AnalyticsQuery, now?: Date): Promise<AdsAnalytics> {
   const period = await resolvePeriod(db, tenantId, query, now);
   const caps = await tenantCapabilityMap(db, tenantId);
-  const providers = await providerStatuses(db, tenantId, caps);
+  const accounts = await providerStatuses(db, tenantId, caps);
+  const providers = accounts.map(({ status }) => status);
   const base: AdsAnalytics = {
     period: { from: period.from, to: period.to, timezone: period.timezone }, providers, unavailable: null, currency: null, totals: null, matched: null, coverage: emptyCoverage, campaigns: [], daily: [],
   };
@@ -76,18 +84,29 @@ export async function getAdsAnalytics(db: Db, tenantId: string, query: Analytics
 
   // A source filter that excludes every enabled ad account (e.g. Phone) is not "no data yet": say what the filter did.
   if (active.length === 0) return { ...base, unavailable: "NO_PROVIDER_FOR_SOURCE" };
-  const facts = active.length
-    ? await db.select().from(adsDailyFacts).where(and(eq(adsDailyFacts.tenantId, tenantId), inArray(adsDailyFacts.provider, active), between(adsDailyFacts.factDate, period.from, period.to)))
-    : [];
+  const selected = accounts.filter(({ status, connector, accountId }) => active.includes(status.provider) && connector !== undefined && !!accountId);
+  const liveOnly = selected.some(({ connector }) => connector?.mode === "LIVE");
+  const reporting = liveOnly ? selected.filter(({ connector }) => connector?.mode === "LIVE") : selected;
+  if (!reporting.length) return { ...base, unavailable: "NO_DATA_YET" };
+
+  // Rows written before provenance was recorded cannot be trusted as live data.
+  const facts = await db.select().from(adsDailyFacts).where(and(
+    eq(adsDailyFacts.tenantId, tenantId),
+    between(adsDailyFacts.factDate, period.from, period.to),
+    or(...reporting.map(({ status, connector, accountId }) => and(
+      eq(adsDailyFacts.provider, status.provider),
+      eq(adsDailyFacts.connectorId, connector!.id),
+      eq(adsDailyFacts.mode, connector!.mode),
+      eq(adsDailyFacts.accountId, accountId),
+    ))),
+  ));
   if (facts.length === 0) return { ...base, unavailable: "NO_DATA_YET" };
   const currencies = new Set(facts.map((f) => f.currency));
   if (currencies.size > 1) return { ...base, unavailable: "MIXED_CURRENCY" };
 
-  const configs = new Map<string, Record<string, unknown> | null>();
-  for (const p of active) {
-    const [c] = await db.select({ configuration: connectors.configuration }).from(connectors).where(and(eq(connectors.tenantId, tenantId), eq(connectors.provider, p))).limit(1);
-    configs.set(p, (c?.configuration as Record<string, unknown> | null) ?? null);
-  }
+  const configs = new Map(reporting.map(({ status, connector }) => [
+    status.provider, (connector?.configuration as Record<string, unknown> | null) ?? null,
+  ]));
 
   // Aggregate per (provider, campaign).
   interface Agg { provider: AdsProvider; entityId: string; name: string; spend: number; impressions: number; clicks: number; conv: number | null; actions: Record<string, number> | null }
